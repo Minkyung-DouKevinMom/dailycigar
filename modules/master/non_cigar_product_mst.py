@@ -317,7 +317,7 @@ def render():
                 product_category = st.text_input(
                     "상품카테고리 *",
                     value=selected.get("product_category", "") if selected else "",
-                    placeholder="예: 커터 / 라이터 / 재떨이 / 휴미더 / 굿즈",
+                    placeholder="예: 악세사리 / 기프트패키지 / 사이드 / 금액결제",
                 )
                 brand_name = st.text_input(
                     "브랜드명",
