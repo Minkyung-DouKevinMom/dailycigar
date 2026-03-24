@@ -116,6 +116,7 @@ def build_query(use_view: bool, filters: dict):
         keyword_fields = ["order_no", "product_code_raw", "product_code"]
         if use_view:
             keyword_fields.extend(["mst_product_name", "mst_size_name"])
+
         where.append("(" + " OR ".join([f"COALESCE({f}, '') LIKE ?" for f in keyword_fields]) + ")")
         params.extend([kw] * len(keyword_fields))
 
@@ -134,19 +135,15 @@ def calc_kpis(df: pd.DataFrame):
         "실매출": float(df["net_sales_amount"].fillna(0).sum()) if "net_sales_amount" in df.columns else 0,
         "부가세": float(df["vat_amount"].fillna(0).sum()) if "vat_amount" in df.columns else 0,
     }
-
     if "total_korea_cost_krw" in df.columns:
         result["원가합계"] = float(df["total_korea_cost_krw"].fillna(0).sum())
-
     if "total_supply_price_krw" in df.columns:
         result["공급가합계"] = float(df["total_supply_price_krw"].fillna(0).sum())
-
     if "retail_gross_profit_krw" in df.columns:
         gross_profit = float(df["retail_gross_profit_krw"].fillna(0).sum())
         result["매출총이익"] = gross_profit
         sales = result["실매출"]
         result["마진율"] = (gross_profit / sales * 100) if sales else 0
-
     return result
 
 
@@ -158,6 +155,71 @@ def make_excel_download(df_detail: pd.DataFrame, df_product: pd.DataFrame, df_da
         df_daily.to_excel(writer, index=False, sheet_name="일자별집계")
     output.seek(0)
     return output.getvalue()
+
+
+# -----------------------------
+# 표시용 포맷 함수 추가
+# -----------------------------
+KRW_COLUMNS = [
+    "unit_price",
+    "option_price",
+    "net_sales_amount",
+    "vat_amount",
+    "korea_cost_krw",
+    "supply_price_krw",
+    "retail_price_krw",
+    "retail_gross_profit_krw",
+    "total_korea_cost_krw",
+    "total_supply_price_krw",
+]
+
+HEADER_MAP = {
+    "sale_date": "판매일자",
+    "sale_datetime": "판매일시",
+    "order_channel": "주문채널",
+    "payment_status": "결제상태",
+    "order_no": "주문번호",
+    "product_code": "상품코드",
+    "product_code_raw": "원본상품코드",
+    "mst_product_name": "상품명",
+    "mst_size_name": "사이즈",
+    "category": "카테고리",
+    "qty": "수량",
+    "unit_price": "판매단가",
+    "option_price": "옵션금액",
+    "net_sales_amount": "실매출",
+    "vat_amount": "부가세",
+    "korea_cost_krw": "한국원가",
+    "supply_price_krw": "공급가",
+    "retail_price_krw": "소매가",
+    "retail_gross_profit_krw": "소매마진",
+    "total_korea_cost_krw": "원가합계",
+    "total_supply_price_krw": "공급가합계",
+    "source_file_name": "원본파일명",
+    "source_row_no": "원본행번호",
+    "마진율(%)": "마진율(%)",
+    "주문수": "주문수",
+}
+
+
+def format_krw(v) -> str:
+    try:
+        if pd.isna(v):
+            return ""
+        return f"₩{int(round(float(v))):,}"
+    except Exception:
+        return v
+
+
+def prettify_df(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    for col in KRW_COLUMNS:
+        if col in out.columns:
+            out[col] = out[col].apply(format_krw)
+
+    out = out.rename(columns={k: v for k, v in HEADER_MAP.items() if k in out.columns})
+    return out
 
 
 def render():
@@ -173,7 +235,6 @@ def render():
             return
 
         channels, statuses, categories, codes = load_filter_values(conn)
-
         st.caption("분석 뷰가 있으면 원가/공급가/마진까지 함께 조회합니다.")
 
         col1, col2, col3, col4 = st.columns(4)
@@ -213,13 +274,15 @@ def render():
 
         kpis = calc_kpis(df)
         metric_cols = st.columns(4)
-
         labels = list(kpis.keys())
         values = list(kpis.values())
+
         for i, (label, value) in enumerate(zip(labels, values)):
             c = metric_cols[i % 4]
             if label == "마진율":
                 c.metric(label, f"{value:.1f}%")
+            elif label in ["실매출", "부가세", "원가합계", "공급가합계", "매출총이익"]:
+                c.metric(label, f"₩{value:,.0f}")
             elif isinstance(value, float):
                 c.metric(label, f"{value:,.0f}")
             else:
@@ -253,14 +316,16 @@ def render():
                     "source_row_no",
                 ] if c in df.columns
             ]
-            st.dataframe(df[display_cols], use_container_width=True, height=520)
 
-        if "mst_product_name" in df.columns:
-            group_name_col = "mst_product_name"
-        elif "product_code" in df.columns:
-            group_name_col = "product_code"
-        else:
-            group_name_col = "product_code_raw"
+            df_detail = df[display_cols].copy()
+            st.dataframe(prettify_df(df_detail), use_container_width=True, height=520)
+
+            if "mst_product_name" in df.columns:
+                group_name_col = "mst_product_name"
+            elif "product_code" in df.columns:
+                group_name_col = "product_code"
+            else:
+                group_name_col = "product_code_raw"
 
         with tab2:
             agg_map = {
@@ -287,7 +352,7 @@ def render():
                     axis=1
                 )
 
-            st.dataframe(df_product, use_container_width=True, height=520)
+            st.dataframe(prettify_df(df_product), use_container_width=True, height=520)
 
         with tab3:
             agg_map_daily = {
@@ -315,13 +380,14 @@ def render():
                     axis=1
                 )
 
-            st.dataframe(df_daily, use_container_width=True, height=520)
+            st.dataframe(prettify_df(df_daily), use_container_width=True, height=520)
 
         excel_bytes = make_excel_download(
             df_detail=df,
             df_product=df_product if 'df_product' in locals() else pd.DataFrame(),
             df_daily=df_daily if 'df_daily' in locals() else pd.DataFrame(),
         )
+
         st.download_button(
             "조회결과 엑셀 다운로드",
             data=excel_bytes,
