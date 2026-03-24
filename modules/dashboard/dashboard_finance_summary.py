@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from typing import Optional, Tuple
+from typing import Tuple
 
 import pandas as pd
 import streamlit as st
@@ -38,6 +38,22 @@ def month_range(year: int, month: int) -> Tuple[str, str]:
 def prev_month(year: int, month: int) -> Tuple[int, int]:
     dt = pd.Timestamp(year=year, month=month, day=1) - pd.offsets.MonthBegin(1)
     return dt.year, dt.month
+
+
+def fmt_krw(value) -> str:
+    try:
+        return f"₩{float(value):,.0f}"
+    except Exception:
+        return "₩0"
+
+
+def fmt_delta_krw(curr, prev) -> str:
+    try:
+        diff = float(curr) - float(prev)
+        sign = "+" if diff > 0 else ""
+        return f"{sign}₩{diff:,.0f}"
+    except Exception:
+        return "₩0"
 
 
 def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
@@ -138,6 +154,7 @@ def get_month_summary(conn, year: int, month: int) -> dict:
     retail_gp = float(retail_df["gross_profit_krw"].sum()) if not retail_df.empty else 0
     wholesale_gp = float(wholesale_df["gross_profit_krw"].sum()) if not wholesale_df.empty else 0
     gross_profit = retail_gp + wholesale_gp
+
     if gross_profit == 0 and total_sales != 0:
         gross_profit = total_sales - total_cost
 
@@ -193,7 +210,7 @@ def get_recent_expenses(conn, limit: int = 10) -> pd.DataFrame:
             t.payment_method
         FROM expense_txn t
         LEFT JOIN expense_category_mst c
-          ON t.expense_category_id = c.id
+            ON t.expense_category_id = c.id
         ORDER BY t.expense_date DESC, t.id DESC
         LIMIT ?
     """
@@ -250,8 +267,8 @@ def get_top_products(conn, date_from: str, date_to: str, limit: int = 10) -> pd.
 
 def render():
     st.subheader("대시보드")
-
     conn = get_conn()
+
     try:
         today = pd.Timestamp.today()
         current_year = today.year
@@ -267,21 +284,19 @@ def render():
         py, pm = prev_month(year, month)
         previous = get_month_summary(conn, py, pm)
 
-        def delta(curr, prev):
-            return curr - prev
-
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("월 총매출", f"{current['total_sales']:,.0f}", f"{delta(current['total_sales'], previous['total_sales']):,.0f}")
-        c2.metric("월 지출", f"{current['expense_total']:,.0f}", f"{delta(current['expense_total'], previous['expense_total']):,.0f}")
-        c3.metric("월 매출총이익", f"{current['gross_profit']:,.0f}", f"{delta(current['gross_profit'], previous['gross_profit']):,.0f}")
-        c4.metric("월 영업이익", f"{current['operating_profit']:,.0f}", f"{delta(current['operating_profit'], previous['operating_profit']):,.0f}")
+        c1.metric("월 총매출", fmt_krw(current["total_sales"]), fmt_delta_krw(current["total_sales"], previous["total_sales"]))
+        c2.metric("월 지출", fmt_krw(current["expense_total"]), fmt_delta_krw(current["expense_total"], previous["expense_total"]))
+        c3.metric("월 매출총이익", fmt_krw(current["gross_profit"]), fmt_delta_krw(current["gross_profit"], previous["gross_profit"]))
+        c4.metric("월 영업이익", fmt_krw(current["operating_profit"]), fmt_delta_krw(current["operating_profit"], previous["operating_profit"]))
 
         c5, c6, c7, c8 = st.columns(4)
         op_margin = (current["operating_profit"] / current["total_sales"] * 100) if current["total_sales"] else 0
         sales_mix_retail = (current["retail_sales"] / current["total_sales"] * 100) if current["total_sales"] else 0
         sales_mix_wholesale = (current["wholesale_sales"] / current["total_sales"] * 100) if current["total_sales"] else 0
-        c5.metric("소매매출", f"{current['retail_sales']:,.0f}")
-        c6.metric("도매매출", f"{current['wholesale_sales']:,.0f}")
+
+        c5.metric("소매매출", fmt_krw(current["retail_sales"]))
+        c6.metric("도매매출", fmt_krw(current["wholesale_sales"]))
         c7.metric("영업이익률", f"{op_margin:.1f}%")
         c8.metric("소매/도매 비중", f"{sales_mix_retail:.0f}% / {sales_mix_wholesale:.0f}%")
 
@@ -291,15 +306,32 @@ def render():
 
         with tab1:
             trend_df = get_monthly_trend(conn, months=12)
-            st.dataframe(trend_df, use_container_width=True, hide_index=True, height=360)
             if not trend_df.empty:
+                show_trend_df = trend_df.copy()
+                money_cols = ["소매매출", "도매매출", "총매출", "매출총이익", "지출", "영업이익"]
+                for col in money_cols:
+                    show_trend_df[col] = show_trend_df[col].apply(fmt_krw)
+
+                st.dataframe(show_trend_df, use_container_width=True, hide_index=True, height=360)
                 st.line_chart(trend_df.set_index("월")[["총매출", "지출", "영업이익"]])
+            else:
+                st.info("월별 추이 데이터가 없습니다.")
 
         with tab2:
             recent_exp_df = get_recent_expenses(conn, limit=12)
             if recent_exp_df.empty:
                 st.info("최근 지출 데이터가 없습니다.")
             else:
+                recent_exp_df = recent_exp_df.rename(columns={
+                    "expense_date": "지출일자",
+                    "expense_group": "지출그룹",
+                    "expense_name": "지출항목",
+                    "amount": "금액",
+                    "vendor_name": "거래처",
+                    "payment_method": "결제수단",
+                })
+                recent_exp_df["금액"] = recent_exp_df["금액"].apply(fmt_krw)
+
                 st.dataframe(recent_exp_df, use_container_width=True, hide_index=True, height=360)
 
         with tab3:
@@ -307,13 +339,25 @@ def render():
             if top_df.empty:
                 st.info("상위 제품 데이터가 없습니다.")
             else:
-                st.dataframe(top_df, use_container_width=True, hide_index=True, height=360)
+                show_top_df = top_df.rename(columns={
+                    "product_code": "상품코드",
+                    "product_name": "상품명",
+                    "sales_amount": "매출액",
+                }).copy()
+                show_top_df["매출액"] = show_top_df["매출액"].apply(fmt_krw)
+
+                st.dataframe(show_top_df, use_container_width=True, hide_index=True, height=360)
+
                 chart_df = top_df.copy()
-                chart_df["라벨"] = chart_df.apply(
-                    lambda x: x["product_name"] if str(x["product_name"]).strip() else x["product_code"],
-                    axis=1,
+                chart_df["상품코드_표시"] = chart_df["product_code"].fillna("").astype(str).str.strip()
+                chart_df.loc[chart_df["상품코드_표시"] == "", "상품코드_표시"] = (
+                    chart_df.loc[chart_df["상품코드_표시"] == "", "product_name"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
                 )
-                st.bar_chart(chart_df.set_index("라벨")[["sales_amount"]])
+
+                st.bar_chart(chart_df.set_index("상품코드_표시")[["sales_amount"]])
 
     finally:
         conn.close()
