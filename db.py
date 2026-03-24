@@ -1,7 +1,7 @@
 import sqlite3
 import pandas as pd
 
-DB_PATH = r"C:\DAILYCIGAR_DB\cigar.db"
+DB_PATH = r"cigar.db"
 
 
 def get_conn():
