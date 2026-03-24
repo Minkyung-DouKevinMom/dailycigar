@@ -1,18 +1,21 @@
+import os
+import shutil
 import sqlite3
+from datetime import datetime
+
 import pandas as pd
 import streamlit as st
 
-from db import get_table_count, table_exists, get_all_import_batch
+from db import get_table_count, table_exists
 
 st.set_page_config(page_title="Daily Cigar DB", layout="wide")
+
+DB_PATH = "cigar.db"
 
 
 # =========================
 # DB 연결
 # =========================
-DB_PATH = "cigar.db"
-
-
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
@@ -27,64 +30,174 @@ def get_table_columns(conn, table_name: str) -> list[str]:
 
 
 def pick_col(cols: list[str], candidates: list[str]):
+    col_set = set(cols)
     for c in candidates:
-        if c in cols:
+        if c in col_set:
             return c
     return None
 
 
+def has_table(conn, table_name: str) -> bool:
+    try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        )
+        return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
 # =========================
-# 매출 로딩
+# DB 다운로드
 # =========================
-def load_sales_from_table(conn, table_name: str, sales_type_label: str) -> pd.DataFrame:
-    cols = get_table_columns(conn, table_name)
-    if not cols:
-        return pd.DataFrame(columns=["dt", "sales_amount", "margin_amount", "customer_name", "sales_type"])
+def render_db_download_section():
+    st.subheader("DB 다운로드")
 
-    date_col = pick_col(cols, ["sale_date", "sales_date", "order_date", "created_at", "date"])
-    amount_col = pick_col(cols, ["total_amount", "final_amount", "sales_amount", "amount", "total_price"])
-    margin_col = pick_col(cols, ["gross_profit", "margin_amount", "profit", "expected_margin"])
-    name_col = pick_col(cols, ["customer_name", "partner_name", "client_name", "store_name", "partner"])
-
-    if not date_col or not amount_col:
-        return pd.DataFrame(columns=["dt", "sales_amount", "margin_amount", "customer_name", "sales_type"])
-
-    margin_expr = f"{margin_col} as margin_amount" if margin_col else "0 as margin_amount"
-    name_expr = f"{name_col} as customer_name" if name_col else "'' as customer_name"
-
-    query = f"""
-        SELECT
-            {date_col} as dt,
-            {amount_col} as sales_amount,
-            {margin_expr},
-            {name_expr}
-        FROM {table_name}
-    """
+    if not os.path.exists(DB_PATH):
+        st.error(f"DB 파일을 찾을 수 없습니다: {DB_PATH}")
+        return
 
     try:
-        df = pd.read_sql_query(query, conn)
-        if df.empty:
-            return pd.DataFrame(columns=["dt", "sales_amount", "margin_amount", "customer_name", "sales_type"])
+        with open(DB_PATH, "rb") as f:
+            db_bytes = f.read()
 
-        df["sales_type"] = sales_type_label
-        df["dt"] = pd.to_datetime(df["dt"], errors="coerce")
-        df["sales_amount"] = pd.to_numeric(df["sales_amount"], errors="coerce").fillna(0)
-        df["margin_amount"] = pd.to_numeric(df["margin_amount"], errors="coerce").fillna(0)
-        df["customer_name"] = df["customer_name"].fillna("")
-        df = df.dropna(subset=["dt"])
-        return df
+        st.download_button(
+            label="현재 DB 다운로드",
+            data=db_bytes,
+            file_name="cigar.db",
+            mime="application/octet-stream",
+            use_container_width=True,
+        )
+        st.caption("현재 사용 중인 cigar.db 파일을 바로 다운로드합니다.")
+    except Exception as e:
+        st.error(f"DB 다운로드 파일 준비 중 오류: {e}")
+
+
+# =========================
+# 매출 로딩 (대시보드와 동일 기준)
+# =========================
+def view_exists(conn, view_name: str) -> bool:
+    try:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='view' AND name=?",
+            (view_name,),
+        )
+        return cur.fetchone() is not None
     except Exception:
+        return False
+
+
+def month_range(year: int, month: int) -> tuple[str, str]:
+    start = pd.Timestamp(year=year, month=month, day=1)
+    end = start + pd.offsets.MonthEnd(1)
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
+def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
+    if view_exists(conn, "v_retail_sales_enriched"):
+        sql = """
+            SELECT
+                sale_date,
+                COALESCE(net_sales_amount, 0) AS sales_amount,
+                COALESCE(retail_gross_profit_krw, 0) AS margin_amount,
+                '' AS customer_name
+            FROM v_retail_sales_enriched
+            WHERE sale_date BETWEEN ? AND ?
+        """
+        df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+
+    elif has_table(conn, "retail_sales"):
+        cols = get_table_columns(conn, "retail_sales")
+        name_col = pick_col(
+            cols,
+            ["customer_name", "customer", "customer_nm", "buyer_name", "store_name"]
+        )
+        name_expr = f"COALESCE({name_col}, '')" if name_col else "''"
+
+        sql = f"""
+            SELECT
+                sale_date,
+                COALESCE(net_sales_amount, 0) AS sales_amount,
+                0 AS margin_amount,
+                {name_expr} AS customer_name
+            FROM retail_sales
+            WHERE sale_date BETWEEN ? AND ?
+        """
+        df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+
+    else:
         return pd.DataFrame(columns=["dt", "sales_amount", "margin_amount", "customer_name", "sales_type"])
 
-
-def load_all_sales(conn) -> pd.DataFrame:
-    retail_df = load_sales_from_table(conn, "retail_sales", "소매")
-    wholesale_df = load_sales_from_table(conn, "wholesale_sales", "도매")
-
-    if retail_df.empty and wholesale_df.empty:
+    if df.empty:
         return pd.DataFrame(columns=["dt", "sales_amount", "margin_amount", "customer_name", "sales_type"])
 
-    return pd.concat([retail_df, wholesale_df], ignore_index=True)
+    df["dt"] = pd.to_datetime(df["sale_date"], errors="coerce")
+    df["sales_amount"] = pd.to_numeric(df["sales_amount"], errors="coerce").fillna(0)
+    df["margin_amount"] = pd.to_numeric(df["margin_amount"], errors="coerce").fillna(0)
+    df["customer_name"] = df["customer_name"].fillna("")
+    df["sales_type"] = "소매"
+    df = df.dropna(subset=["dt"])
+    df = df[df["sales_amount"] != 0].copy()
+
+    return df[["dt", "sales_amount", "margin_amount", "customer_name", "sales_type"]]
+
+
+def get_wholesale_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
+    if view_exists(conn, "v_wholesale_sales"):
+        sql = """
+            SELECT
+                sale_date,
+                COALESCE(sales_amount, 0) AS sales_amount,
+                COALESCE(profit_amount, 0) AS margin_amount,
+                COALESCE(partner_name, '') AS customer_name
+            FROM v_wholesale_sales
+            WHERE sale_date BETWEEN ? AND ?
+        """
+        df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+    elif has_table(conn, "wholesale_sales"):
+        sql = """
+            SELECT
+                sale_date,
+                COALESCE(sales_amount, 0) AS sales_amount,
+                COALESCE(profit_amount, 0) AS margin_amount,
+                COALESCE(partner_name, '') AS customer_name
+            FROM wholesale_sales
+            WHERE sale_date BETWEEN ? AND ?
+        """
+        df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+    else:
+        return pd.DataFrame(columns=["dt", "sales_amount", "margin_amount", "customer_name", "sales_type"])
+
+    if df.empty:
+        return pd.DataFrame(columns=["dt", "sales_amount", "margin_amount", "customer_name", "sales_type"])
+
+    df["dt"] = pd.to_datetime(df["sale_date"], errors="coerce")
+    df["sales_amount"] = pd.to_numeric(df["sales_amount"], errors="coerce").fillna(0)
+    df["margin_amount"] = pd.to_numeric(df["margin_amount"], errors="coerce").fillna(0)
+    df["customer_name"] = df["customer_name"].fillna("")
+    df["sales_type"] = "도매"
+    df = df.dropna(subset=["dt"])
+    df = df[df["sales_amount"] != 0].copy()
+
+    return df[["dt", "sales_amount", "margin_amount", "customer_name", "sales_type"]]
+
+
+def load_period_sales(conn, date_from: str, date_to: str) -> pd.DataFrame:
+    frames = []
+
+    retail_df = get_retail_month_data(conn, date_from, date_to)
+    wholesale_df = get_wholesale_month_data(conn, date_from, date_to)
+
+    if not retail_df.empty:
+        frames.append(retail_df)
+    if not wholesale_df.empty:
+        frames.append(wholesale_df)
+
+    if not frames:
+        return pd.DataFrame(columns=["dt", "sales_amount", "margin_amount", "customer_name", "sales_type"])
+
+    return pd.concat(frames, ignore_index=True)
 
 
 # =========================
@@ -116,11 +229,11 @@ def calc_insights(df: pd.DataFrame) -> list[str]:
 
     if this_sales > 0:
         this_margin = this_month["margin_amount"].sum()
-        margin_rate = this_margin / this_sales * 100
+        margin_rate = (this_margin / this_sales * 100) if this_sales else 0
         messages.append(f"이번달 마진율은 {margin_rate:.1f}%입니다.")
 
         wholesale_sales = this_month.loc[this_month["sales_type"] == "도매", "sales_amount"].sum()
-        wholesale_ratio = wholesale_sales / this_sales * 100
+        wholesale_ratio = (wholesale_sales / this_sales * 100) if this_sales else 0
         messages.append(f"이번달 도매 비중은 {wholesale_ratio:.1f}%입니다.")
 
     return messages[:3]
@@ -132,14 +245,28 @@ def calc_insights(df: pd.DataFrame) -> list[str]:
 st.title("Daily Cigar 운영 관리 시스템")
 
 conn = get_conn()
-sales_df = load_all_sales(conn)
 
 today = pd.Timestamp.today().normalize()
 month_start = today.replace(day=1)
 last_30_start = today - pd.Timedelta(days=29)
 
-month_df = sales_df[(sales_df["dt"] >= month_start) & (sales_df["dt"] <= today)]
-last_30_df = sales_df[(sales_df["dt"] >= last_30_start) & (sales_df["dt"] <= today)]
+month_df = load_period_sales(
+    conn,
+    month_start.strftime("%Y-%m-%d"),
+    today.strftime("%Y-%m-%d"),
+)
+
+last_30_df = load_period_sales(
+    conn,
+    last_30_start.strftime("%Y-%m-%d"),
+    today.strftime("%Y-%m-%d"),
+)
+
+sales_df = load_period_sales(
+    conn,
+    (today - pd.Timedelta(days=90)).strftime("%Y-%m-%d"),
+    today.strftime("%Y-%m-%d"),
+)
 
 month_sales = month_df["sales_amount"].sum() if not month_df.empty else 0
 month_margin = month_df["margin_amount"].sum() if not month_df.empty else 0
@@ -164,12 +291,11 @@ with left:
         st.info("표시할 매출 데이터가 없습니다.")
     else:
         daily = (
-            last_30_df.groupby(last_30_df["dt"].dt.date)["sales_amount"]
+            last_30_df.assign(date=last_30_df["dt"].dt.normalize())
+            .groupby("date", as_index=True)[["sales_amount", "margin_amount"]]
             .sum()
-            .reset_index()
+            .sort_index()
         )
-        daily.columns = ["date", "sales_amount"]
-        daily = daily.set_index("date")
         st.line_chart(daily, use_container_width=True)
 
 with right:
@@ -194,36 +320,27 @@ st.subheader("최근 판매 내역")
 if sales_df.empty:
     st.info("최근 판매 데이터가 없습니다.")
 else:
-    recent_df = sales_df.sort_values("dt", ascending=False).head(10).copy()
+    recent_df = sales_df.sort_values("dt", ascending=False).head(15).copy()
     recent_df["dt"] = recent_df["dt"].dt.strftime("%Y-%m-%d")
-    recent_df = recent_df.rename(columns={
-        "dt": "일자",
-        "sales_type": "구분",
-        "customer_name": "거래처/고객",
-        "sales_amount": "매출액",
-        "margin_amount": "마진"
-    })
+    recent_df = recent_df.rename(
+        columns={
+            "dt": "일자",
+            "sales_type": "구분",
+            "customer_name": "거래처/고객",
+            "sales_amount": "매출액",
+            "margin_amount": "마진",
+        }
+    )
     st.dataframe(
         recent_df[["일자", "구분", "거래처/고객", "매출액", "마진"]],
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
     )
 
 st.divider()
 
-# 최근 Import Batch
-st.subheader("최근 Import Batch")
-if table_exists("import_batch"):
-    try:
-        batch_df = get_all_import_batch()
-        if batch_df is not None and not batch_df.empty:
-            st.dataframe(batch_df.head(20), use_container_width=True, hide_index=True)
-        else:
-            st.info("import_batch 데이터가 없습니다.")
-    except Exception as e:
-        st.warning(f"import_batch 조회 중 오류: {e}")
-else:
-    st.info("import_batch 테이블이 없습니다.")
+# DB 다운로드
+render_db_download_section()
 
 st.divider()
 
@@ -236,18 +353,45 @@ with st.expander("DB 상태 보기"):
         "tax_rule",
         "export_price_item",
         "blend_profile_mst",
+        "retail_sales",
+        "wholesale_sales",
     ]
 
-    cols = st.columns(3)
+    cols = st.columns(4)
     for idx, table_name in enumerate(tables):
-        with cols[idx % 3]:
+        with cols[idx % 4]:
             exists = table_exists(table_name)
             count = get_table_count(table_name) if exists else 0
             st.metric(
                 label=table_name,
                 value=count,
-                delta="OK" if exists else "없음"
+                delta="OK" if exists else "없음",
             )
+
+with st.expander("매출 로딩 디버그"):
+    try:
+        if has_table(conn, "retail_sales"):
+            retail_cols = get_table_columns(conn, "retail_sales")
+            st.write("retail_sales 컬럼:", retail_cols)
+        else:
+            st.write("retail_sales 테이블 없음")
+
+        if has_table(conn, "wholesale_sales"):
+            wholesale_cols = get_table_columns(conn, "wholesale_sales")
+            st.write("wholesale_sales 컬럼:", wholesale_cols)
+        else:
+            st.write("wholesale_sales 테이블 없음")
+
+        st.write("전체 로딩 건수:", len(sales_df))
+        if not sales_df.empty:
+            st.write("구분별 건수")
+            st.dataframe(
+                sales_df.groupby("sales_type").size().reset_index(name="건수"),
+                use_container_width=True,
+                hide_index=True,
+            )
+    except Exception as e:
+        st.warning(f"디버그 정보 조회 중 오류: {e}")
 
 st.caption("왼쪽 사이드바에서 상세 페이지를 선택하세요.")
 

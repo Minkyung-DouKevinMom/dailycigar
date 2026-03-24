@@ -17,15 +17,19 @@ def render():
     # 데이터 조회
     # -----------------------------
     df = get_all_product_mst_for_edit()
+    if "use_yn" not in df.columns:
+        df["use_yn"] = "Y"
+    df["use_yn"] = df["use_yn"].fillna("Y").astype(str).str.upper()
+    df.loc[~df["use_yn"].isin(["Y", "N"]), "use_yn"] = "Y"
 
     if df.empty:
         st.info("product_mst 데이터가 없습니다.")
         df = pd.DataFrame(columns=[
-            "id", "product_name", "size_name", "product_code",
-            "length_mm", "ring_gauge", "smoking_time_text",
-            "unit_weight_g", "box_width_cm", "box_depth_cm", "box_height_cm",
-            "created_at", "updated_at"
-        ])
+    "id", "product_name", "size_name", "product_code", "use_yn",
+    "length_mm", "ring_gauge", "smoking_time_text",
+    "unit_weight_g", "box_width_cm", "box_depth_cm", "box_height_cm",
+    "created_at", "updated_at"
+    ])
 
     # 검색
     keyword = st.text_input("검색", placeholder="상품명 / 사이즈 / 코드")
@@ -46,21 +50,22 @@ def render():
 
     # created_at, updated_at은 보기만 하고 수정 제외
     display_columns = [
-        "delete_yn",
-        "id",
-        "product_name",
-        "size_name",
-        "product_code",
-        "length_mm",
-        "ring_gauge",
-        "smoking_time_text",
-        "unit_weight_g",
-        "box_width_cm",
-        "box_depth_cm",
-        "box_height_cm",
-        "created_at",
-        "updated_at",
-    ]
+    "delete_yn",
+    "id",
+    "product_name",
+    "size_name",
+    "product_code",
+    "use_yn",
+    "length_mm",
+    "ring_gauge",
+    "smoking_time_text",
+    "unit_weight_g",
+    "box_width_cm",
+    "box_depth_cm",
+    "box_height_cm",
+    "created_at",
+    "updated_at",
+]
 
     edit_df = edit_df[display_columns]
 
@@ -86,6 +91,7 @@ def render():
             "box_height_cm": st.column_config.NumberColumn("박스높이(cm)", format="%.2f"),
             "created_at": st.column_config.TextColumn("생성일", disabled=True),
             "updated_at": st.column_config.TextColumn("수정일", disabled=True),
+            "use_yn": st.column_config.SelectboxColumn("사용여부", options=["Y", "N"], required=True,),
         },
         disabled=["id", "created_at", "updated_at"],
         key="product_mst_editor",
@@ -150,6 +156,9 @@ def render():
                 box_width_cm = to_float_or_none(row.get("box_width_cm"))
                 box_depth_cm = to_float_or_none(row.get("box_depth_cm"))
                 box_height_cm = to_float_or_none(row.get("box_height_cm"))
+                use_yn = str(row.get("use_yn") or "Y").strip().upper()
+                if use_yn not in ["Y", "N"]:
+                    use_yn = "Y"
 
                 # 아무 값도 없는 신규 빈행은 무시
                 is_blank_new_row = (
@@ -164,6 +173,7 @@ def render():
                     and box_width_cm is None
                     and box_depth_cm is None
                     and box_height_cm is None
+                    and use_yn in ["Y", "", None]
                 )
                 if is_blank_new_row:
                     continue
@@ -186,6 +196,7 @@ def render():
                         product_name=product_name,
                         size_name=size_name,
                         product_code=product_code,
+                        use_yn=use_yn,
                         length_mm=length_mm,
                         ring_gauge=ring_gauge,
                         smoking_time_text=smoking_time_text,
@@ -201,6 +212,7 @@ def render():
                         product_name=product_name,
                         size_name=size_name,
                         product_code=product_code,
+                        use_yn=use_yn,
                         length_mm=length_mm,
                         ring_gauge=ring_gauge,
                         smoking_time_text=smoking_time_text,

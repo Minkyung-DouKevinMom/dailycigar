@@ -195,7 +195,7 @@ def upsert_row(conn: sqlite3.Connection, row_id: Optional[int], payload: dict):
 
 def render():
     init_session_state()
-    st.subheader("논시가 상품 마스터 관리")
+    st.subheader("시가 외 상품 마스터 관리")
 
     conn = get_conn()
     try:

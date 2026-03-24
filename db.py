@@ -536,22 +536,23 @@ def delete_blend_profile(row_id):
 
 def get_all_product_mst_for_edit():
     sql = """
-    SELECT
-        id,
-        product_name,
-        size_name,
-        product_code,
-        length_mm,
-        ring_gauge,
-        smoking_time_text,
-        unit_weight_g,
-        box_width_cm,
-        box_depth_cm,
-        box_height_cm,
-        created_at,
-        updated_at
-    FROM product_mst
-    ORDER BY product_name, size_name
+        SELECT
+            id,
+            product_name,
+            size_name,
+            product_code,
+            COALESCE(use_yn, 'Y') AS use_yn,
+            length_mm,
+            ring_gauge,
+            smoking_time_text,
+            unit_weight_g,
+            box_width_cm,
+            box_depth_cm,
+            box_height_cm,
+            created_at,
+            updated_at
+        FROM product_mst
+        ORDER BY product_name, size_name, product_code
     """
     return run_query(sql)
 
@@ -561,6 +562,7 @@ def update_product_mst_by_id(
     product_name,
     size_name,
     product_code,
+    use_yn,
     length_mm,
     ring_gauge,
     smoking_time_text,
@@ -569,41 +571,50 @@ def update_product_mst_by_id(
     box_depth_cm,
     box_height_cm,
 ):
-    sql = """
-    UPDATE product_mst
-    SET
-        product_name = ?,
-        size_name = ?,
-        product_code = ?,
-        length_mm = ?,
-        ring_gauge = ?,
-        smoking_time_text = ?,
-        unit_weight_g = ?,
-        box_width_cm = ?,
-        box_depth_cm = ?,
-        box_height_cm = ?,
-        updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-    """
-    execute(sql, [
-        product_name,
-        size_name,
-        product_code,
-        length_mm,
-        ring_gauge,
-        smoking_time_text,
-        unit_weight_g,
-        box_width_cm,
-        box_depth_cm,
-        box_height_cm,
-        row_id,
-    ])
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE product_mst
+        SET
+            product_name = ?,
+            size_name = ?,
+            product_code = ?,
+            use_yn = ?,
+            length_mm = ?,
+            ring_gauge = ?,
+            smoking_time_text = ?,
+            unit_weight_g = ?,
+            box_width_cm = ?,
+            box_depth_cm = ?,
+            box_height_cm = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (
+            product_name,
+            size_name,
+            product_code,
+            use_yn,
+            length_mm,
+            ring_gauge,
+            smoking_time_text,
+            unit_weight_g,
+            box_width_cm,
+            box_depth_cm,
+            box_height_cm,
+            row_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
 
 
 def insert_product_mst(
     product_name,
     size_name,
     product_code,
+    use_yn,
     length_mm,
     ring_gauge,
     smoking_time_text,
@@ -612,32 +623,40 @@ def insert_product_mst(
     box_depth_cm,
     box_height_cm,
 ):
-    sql = """
-    INSERT INTO product_mst (
-        product_name,
-        size_name,
-        product_code,
-        length_mm,
-        ring_gauge,
-        smoking_time_text,
-        unit_weight_g,
-        box_width_cm,
-        box_depth_cm,
-        box_height_cm
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """
-    execute(sql, [
-        product_name,
-        size_name,
-        product_code,
-        length_mm,
-        ring_gauge,
-        smoking_time_text,
-        unit_weight_g,
-        box_width_cm,
-        box_depth_cm,
-        box_height_cm,
-    ])
+    conn = get_conn()  
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO product_mst (
+            product_name,
+            size_name,
+            product_code,
+            use_yn,
+            length_mm,
+            ring_gauge,
+            smoking_time_text,
+            unit_weight_g,
+            box_width_cm,
+            box_depth_cm,
+            box_height_cm
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            product_name,
+            size_name,
+            product_code,
+            use_yn,
+            length_mm,
+            ring_gauge,
+            smoking_time_text,
+            unit_weight_g,
+            box_width_cm,
+            box_depth_cm,
+            box_height_cm,
+        ),
+    )
+    conn.commit()
+    conn.close()
 
 
 def delete_product_mst_by_id(row_id):
@@ -699,3 +718,117 @@ def get_price_analysis_view(batch_id=None, keyword=None):
     """
 
     return run_query(sql, params)
+
+def get_import_batch_detail(batch_id: int) -> pd.DataFrame:
+    sql = """
+        SELECT
+            id,
+            version_name,
+            import_date,
+            supplier_name,
+            usd_to_krw_rate,
+            php_to_krw_rate,
+            local_markup_rate,
+            notes,
+            created_at
+        FROM import_batch
+        WHERE id = ?
+    """
+    return run_query(sql, [batch_id])
+
+
+def create_import_batch(
+    version_name,
+    import_date=None,
+    supplier_name=None,
+    usd_to_krw_rate=None,
+    php_to_krw_rate=None,
+    local_markup_rate=None,
+    notes=None,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO import_batch (
+            version_name,
+            import_date,
+            supplier_name,
+            usd_to_krw_rate,
+            php_to_krw_rate,
+            local_markup_rate,
+            notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            version_name,
+            import_date,
+            supplier_name,
+            usd_to_krw_rate,
+            php_to_krw_rate,
+            local_markup_rate,
+            notes,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_import_batch(
+    batch_id,
+    version_name,
+    import_date=None,
+    supplier_name=None,
+    usd_to_krw_rate=None,
+    php_to_krw_rate=None,
+    local_markup_rate=None,
+    notes=None,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE import_batch
+        SET
+            version_name = ?,
+            import_date = ?,
+            supplier_name = ?,
+            usd_to_krw_rate = ?,
+            php_to_krw_rate = ?,
+            local_markup_rate = ?,
+            notes = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (
+            version_name,
+            import_date,
+            supplier_name,
+            usd_to_krw_rate,
+            php_to_krw_rate,
+            local_markup_rate,
+            notes,
+            batch_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_import_batch(batch_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # import_item이 연결되어 있으면 먼저 확인
+    cnt = cur.execute(
+        "SELECT COUNT(*) FROM import_item WHERE batch_id = ?",
+        (batch_id,),
+    ).fetchone()[0]
+
+    if cnt > 0:
+        conn.close()
+        raise ValueError("해당 수입 버전에 연결된 import_item이 있어 삭제할 수 없습니다.")
+
+    cur.execute("DELETE FROM import_batch WHERE id = ?", (batch_id,))
+    conn.commit()
+    conn.close()

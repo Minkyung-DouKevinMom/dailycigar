@@ -160,6 +160,8 @@ def load_cigar_products_for_wholesale(conn) -> pd.DataFrame:
     product_cols = get_table_columns(conn, "product_mst")
     code_col = find_existing_column(product_cols, ["product_code", "code", "item_code"])
     name_col = find_existing_column(product_cols, ["product_name", "name"])
+    use_col = find_existing_column(product_cols, ["use_yn", "is_active", "active_yn", "use_flag"])
+
     if not name_col:
         return pd.DataFrame(columns=["id", "product_code", "product_name", "retail_price_krw", "supply_price_krw", "korea_cost_krw"])
 
@@ -168,10 +170,16 @@ def load_cigar_products_for_wholesale(conn) -> pd.DataFrame:
         f"{code_col} AS product_code" if code_col else "'' AS product_code",
         f"{name_col} AS product_name",
     ]
-    product_df = pd.read_sql(
-        f"SELECT {', '.join(select_parts)} FROM product_mst ORDER BY {name_col}",
-        conn,
-    )
+
+    sql = f"SELECT {', '.join(select_parts)} FROM product_mst"
+    if use_col:
+        if use_col == "use_yn":
+            sql += f" WHERE COALESCE({use_col}, 'Y') = 'Y'"
+        else:
+            sql += f" WHERE COALESCE({use_col}, 'Y') IN ('Y', '1', 1, 'TRUE', 'true')"
+    sql += f" ORDER BY {name_col}"
+
+    product_df = pd.read_sql(sql, conn)
     product_df["retail_price_krw"] = 0.0
     product_df["supply_price_krw"] = 0.0
     product_df["korea_cost_krw"] = 0.0
@@ -238,9 +246,12 @@ def load_cigar_products_for_wholesale(conn) -> pd.DataFrame:
         suffixes=("", "_imp"),
     )
 
-    merged["retail_price_krw"] = merged["retail_price_krw_imp"].combine_first(merged["retail_price_krw"]) if "retail_price_krw_imp" in merged.columns else merged["retail_price_krw"]
-    merged["supply_price_krw"] = merged["supply_price_krw_imp"].combine_first(merged["supply_price_krw"]) if "supply_price_krw_imp" in merged.columns else merged["supply_price_krw"]
-    merged["korea_cost_krw"] = merged["korea_cost_krw_imp"].combine_first(merged["korea_cost_krw"]) if "korea_cost_krw_imp" in merged.columns else merged["korea_cost_krw"]
+    if "retail_price_krw_imp" in merged.columns:
+        merged["retail_price_krw"] = merged["retail_price_krw_imp"].combine_first(merged["retail_price_krw"])
+    if "supply_price_krw_imp" in merged.columns:
+        merged["supply_price_krw"] = merged["supply_price_krw_imp"].combine_first(merged["supply_price_krw"])
+    if "korea_cost_krw_imp" in merged.columns:
+        merged["korea_cost_krw"] = merged["korea_cost_krw_imp"].combine_first(merged["korea_cost_krw"])
 
     keep_cols = ["id", "product_code", "product_name", "retail_price_krw", "supply_price_krw", "korea_cost_krw"]
     result = merged[[c for c in keep_cols if c in merged.columns]].copy()
