@@ -90,13 +90,20 @@ def load_one(conn: sqlite3.Connection, row_id: int) -> Optional[dict]:
     return df.iloc[0].to_dict()
 
 
-def safe_float(v) -> float:
+def safe_int(v) -> int:
     if v in (None, ""):
-        return 0.0
+        return 0
     try:
-        return float(v)
+        return int(float(v))
     except Exception:
-        return 0.0
+        return 0
+
+
+def format_krw(v) -> str:
+    try:
+        return f"{int(float(v or 0)):,}"
+    except Exception:
+        return "0"
 
 
 def reset_form():
@@ -116,8 +123,18 @@ def upsert_row(conn: sqlite3.Connection, row_id: Optional[int], payload: dict):
     if row_id is None:
         sql = f"""
             INSERT INTO {TABLE_NAME} (
-                product_code, product_name, product_category, brand_name, unit_type, spec,
-                purchase_price, wholesale_price, retail_price, is_active, notes, updated_at
+                product_code,
+                product_name,
+                product_category,
+                brand_name,
+                unit_type,
+                spec,
+                purchase_price,
+                wholesale_price,
+                retail_price,
+                is_active,
+                notes,
+                updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """
@@ -140,19 +157,20 @@ def upsert_row(conn: sqlite3.Connection, row_id: Optional[int], payload: dict):
     else:
         sql = f"""
             UPDATE {TABLE_NAME}
-               SET product_code = ?,
-                   product_name = ?,
-                   product_category = ?,
-                   brand_name = ?,
-                   unit_type = ?,
-                   spec = ?,
-                   purchase_price = ?,
-                   wholesale_price = ?,
-                   retail_price = ?,
-                   is_active = ?,
-                   notes = ?,
-                   updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?
+            SET
+                product_code = ?,
+                product_name = ?,
+                product_category = ?,
+                brand_name = ?,
+                unit_type = ?,
+                spec = ?,
+                purchase_price = ?,
+                wholesale_price = ?,
+                retail_price = ?,
+                is_active = ?,
+                notes = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
         """
         cur.execute(
             sql,
@@ -214,10 +232,41 @@ def render():
             else:
                 display_df = df.copy()
                 display_df["사용"] = display_df["is_active"].apply(lambda x: "Y" if int(x or 0) == 1 else "N")
+
+                # 금액 컬럼 정수/콤마 처리
+                for col in ["purchase_price", "wholesale_price", "retail_price"]:
+                    display_df[col] = display_df[col].apply(format_krw)
+
+                # 한글 헤더명 변경
+                display_df = display_df.rename(
+                    columns={
+                        "id": "ID",
+                        "product_code": "상품코드",
+                        "product_name": "상품명",
+                        "product_category": "카테고리",
+                        "brand_name": "브랜드명",
+                        "unit_type": "단위",
+                        "purchase_price": "매입가(₩)",
+                        "wholesale_price": "도매가(₩)",
+                        "retail_price": "소매가(₩)",
+                        "updated_at": "수정일시",
+                    }
+                )
+
                 display_cols = [
-                    "id", "product_code", "product_name", "product_category", "brand_name",
-                    "unit_type", "purchase_price", "wholesale_price", "retail_price", "사용", "updated_at"
+                    "ID",
+                    "상품코드",
+                    "상품명",
+                    "카테고리",
+                    "브랜드명",
+                    "단위",
+                    "매입가(₩)",
+                    "도매가(₩)",
+                    "소매가(₩)",
+                    "사용",
+                    "수정일시",
                 ]
+
                 st.dataframe(
                     display_df[display_cols],
                     use_container_width=True,
@@ -229,6 +278,7 @@ def render():
                     f"{int(r['id'])} | {r['product_code'] or '-'} | {r['product_name']}"
                     for _, r in df.iterrows()
                 ]
+
                 selected_label = st.selectbox(
                     "수정/삭제할 상품 선택",
                     options=[""] + row_options,
@@ -279,9 +329,11 @@ def render():
                     unit_type = st.selectbox(
                         "단위",
                         options=["EA", "SET", "BOX", "PACK", "기타"],
-                        index=(["EA", "SET", "BOX", "PACK", "기타"].index(selected.get("unit_type", "EA"))
-                               if selected and selected.get("unit_type", "EA") in ["EA", "SET", "BOX", "PACK", "기타"]
-                               else 0),
+                        index=(
+                            ["EA", "SET", "BOX", "PACK", "기타"].index(selected.get("unit_type", "EA"))
+                            if selected and selected.get("unit_type", "EA") in ["EA", "SET", "BOX", "PACK", "기타"]
+                            else 0
+                        ),
                     )
                 with col_b:
                     is_active = st.selectbox(
@@ -300,24 +352,27 @@ def render():
                 p1, p2, p3 = st.columns(3)
                 with p1:
                     purchase_price = st.number_input(
-                        "매입가",
-                        min_value=0.0,
-                        value=float(selected.get("purchase_price", 0) or 0) if selected else 0.0,
-                        step=100.0,
+                        "₩ 매입가",
+                        min_value=0,
+                        value=int(selected.get("purchase_price", 0) or 0) if selected else 0,
+                        step=100,
+                        format="%d",
                     )
                 with p2:
                     wholesale_price = st.number_input(
-                        "도매가",
-                        min_value=0.0,
-                        value=float(selected.get("wholesale_price", 0) or 0) if selected else 0.0,
-                        step=100.0,
+                        "₩ 도매가",
+                        min_value=0,
+                        value=int(selected.get("wholesale_price", 0) or 0) if selected else 0,
+                        step=100,
+                        format="%d",
                     )
                 with p3:
                     retail_price = st.number_input(
-                        "소매가",
-                        min_value=0.0,
-                        value=float(selected.get("retail_price", 0) or 0) if selected else 0.0,
-                        step=100.0,
+                        "₩ 소매가",
+                        min_value=0,
+                        value=int(selected.get("retail_price", 0) or 0) if selected else 0,
+                        step=100,
+                        format="%d",
                     )
 
                 notes = st.text_area(
@@ -333,9 +388,9 @@ def render():
                     "brand_name": brand_name.strip(),
                     "unit_type": unit_type.strip(),
                     "spec": spec.strip(),
-                    "purchase_price": safe_float(purchase_price),
-                    "wholesale_price": safe_float(wholesale_price),
-                    "retail_price": safe_float(retail_price),
+                    "purchase_price": safe_int(purchase_price),
+                    "wholesale_price": safe_int(wholesale_price),
+                    "retail_price": safe_int(retail_price),
                     "is_active": int(is_active),
                     "notes": notes.strip(),
                 }
@@ -343,38 +398,42 @@ def render():
                 save_col, reset_col, delete_col = st.columns(3)
                 save_clicked = save_col.form_submit_button("저장", use_container_width=True)
                 reset_clicked = reset_col.form_submit_button("초기화", use_container_width=True)
-                delete_clicked = delete_col.form_submit_button("삭제", use_container_width=True, disabled=(selected is None))
+                delete_clicked = delete_col.form_submit_button(
+                    "삭제",
+                    use_container_width=True,
+                    disabled=(selected is None),
+                )
 
-            if save_clicked:
-                if not payload["product_code"]:
-                    st.error("상품코드는 필수입니다.")
-                elif not payload["product_name"]:
-                    st.error("상품명은 필수입니다.")
-                elif not payload["product_category"]:
-                    st.error("상품카테고리는 필수입니다.")
-                else:
-                    try:
-                        upsert_row(conn, st.session_state.ncp_selected_id, payload)
-                        st.success("저장되었습니다.")
-                        reset_form()
-                        st.rerun()
-                    except sqlite3.IntegrityError as e:
-                        st.error(f"저장 중 제약조건 오류: {e}")
-                    except Exception as e:
-                        st.error(f"저장 중 오류 발생: {e}")
+                if save_clicked:
+                    if not payload["product_code"]:
+                        st.error("상품코드는 필수입니다.")
+                    elif not payload["product_name"]:
+                        st.error("상품명은 필수입니다.")
+                    elif not payload["product_category"]:
+                        st.error("상품카테고리는 필수입니다.")
+                    else:
+                        try:
+                            upsert_row(conn, st.session_state.ncp_selected_id, payload)
+                            st.success("저장되었습니다.")
+                            reset_form()
+                            st.rerun()
+                        except sqlite3.IntegrityError as e:
+                            st.error(f"저장 중 제약조건 오류: {e}")
+                        except Exception as e:
+                            st.error(f"저장 중 오류 발생: {e}")
 
-            if reset_clicked:
-                reset_form()
-                st.rerun()
-
-            if delete_clicked and selected is not None:
-                try:
-                    delete_row(conn, st.session_state.ncp_selected_id)
-                    st.success("삭제되었습니다.")
+                if reset_clicked:
                     reset_form()
                     st.rerun()
-                except Exception as e:
-                    st.error(f"삭제 중 오류 발생: {e}")
+
+                if delete_clicked and selected is not None:
+                    try:
+                        delete_row(conn, st.session_state.ncp_selected_id)
+                        st.success("삭제되었습니다.")
+                        reset_form()
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"삭제 중 오류 발생: {e}")
 
     finally:
         conn.close()
