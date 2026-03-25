@@ -8,7 +8,7 @@ from db import (
 )
 
 def render():
-    st.subheader("상품 마스터")
+    st.subheader("시가")
 
     st.set_page_config(page_title="Product MST", layout="wide")
     st.caption("표에서 직접 수정 후 저장할 수 있습니다.")
