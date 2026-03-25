@@ -1,6 +1,6 @@
 import streamlit as st
 
-from modules.analytics.price_analysis_view import render as render_price
+from modules.analytics.price_analysis import render as render_price
 from modules.analytics.period_compare_view import render as render_period
 from modules.analytics.partner_analysis_view import render as render_partner
 from modules.analytics.brand_analysis_view import render as render_brand
