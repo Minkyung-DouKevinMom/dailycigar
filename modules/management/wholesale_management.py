@@ -1,4 +1,3 @@
-
 import os
 from pathlib import Path
 import sqlite3
@@ -6,6 +5,7 @@ from typing import Optional
 
 import pandas as pd
 import streamlit as st
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", str(BASE_DIR / "cigar.db"))
@@ -156,6 +156,10 @@ def _safe_int(value, default=0) -> int:
         return int(default)
 
 
+def _currency(value) -> str:
+    return f"₩{_safe_float(value):,.0f}"
+
+
 def load_cigar_products_for_wholesale(conn) -> pd.DataFrame:
     product_cols = get_table_columns(conn, "product_mst")
     code_col = find_existing_column(product_cols, ["product_code", "code", "item_code"])
@@ -177,7 +181,7 @@ def load_cigar_products_for_wholesale(conn) -> pd.DataFrame:
             sql += f" WHERE COALESCE({use_col}, 'Y') = 'Y'"
         else:
             sql += f" WHERE COALESCE({use_col}, 'Y') IN ('Y', '1', 1, 'TRUE', 'true')"
-    sql += f" ORDER BY {name_col}"
+    sql += " ORDER BY id"
 
     product_df = pd.read_sql(sql, conn)
     product_df["retail_price_krw"] = 0.0
@@ -206,7 +210,6 @@ def load_cigar_products_for_wholesale(conn) -> pd.DataFrame:
         "name",
     ]
     import_ref_col = find_existing_column(import_cols, import_ref_candidates)
-
     if not import_ref_col:
         return product_df
 
@@ -258,7 +261,7 @@ def load_cigar_products_for_wholesale(conn) -> pd.DataFrame:
     result["retail_price_krw"] = result["retail_price_krw"].apply(_safe_float)
     result["supply_price_krw"] = result["supply_price_krw"].apply(_safe_float)
     result["korea_cost_krw"] = result["korea_cost_krw"].apply(_safe_float)
-    return result.sort_values(["product_name", "product_code"]).reset_index(drop=True)
+    return result.sort_values("id").reset_index(drop=True)
 
 
 def load_non_cigar_products(conn) -> pd.DataFrame:
@@ -273,7 +276,7 @@ def load_non_cigar_products(conn) -> pd.DataFrame:
     sql = f"""
         SELECT id, {name_col} AS product_name
         FROM non_cigar_product_mst
-        ORDER BY {name_col}
+        ORDER BY id
     """
     return pd.read_sql(sql, conn)
 
@@ -298,18 +301,15 @@ def load_wholesale_sales_for_grid(conn) -> pd.DataFrame:
 
     df = sales.copy()
 
-    # 키 컬럼 타입 정리
     for col in ["partner_id", "cigar_product_id", "non_cigar_product_id"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # 거래처
     partners = load_partners(conn)[["id", "partner_name"]].copy()
     partners["id"] = pd.to_numeric(partners["id"], errors="coerce")
     partners = partners.rename(columns={"id": "partner_id_lookup"})
     df = df.merge(partners, how="left", left_on="partner_id", right_on="partner_id_lookup")
 
-    # 시가 상품
     cigar_products = load_cigar_products_for_wholesale(conn)
     if not cigar_products.empty:
         cigar_products = cigar_products.copy()
@@ -322,7 +322,6 @@ def load_wholesale_sales_for_grid(conn) -> pd.DataFrame:
             suffixes=("", "_cigar"),
         )
 
-    # 논시가 상품
     if table_exists(conn, "non_cigar_product_mst"):
         nc = load_non_cigar_products(conn).copy()
         if not nc.empty:
@@ -351,6 +350,11 @@ def load_wholesale_sales_for_grid(conn) -> pd.DataFrame:
 
     if "sales_amount" not in df.columns and "supply_amount" in df.columns:
         df["sales_amount"] = df["supply_amount"]
+
+    df["item_type_label"] = df["item_type"].map({
+        "cigar": "시가",
+        "non_cigar": "시가 외",
+    }).fillna(df["item_type"])
 
     return df
 
@@ -608,55 +612,6 @@ def delete_wholesale_sale(conn, sale_id: int):
 # -----------------------------
 # UI helpers
 # -----------------------------
-def display_partner_dataframe(df: pd.DataFrame):
-    rename_map = {
-        "partner_name": "거래처명",
-        "partner_type": "유형",
-        "business_no": "사업자번호",
-        "owner_name": "대표자명",
-        "contact_name": "담당자명",
-        "phone": "연락처",
-        "email": "이메일",
-        "address": "주소",
-        "current_grade_code": "등급",
-        "status": "상태",
-        "join_date": "가입일",
-        "notes": "비고",
-    }
-    st.dataframe(df.rename(columns=rename_map), use_container_width=True, hide_index=True)
-
-
-def display_wholesale_dataframe(df: pd.DataFrame):
-    rename_map = {
-        "sale_date": "판매일자",
-        "partner_name": "거래처명",
-        "item_type": "상품구분",
-        "product_code": "상품코드",
-        "product_name": "상품명",
-        "qty": "수량",
-        "unit_price": "단가",
-        "supply_price": "공급가",
-        "unit_cost": "원가",
-        "sales_amount": "공급가액",
-        "supply_amount": "공급가액",
-        "vat_amount": "부가세",
-        "total_amount_vat": "부가세포함금액",
-        "profit_amount": "예상마진",
-        "notes": "비고",
-        "updated_at": "수정일시",
-    }
-    st.dataframe(df.rename(columns=rename_map), use_container_width=True, hide_index=True)
-
-
-def _get_selected_grid_row(editor_df: pd.DataFrame) -> Optional[pd.Series]:
-    if editor_df.empty or "_선택" not in editor_df.columns:
-        return None
-    selected = editor_df[editor_df["_선택"] == True]
-    if selected.empty:
-        return None
-    return selected.iloc[0]
-
-
 def _render_amount_summary(qty: int, unit_price: float, supply_price: float, unit_cost: float):
     supply_amount = float(qty) * float(supply_price)
     vat_amount = round(supply_amount * 0.1, 2)
@@ -664,16 +619,11 @@ def _render_amount_summary(qty: int, unit_price: float, supply_price: float, uni
     profit_amount = float(qty) * (float(supply_price) - float(unit_cost))
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("공급가액", f"{supply_amount:,.0f}원")
-    c2.metric("부가세", f"{vat_amount:,.0f}원")
-    c3.metric("부가세 포함 금액", f"{total_amount_vat:,.0f}원")
-    c4.metric("예상마진", f"{profit_amount:,.0f}원")
+    c1.metric("공급가액", f"₩{supply_amount:,.0f}")
+    c2.metric("부가세", f"₩{vat_amount:,.0f}")
+    c3.metric("부가세 포함 금액", f"₩{total_amount_vat:,.0f}")
+    c4.metric("예상마진", f"₩{profit_amount:,.0f}")
     return supply_amount, vat_amount, total_amount_vat, profit_amount
-
-
-# -----------------------------
-# Render sections
-# -----------------------------
 
 
 def _bind_price_cost_by_selection(state_prefix: str, selected_product_key: str, auto_unit_price: float, auto_supply_price: float, auto_unit_cost: float):
@@ -684,17 +634,21 @@ def _bind_price_cost_by_selection(state_prefix: str, selected_product_key: str, 
 
     prev_selected = st.session_state.get(prev_key)
     if prev_selected != selected_product_key:
-        st.session_state[price_key] = float(auto_unit_price)
-        st.session_state[supply_key] = float(auto_supply_price)
-        st.session_state[cost_key] = float(auto_unit_cost)
+        st.session_state[price_key] = int(auto_unit_price)
+        st.session_state[supply_key] = int(auto_supply_price)
+        st.session_state[cost_key] = int(auto_unit_cost)
         st.session_state[prev_key] = selected_product_key
     else:
-        st.session_state.setdefault(price_key, float(auto_unit_price))
-        st.session_state.setdefault(supply_key, float(auto_supply_price))
-        st.session_state.setdefault(cost_key, float(auto_unit_cost))
+        st.session_state.setdefault(price_key, int(auto_unit_price))
+        st.session_state.setdefault(supply_key, int(auto_supply_price))
+        st.session_state.setdefault(cost_key, int(auto_unit_cost))
 
+
+# -----------------------------
+# Render sections
+# -----------------------------
 def render_partner_registration(conn):
-    st.markdown("### 도매업체 등록 / 수정")
+    st.markdown("### 거래처 관리")
 
     partners = load_partners(conn)
     grade_codes = load_grade_codes(conn)
@@ -705,7 +659,7 @@ def render_partner_registration(conn):
     selected_row = None
     if mode == "기존 업체 수정":
         if partners.empty:
-            st.info("수정할 도매업체가 없습니다.")
+            st.info("수정할 거래처가 없습니다.")
             return
 
         option_df = partners[["id", "partner_name"]].copy()
@@ -761,7 +715,7 @@ def render_partner_registration(conn):
             notes = st.text_area("비고", value="" if selected_row is None else str(selected_row.get("notes", "") or ""))
 
         submitted = st.form_submit_button(
-            "도매업체 등록" if mode == "신규 등록" else "도매업체 수정 저장",
+            "거래처 등록" if mode == "신규 등록" else "거래처 수정 저장",
             use_container_width=True,
         )
 
@@ -825,158 +779,169 @@ def render_partner_registration(conn):
 
             st.rerun()
 
+    if not partners.empty:
+        st.divider()
+        st.markdown("#### 등록된 거래처")
+        view_df = partners.rename(columns={
+            "partner_name": "거래처명",
+            "partner_type": "유형",
+            "business_no": "사업자번호",
+            "owner_name": "대표자명",
+            "contact_name": "담당자명",
+            "phone": "연락처",
+            "email": "이메일",
+            "address": "주소",
+            "current_grade_code": "등급",
+            "status": "상태",
+            "join_date": "가입일",
+            "notes": "비고",
+        })
+        st.dataframe(view_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("등록된 거래처가 없습니다.")
 
-def render_partner_list(conn):
-    st.markdown("### 등록된 도매업체")
-    partners = load_partners(conn)
-    if partners.empty:
-        st.info("등록된 도매업체가 없습니다.")
-        return
-    display_partner_dataframe(partners)
 
-
-def render_wholesale_entry(conn):
-    st.markdown("### 도매 등록")
+def render_wholesale_management(conn):
+    st.markdown("### 도매 판매 관리")
+    st.caption("상단에서 등록하고, 하단 AgGrid에서 검색/정렬/수정/삭제할 수 있습니다.")
 
     partners = load_partners(conn)
     cigar_products = load_cigar_products_for_wholesale(conn)
     non_cigar_products = load_non_cigar_products(conn)
 
     if partners.empty:
-        st.warning("먼저 위에서 도매업체를 등록해 주세요.")
+        st.warning("먼저 거래처를 등록해 주세요.")
         return
 
-    item_type = st.radio("상품 구분", ["cigar", "non_cigar"], horizontal=True, key="wh_item_type")
+    # -----------------------------
+    # 등록 영역
+    # -----------------------------
+    with st.expander("신규 도매 판매 등록", expanded=True):
+        item_type_label = st.radio("상품 구분", ["시가", "시가 외"], horizontal=True, key="wh_item_type_label")
+        item_type = "cigar" if item_type_label == "시가" else "non_cigar"
 
-    c1, c2 = st.columns(2)
-    with c1:
-        partner_name = st.selectbox("거래처", partners["partner_name"].tolist(), key="wh_partner_name")
-        sale_date = str(st.date_input("판매일자", key="wh_sale_date"))
-        qty = st.number_input("수량", min_value=1, value=1, step=1, format="%d", key="wh_qty")
+        c1, c2 = st.columns(2)
+        with c1:
+            partner_name = st.selectbox("거래처", partners["partner_name"].tolist(), key="wh_partner_name")
+            sale_date = str(st.date_input("판매일자", key="wh_sale_date"))
+            qty = st.number_input("수량", min_value=1, value=1, step=1, format="%d", key="wh_qty")
 
-    cigar_product_id = None
-    non_cigar_product_id = None
-    product_name = ""
-    product_code = ""
-    auto_unit_price = 0.0
-    auto_supply_price = 0.0
-    auto_unit_cost = 0.0
+        cigar_product_id = None
+        non_cigar_product_id = None
+        product_name = ""
+        product_code = ""
+        auto_unit_price = 0.0
+        auto_supply_price = 0.0
+        auto_unit_cost = 0.0
 
-    if item_type == "cigar":
-        if cigar_products.empty:
-            st.warning("product_mst 또는 import_item에 등록된 시가 상품 기준정보가 없습니다.")
-            return
+        if item_type == "cigar":
+            if cigar_products.empty:
+                st.warning("시가 상품 기준정보가 없습니다.")
+                return
 
-        display_options = cigar_products.copy()
-        display_options["display_name"] = display_options.apply(
-            lambda r: f"{str(r['product_code']).strip()} | {str(r['product_name']).strip()}"
-            if str(r["product_code"]).strip() else str(r["product_name"]).strip(),
-            axis=1,
-        )
-        selected_display = st.selectbox("시가 상품", display_options["display_name"].tolist(), key="wh_cigar_product")
-        selected_product = display_options.loc[display_options["display_name"] == selected_display].iloc[0]
-        cigar_product_id = _safe_int(selected_product["id"])
-        product_name = str(selected_product["product_name"] or "")
-        product_code = str(selected_product["product_code"] or "")
-        auto_unit_price = _safe_float(selected_product.get("retail_price_krw", 0))
-        auto_supply_price = _safe_float(selected_product.get("supply_price_krw", 0))
-        auto_unit_cost = _safe_float(selected_product.get("korea_cost_krw", 0))
-        _bind_price_cost_by_selection(
-            state_prefix="wh",
-            selected_product_key=f"cigar::{cigar_product_id}",
-            auto_unit_price=auto_unit_price,
-            auto_supply_price=auto_supply_price,
-            auto_unit_cost=auto_unit_cost,
-        )
-    else:
-        if non_cigar_products.empty:
-            st.warning("non_cigar_product_mst에 등록된 비시가 상품이 없습니다.")
-            return
+            display_options = cigar_products.copy()
+            display_options["display_name"] = display_options.apply(
+                lambda r: f"{str(r['product_code']).strip()} | {str(r['product_name']).strip()}"
+                if str(r["product_code"]).strip() else str(r["product_name"]).strip(),
+                axis=1,
+            )
 
-        selected_name = st.selectbox("비시가 상품", non_cigar_products["product_name"].tolist(), key="wh_non_cigar_product")
-        selected_product = non_cigar_products.loc[non_cigar_products["product_name"] == selected_name].iloc[0]
-        non_cigar_product_id = _safe_int(selected_product["id"])
-        product_name = str(selected_name)
+            selected_display = st.selectbox("시가 상품", display_options["display_name"].tolist(), key="wh_cigar_product")
+            selected_product = display_options.loc[display_options["display_name"] == selected_display].iloc[0]
+            cigar_product_id = _safe_int(selected_product["id"])
+            product_name = str(selected_product["product_name"] or "")
+            product_code = str(selected_product["product_code"] or "")
+            auto_unit_price = _safe_float(selected_product.get("retail_price_krw", 0))
+            auto_supply_price = _safe_float(selected_product.get("supply_price_krw", 0))
+            auto_unit_cost = _safe_float(selected_product.get("korea_cost_krw", 0))
 
-    with c2:
-        if item_type != "cigar":
             _bind_price_cost_by_selection(
                 state_prefix="wh",
-                selected_product_key=f"{item_type}::{non_cigar_product_id if non_cigar_product_id is not None else 'none'}",
+                selected_product_key=f"cigar::{cigar_product_id}",
                 auto_unit_price=auto_unit_price,
                 auto_supply_price=auto_supply_price,
                 auto_unit_cost=auto_unit_cost,
             )
-        unit_price = st.number_input("단가", min_value=0.0, step=100.0, key="wh_unit_price")
-        supply_price = st.number_input("공급가", min_value=0.0, step=100.0, key="wh_supply_price")
-        unit_cost = st.number_input("원가", min_value=0.0, step=100.0, key="wh_unit_cost")
-        notes = st.text_area("비고", key="wh_notes")
+        else:
+            if non_cigar_products.empty:
+                st.warning("시가 외 상품 기준정보가 없습니다.")
+                return
 
-    if product_code:
-        st.caption(f"상품코드: {product_code}")
-    if item_type == "cigar":
-        st.caption("단가 = import_item.retail_price_krw / 공급가 = import_item.supply_price_krw / 원가 = import_item.korea_cost_krw 기준 자동 바인딩")
+            selected_name = st.selectbox("시가 외 상품", non_cigar_products["product_name"].tolist(), key="wh_non_cigar_product")
+            selected_product = non_cigar_products.loc[non_cigar_products["product_name"] == selected_name].iloc[0]
+            non_cigar_product_id = _safe_int(selected_product["id"])
+            product_name = str(selected_name)
 
-    supply_amount, vat_amount, total_amount_vat, profit_amount = _render_amount_summary(qty, unit_price, supply_price, unit_cost)
+            _bind_price_cost_by_selection(
+                state_prefix="wh",
+                selected_product_key=f"non_cigar::{non_cigar_product_id}",
+                auto_unit_price=0,
+                auto_supply_price=0,
+                auto_unit_cost=0,
+            )
 
-    if st.button("도매 저장", use_container_width=True, key="wh_insert_btn"):
-        partner_id = int(partners.loc[partners["partner_name"] == partner_name, "id"].iloc[0])
-        insert_wholesale_sale(
-            conn=conn,
-            sale_date=sale_date,
-            partner_id=partner_id,
-            item_type=item_type,
-            cigar_product_id=cigar_product_id,
-            non_cigar_product_id=non_cigar_product_id,
-            qty=int(qty),
-            unit_price=float(unit_price),
-            supply_price=float(supply_price),
-            unit_cost=float(unit_cost),
-            supply_amount=float(supply_amount),
-            vat_amount=float(vat_amount),
-            total_amount_vat=float(total_amount_vat),
-            profit_amount=float(profit_amount),
-            notes=notes.strip(),
-        )
-        st.success("도매 판매 이력이 저장되었습니다.")
-        st.rerun()
-
-
-def render_wholesale_history(conn):
-    st.markdown("### 도매 이력 조회")
-    df = load_wholesale_sales_for_grid(conn)
-    if df.empty:
-        st.info("등록된 도매 이력이 없습니다.")
-        return
-
-    view_cols = [c for c in [
-        "sale_date", "partner_name", "item_type", "product_code", "product_name",
-        "qty", "unit_price", "supply_price", "unit_cost", "supply_amount", "vat_amount",
-        "total_amount_vat", "profit_amount", "notes", "updated_at"
-    ] if c in df.columns]
-    display_wholesale_dataframe(df[view_cols].copy())
-
-
-def render_wholesale_manage(conn):
-    st.markdown("### 도매 등록 관리")
-    st.caption("검색 후 그리드에서 1건을 선택해서 수정 또는 삭제할 수 있습니다.")
-
-    df = load_wholesale_sales_for_grid(conn)
-    partners = load_partners(conn)
-    cigar_products = load_cigar_products_for_wholesale(conn)
-    non_cigar_products = load_non_cigar_products(conn)
-
-    if df.empty:
-        st.info("관리할 도매 등록 건이 없습니다.")
-        return
-
-    with st.expander("검색", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            keyword = st.text_input("거래처/상품/코드 검색", key="manage_keyword")
         with c2:
-            item_type_filter = st.selectbox("상품구분", ["전체", "cigar", "non_cigar"], key="manage_item_type")
-        with c3:
+            unit_price = st.number_input("단가 (₩)", min_value=0, step=100, format="%d", key="wh_unit_price")
+            supply_price = st.number_input("공급가 (₩)", min_value=0, step=100, format="%d", key="wh_supply_price")
+            unit_cost = st.number_input("원가 (₩)", min_value=0, step=100, format="%d", key="wh_unit_cost")
+            notes = st.text_area("비고", key="wh_notes")
+
+        # 👇 추가 (중요)
+        st.caption(
+            f"단가: ₩{unit_price:,.0f} / "
+            f"공급가: ₩{supply_price:,.0f} / "
+            f"원가: ₩{unit_cost:,.0f}"
+        )
+
+        if product_code:
+            st.caption(f"상품코드: {product_code}")
+
+        if item_type == "cigar":
+            st.caption("단가 = import_item.retail_price_krw / 공급가 = import_item.supply_price_krw / 원가 = import_item.korea_cost_krw 기준 자동 바인딩")
+
+        supply_amount, vat_amount, total_amount_vat, profit_amount = _render_amount_summary(qty, unit_price, supply_price, unit_cost)
+
+        if st.button("도매 판매 저장", use_container_width=True, key="wh_insert_btn"):
+            partner_id = int(partners.loc[partners["partner_name"] == partner_name, "id"].iloc[0])
+
+            insert_wholesale_sale(
+                conn=conn,
+                sale_date=sale_date,
+                partner_id=partner_id,
+                item_type=item_type,
+                cigar_product_id=cigar_product_id,
+                non_cigar_product_id=non_cigar_product_id,
+                qty=int(qty),
+                unit_price=float(unit_price),
+                supply_price=float(supply_price),
+                unit_cost=float(unit_cost),
+                supply_amount=float(supply_amount),
+                vat_amount=float(vat_amount),
+                total_amount_vat=float(total_amount_vat),
+                profit_amount=float(profit_amount),
+                notes=notes.strip(),
+            )
+            st.success("도매 판매 이력이 저장되었습니다.")
+            st.rerun()
+
+    # -----------------------------
+    # 조회/관리 영역
+    # -----------------------------
+    st.divider()
+    st.markdown("#### 도매 판매 내역")
+
+    df = load_wholesale_sales_for_grid(conn)
+    if df.empty:
+        st.info("등록된 도매 판매 이력이 없습니다.")
+        return
+
+    with st.expander("검색 / 필터", expanded=True):
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            keyword = st.text_input("거래처 / 상품 / 코드 검색", key="manage_keyword")
+        with f2:
+            item_type_filter = st.selectbox("상품구분", ["전체", "시가", "시가 외"], key="manage_item_type")
+        with f3:
             partner_options = ["전체"] + sorted([str(x) for x in df["partner_name"].dropna().unique().tolist()])
             partner_filter = st.selectbox("거래처", partner_options, key="manage_partner")
 
@@ -990,68 +955,68 @@ def render_wholesale_manage(conn):
         )
         filtered = filtered[mask]
 
-    if item_type_filter != "전체" and "item_type" in filtered.columns:
-        filtered = filtered[filtered["item_type"] == item_type_filter]
+    if item_type_filter != "전체":
+        filtered = filtered[filtered["item_type_label"] == item_type_filter]
 
-    if partner_filter != "전체" and "partner_name" in filtered.columns:
+    if partner_filter != "전체":
         filtered = filtered[filtered["partner_name"] == partner_filter]
 
     if filtered.empty:
         st.warning("검색 결과가 없습니다.")
         return
 
-    grid_cols = [c for c in [
-        "id", "sale_date", "partner_name", "item_type", "product_code", "product_name",
-        "qty", "unit_price", "supply_price", "unit_cost", "supply_amount", "vat_amount", "total_amount_vat",
-        "profit_amount", "notes", "updated_at"
-    ] if c in filtered.columns]
-    grid_df = filtered[grid_cols].copy()
-    grid_df.insert(0, "_선택", False)
+    grid_df = filtered[[
+        "id", "sale_date", "partner_name", "item_type_label", "product_code", "product_name",
+        "qty", "unit_price", "supply_price", "unit_cost", "supply_amount",
+        "vat_amount", "total_amount_vat", "profit_amount", "notes", "updated_at"
+    ]].copy()
 
-    rename_map = {
-        "_선택": "선택",
-        "id": "ID",
-        "sale_date": "판매일자",
-        "partner_name": "거래처명",
-        "item_type": "상품구분",
-        "product_code": "상품코드",
-        "product_name": "상품명",
-        "qty": "수량",
-        "unit_price": "단가",
-        "supply_price": "공급가",
-        "unit_cost": "원가",
-        "supply_amount": "공급가액",
-        "vat_amount": "부가세",
-        "total_amount_vat": "부가세포함금액",
-        "profit_amount": "예상마진",
-        "notes": "비고",
-        "updated_at": "수정일시",
-    }
+    gb = GridOptionsBuilder.from_dataframe(grid_df)
+    gb.configure_selection("single", use_checkbox=True)
+    gb.configure_default_column(sortable=True, filter=True, resizable=True)
+    gb.configure_column("id", header_name="ID", width=80)
+    gb.configure_column("sale_date", header_name="판매일자", width=110)
+    gb.configure_column("partner_name", header_name="거래처명", width=160)
+    gb.configure_column("item_type_label", header_name="상품구분", width=100)
+    gb.configure_column("product_code", header_name="상품코드", width=130)
+    gb.configure_column("product_name", header_name="상품명", width=180)
+    gb.configure_column("qty", header_name="수량", width=90, type=["numericColumn"])
+    gb.configure_column("unit_price", header_name="단가", width=120, type=["numericColumn"], valueFormatter="data.unit_price != null ? '₩' + Number(data.unit_price).toLocaleString() : ''")
+    gb.configure_column("supply_price", header_name="공급가", width=120, type=["numericColumn"], valueFormatter="data.supply_price != null ? '₩' + Number(data.supply_price).toLocaleString() : ''")
+    gb.configure_column("unit_cost", header_name="원가", width=120, type=["numericColumn"], valueFormatter="data.unit_cost != null ? '₩' + Number(data.unit_cost).toLocaleString() : ''")
+    gb.configure_column("supply_amount", header_name="공급가액", width=130, type=["numericColumn"], valueFormatter="data.supply_amount != null ? '₩' + Number(data.supply_amount).toLocaleString() : ''")
+    gb.configure_column("vat_amount", header_name="부가세", width=110, type=["numericColumn"], valueFormatter="data.vat_amount != null ? '₩' + Number(data.vat_amount).toLocaleString() : ''")
+    gb.configure_column("total_amount_vat", header_name="부가세포함금액", width=150, type=["numericColumn"], valueFormatter="data.total_amount_vat != null ? '₩' + Number(data.total_amount_vat).toLocaleString() : ''")
+    gb.configure_column("profit_amount", header_name="예상마진", width=120, type=["numericColumn"], valueFormatter="data.profit_amount != null ? '₩' + Number(data.profit_amount).toLocaleString() : ''")
+    gb.configure_column("notes", header_name="비고", width=200)
+    gb.configure_column("updated_at", header_name="수정일시", width=150)
 
-    editor_df = st.data_editor(
-        grid_df.rename(columns=rename_map),
+    grid_response = AgGrid(
+        grid_df,
+        gridOptions=gb.build(),
+        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        fit_columns_on_grid_load=False,
+        allow_unsafe_jscode=True,
+        enable_enterprise_modules=False,
+        height=420,
         use_container_width=True,
-        hide_index=True,
-        disabled=[c for c in rename_map.values() if c != "선택"],
-        column_config={
-            "선택": st.column_config.CheckboxColumn(required=False),
-        },
-        key="wholesale_manage_grid",
+        key="wholesale_aggrid",
     )
 
-    reverse_map = {v: k for k, v in rename_map.items()}
-    editor_df = editor_df.rename(columns=reverse_map)
+    selected_rows = grid_response.get("selected_rows", [])
+    if isinstance(selected_rows, pd.DataFrame):
+        selected_rows = selected_rows.to_dict("records")
 
-    selected_row = _get_selected_grid_row(editor_df)
-    if selected_row is None:
-        st.info("수정 또는 삭제할 행을 1건 선택해 주세요.")
+    if not selected_rows:
+        st.info("수정 또는 삭제할 행을 선택해 주세요.")
         return
 
-    sale_id = _safe_int(selected_row["id"])
+    selected_id = _safe_int(selected_rows[0].get("id"))
     base_row = load_wholesale_sales(conn)
-    base_row = base_row.loc[base_row["id"] == sale_id]
+    base_row = base_row.loc[base_row["id"] == selected_id]
     if base_row.empty:
-        st.error("선택한 도매 등록 건을 찾을 수 없습니다.")
+        st.error("선택한 도매 판매 건을 찾을 수 없습니다.")
         return
     row = base_row.iloc[0]
 
@@ -1059,23 +1024,25 @@ def render_wholesale_manage(conn):
     partner_name_map = dict(zip(partners["id"], partners["partner_name"]))
     current_partner_name = partner_name_map.get(row["partner_id"], partner_names[0] if partner_names else "")
 
-    st.markdown("#### 선택 건 수정")
+    st.divider()
+    st.markdown("#### 선택 건 수정 / 삭제")
+
     item_type = str(row["item_type"])
+    item_type_label = "시가" if item_type == "cigar" else "시가 외"
     cigar_product_id = row["cigar_product_id"] if "cigar_product_id" in row.index else None
     non_cigar_product_id = row["non_cigar_product_id"] if "non_cigar_product_id" in row.index else None
 
     c1, c2 = st.columns(2)
     with c1:
-        sale_date = str(st.date_input("판매일자", value=pd.to_datetime(row["sale_date"]).date(), key=f"edit_sale_date_{sale_id}"))
+        sale_date = str(st.date_input("판매일자", value=pd.to_datetime(row["sale_date"]).date(), key=f"edit_sale_date_{selected_id}"))
         partner_name = st.selectbox(
             "거래처",
             partner_names,
             index=partner_names.index(current_partner_name) if current_partner_name in partner_names else 0,
-            key=f"edit_partner_{sale_id}",
+            key=f"edit_partner_{selected_id}",
         )
-        qty = st.number_input("수량", min_value=1, value=_safe_int(row["qty"], 1), step=1, format="%d", key=f"edit_qty_{sale_id}")
+        qty = st.number_input("수량", min_value=1, value=_safe_int(row["qty"], 1), step=1, format="%d", key=f"edit_qty_{selected_id}")
 
-    selected_product_name = ""
     selected_product_code = ""
     auto_unit_price = _safe_float(row.get("unit_price", 0))
     auto_supply_price = _safe_float(row.get("supply_price", 0))
@@ -1103,18 +1070,18 @@ def render_wholesale_manage(conn):
             "시가 상품",
             product_options["display_name"].tolist(),
             index=default_idx,
-            key=f"edit_cigar_product_{sale_id}",
+            key=f"edit_cigar_product_{selected_id}",
         )
         selected_product = product_options.loc[product_options["display_name"] == selected_display].iloc[0]
         cigar_product_id = _safe_int(selected_product["id"])
         non_cigar_product_id = None
-        selected_product_name = str(selected_product["product_name"] or "")
         selected_product_code = str(selected_product["product_code"] or "")
         auto_unit_price = _safe_float(selected_product.get("retail_price_krw", auto_unit_price))
         auto_supply_price = _safe_float(selected_product.get("supply_price_krw", auto_supply_price))
         auto_unit_cost = _safe_float(selected_product.get("korea_cost_krw", auto_unit_cost))
+
         _bind_price_cost_by_selection(
-            state_prefix=f"edit_{sale_id}",
+            state_prefix=f"edit_{selected_id}",
             selected_product_key=f"cigar::{cigar_product_id}",
             auto_unit_price=auto_unit_price,
             auto_supply_price=auto_supply_price,
@@ -1122,7 +1089,7 @@ def render_wholesale_manage(conn):
         )
     else:
         if non_cigar_products.empty:
-            st.warning("비시가 상품 기준정보가 없습니다.")
+            st.warning("시가 외 상품 기준정보가 없습니다.")
             return
 
         default_nc_idx = 0
@@ -1132,44 +1099,53 @@ def render_wholesale_manage(conn):
                 default_nc_idx = non_cigar_products.index.get_loc(matched_idx[0])
 
         selected_product_name = st.selectbox(
-            "비시가 상품",
+            "시가 외 상품",
             non_cigar_products["product_name"].tolist(),
             index=default_nc_idx,
-            key=f"edit_non_cigar_product_{sale_id}",
+            key=f"edit_non_cigar_product_{selected_id}",
         )
         selected_product = non_cigar_products.loc[non_cigar_products["product_name"] == selected_product_name].iloc[0]
         non_cigar_product_id = _safe_int(selected_product["id"])
         cigar_product_id = None
 
-    with c2:
-        if item_type != "cigar":
-            _bind_price_cost_by_selection(
-                state_prefix=f"edit_{sale_id}",
-                selected_product_key=f"{item_type}::{non_cigar_product_id if non_cigar_product_id is not None else 'none'}",
-                auto_unit_price=_safe_float(row.get("unit_price", 0)),
-                auto_supply_price=_safe_float(row.get("supply_price", 0)),
-                auto_unit_cost=_safe_float(row.get("unit_cost", 0)),
-            )
-        else:
-            st.session_state.setdefault(f"edit_{sale_id}_unit_price", float(auto_unit_price))
-            st.session_state.setdefault(f"edit_{sale_id}_supply_price", float(auto_supply_price))
-            st.session_state.setdefault(f"edit_{sale_id}_unit_cost", float(auto_unit_cost))
-        unit_price = st.number_input("단가", min_value=0.0, step=100.0, key=f"edit_{sale_id}_unit_price")
-        supply_price = st.number_input("공급가", min_value=0.0, step=100.0, key=f"edit_{sale_id}_supply_price")
-        unit_cost = st.number_input("원가", min_value=0.0, step=100.0, key=f"edit_{sale_id}_unit_cost")
-        notes = st.text_area("비고", value=str(row.get("notes", "") or ""), key=f"edit_notes_{sale_id}")
+        _bind_price_cost_by_selection(
+            state_prefix=f"edit_{selected_id}",
+            selected_product_key=f"non_cigar::{non_cigar_product_id}",
+            auto_unit_price=_safe_float(row.get("unit_price", 0)),
+            auto_supply_price=_safe_float(row.get("supply_price", 0)),
+            auto_unit_cost=_safe_float(row.get("unit_cost", 0)),
+        )
 
+    with c2:
+        unit_price = st.number_input("단가 (₩)", min_value=0, step=100, format="%d", key=f"edit_{selected_id}_unit_price")
+        supply_price = st.number_input("공급가 (₩)", min_value=0, step=100, format="%d", key=f"edit_{selected_id}_supply_price")
+        unit_cost = st.number_input("원가 (₩)", min_value=0, step=100, format="%d", key=f"edit_{selected_id}_unit_cost")
+
+    st.caption(
+    f"단가: ₩{unit_price:,.0f} / "
+    f"공급가: ₩{supply_price:,.0f} / "
+    f"원가: ₩{unit_cost:,.0f}"
+    )
+
+    notes = st.text_area(
+        "비고",
+        value=str(row.get("notes", "") or ""),
+        key=f"edit_notes_{selected_id}"
+    )
+
+    st.caption(f"상품구분: {item_type_label}")
     if selected_product_code:
         st.caption(f"상품코드: {selected_product_code}")
+
     supply_amount, vat_amount, total_amount_vat, profit_amount = _render_amount_summary(qty, unit_price, supply_price, unit_cost)
 
     b1, b2 = st.columns(2)
     with b1:
-        if st.button("선택 건 수정 저장", use_container_width=True, key=f"save_sale_{sale_id}"):
+        if st.button("선택 건 수정 저장", use_container_width=True, key=f"save_sale_{selected_id}"):
             partner_id = int(partners.loc[partners["partner_name"] == partner_name, "id"].iloc[0])
             update_wholesale_sale(
                 conn=conn,
-                sale_id=sale_id,
+                sale_id=selected_id,
                 sale_date=sale_date,
                 partner_id=partner_id,
                 item_type=item_type,
@@ -1185,17 +1161,17 @@ def render_wholesale_manage(conn):
                 profit_amount=float(profit_amount),
                 notes=notes.strip(),
             )
-            st.success("도매 등록 건이 수정되었습니다.")
+            st.success("도매 판매 건이 수정되었습니다.")
             st.rerun()
 
     with b2:
-        confirm_delete = st.checkbox("삭제 확인", key=f"confirm_delete_{sale_id}")
-        if st.button("선택 건 삭제", use_container_width=True, type="secondary", key=f"delete_sale_{sale_id}"):
+        confirm_delete = st.checkbox("삭제 확인", key=f"confirm_delete_{selected_id}")
+        if st.button("선택 건 삭제", use_container_width=True, type="secondary", key=f"delete_sale_{selected_id}"):
             if not confirm_delete:
                 st.error("삭제 확인을 체크해 주세요.")
             else:
-                delete_wholesale_sale(conn, sale_id)
-                st.success("도매 등록 건이 삭제되었습니다.")
+                delete_wholesale_sale(conn, selected_id)
+                st.success("도매 판매 건이 삭제되었습니다.")
                 st.rerun()
 
 
@@ -1212,25 +1188,16 @@ def render():
 
         ensure_wholesale_sales_columns(conn)
 
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "도매업체 등록/수정",
-            "도매 등록",
-            "도매 이력 조회",
-            "도매 등록 관리",
+        tab1, tab2 = st.tabs([
+            "거래처 관리",
+            "도매 판매 관리",
         ])
 
         with tab1:
             render_partner_registration(conn)
-            st.divider()
-            render_partner_list(conn)
 
         with tab2:
-            render_wholesale_entry(conn)
+            render_wholesale_management(conn)
 
-        with tab3:
-            render_wholesale_history(conn)
-
-        with tab4:
-            render_wholesale_manage(conn)
     finally:
         conn.close()

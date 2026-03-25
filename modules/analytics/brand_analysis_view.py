@@ -259,7 +259,16 @@ def render():
         # 상품 집계 (시가상품만)
         if cigar_df.empty:
             product_grouped = pd.DataFrame(
-                columns=["product_code", "product_name", "판매량", "매출", "이익", "상품코드", "마진율(%)"]
+                columns=[
+                    "product_code",
+                    "product_name",
+                    "판매량",
+                    "매출",
+                    "이익",
+                    "상품코드",
+                    "마진율(%)",
+                    "개당마진금액",
+                ]
             )
         else:
             product_grouped = (
@@ -279,6 +288,12 @@ def render():
                 lambda x: round((x["이익"] / x["매출"] * 100), 1) if x["매출"] else 0,
                 axis=1,
             )
+
+            product_grouped["개당마진금액"] = product_grouped.apply(
+                lambda x: round((x["이익"] / x["판매량"]), 0) if x["판매량"] else 0,
+                axis=1,
+            )
+
             product_grouped = product_grouped.sort_values("매출", ascending=False).reset_index(drop=True)
 
         total_sales = brand_grouped["매출"].sum()
@@ -337,26 +352,80 @@ def render():
 
         if product_grouped.empty:
             top_product_sales = pd.DataFrame(columns=["상품코드", "매출"])
-            top_product_margin = pd.DataFrame(columns=["상품코드", "마진율(%)"])
+            top_product_unit_profit = pd.DataFrame(columns=["상품코드", "개당마진금액"])
         else:
-            top_product_sales = product_grouped.head(20).copy()
-            top_product_profit = product_grouped.sort_values("이익", ascending=False).head(20).copy()
+            top_product_sales = product_grouped.sort_values("매출", ascending=False).head(20).copy()
+            top_product_unit_profit = product_grouped.sort_values("개당마진금액", ascending=False).head(20).copy()
 
         with b1:
-            st.markdown("### 시가상품별 매출금액")
+            st.markdown("### 시가상품별 매출금액 (TOP 20)")
+
             if top_product_sales.empty:
                 st.info("시가상품 데이터가 없습니다.")
             else:
-                sales_bar_df = top_product_sales.set_index("상품코드")[["매출"]]
-                st.bar_chart(sales_bar_df, use_container_width=True)
+                chart_df = (
+                    top_product_sales[["상품코드", "매출"]]
+                    .sort_values("매출", ascending=False)
+                    .copy()
+                )
+
+                chart = (
+                    alt.Chart(chart_df)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X(
+                            "상품코드:N",
+                            sort=chart_df["상품코드"].tolist(),  # 🔥 순서 강제
+                            title="상품코드",
+                        ),
+                        y=alt.Y(
+                            "매출:Q",
+                            title="매출금액",
+                        ),
+                        tooltip=[
+                            alt.Tooltip("상품코드:N", title="상품코드"),
+                            alt.Tooltip("매출:Q", title="매출금액", format=",.0f"),
+                        ],
+                    )
+                    .properties(height=360)
+                )
+
+                st.altair_chart(chart, use_container_width=True)
 
         with b2:
-    st.markdown("### 시가상품별 마진금액")
-    if top_product_profit.empty:
-        st.info("시가상품 데이터가 없습니다.")
-    else:
-        profit_bar_df = top_product_profit.set_index("상품코드")[["이익"]]
-        st.bar_chart(profit_bar_df, use_container_width=True)
+            st.markdown("### 시가상품별 개당 마진금액 (TOP 20)")
+
+            if top_product_unit_profit.empty:
+                st.info("시가상품 데이터가 없습니다.")
+            else:
+                chart_df = (
+                    top_product_unit_profit[["상품코드", "개당마진금액"]]
+                    .sort_values("개당마진금액", ascending=False)
+                    .copy()
+                )
+
+                chart = (
+                    alt.Chart(chart_df)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X(
+                            "상품코드:N",
+                            sort=chart_df["상품코드"].tolist(),   # 현재 정렬 순서 그대로 강제
+                            title="상품코드",
+                        ),
+                        y=alt.Y(
+                            "개당마진금액:Q",
+                            title="개당 마진금액",
+                        ),
+                        tooltip=[
+                            alt.Tooltip("상품코드:N", title="상품코드"),
+                            alt.Tooltip("개당마진금액:Q", title="개당 마진금액", format=",.0f"),
+                        ],
+                    )
+                    .properties(height=360)
+                )
+
+                st.altair_chart(chart, use_container_width=True)
 
         st.divider()
 
