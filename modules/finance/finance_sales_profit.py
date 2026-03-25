@@ -50,6 +50,21 @@ def monthify(series):
     return pd.to_datetime(series, errors="coerce").dt.strftime("%Y-%m")
 
 
+def fmt_krw(value) -> str:
+    try:
+        return f"₩{float(value):,.0f}"
+    except Exception:
+        return "₩0"
+
+
+def apply_currency_format(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    result = df.copy()
+    for col in cols:
+        if col in result.columns:
+            result[col] = result[col].apply(fmt_krw)
+    return result
+
+
 # =========================================================
 # Retail
 # =========================================================
@@ -116,7 +131,7 @@ def get_retail_data(conn, date_from: Optional[str], date_to: Optional[str]) -> T
 
 
 # =========================================================
-# Wholesale - v_wholesale_sales 기준
+# Wholesale
 # =========================================================
 def get_wholesale_data(conn, date_from: Optional[str], date_to: Optional[str]) -> Tuple[pd.DataFrame, str]:
     source = choose_source(conn, ["v_wholesale_sales", "wholesale_sales"])
@@ -165,7 +180,6 @@ def get_wholesale_data(conn, date_from: Optional[str], date_to: Optional[str]) -
             df["vat_amount"] = 0.0
         return df, source
 
-    # fallback: wholesale_sales 원본 테이블
     sql = """
         SELECT *
         FROM wholesale_sales
@@ -237,10 +251,10 @@ def get_expense_data(conn, date_from: Optional[str], date_to: Optional[str]) -> 
 
 
 # =========================================================
-# 화면 1: 매출통합조회
+# 화면 1: 매출분석
 # =========================================================
 def render_sales_combined():
-    st.markdown("### 매출통합조회")
+    st.markdown("### 매출분석")
 
     conn = get_conn()
     try:
@@ -266,10 +280,10 @@ def render_sales_combined():
         total_profit = retail_profit + wholesale_profit
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("소매매출", f"{retail_sales:,.0f}")
-        m2.metric("도매매출", f"{wholesale_sales:,.0f}")
-        m3.metric("통합매출", f"{total_sales:,.0f}")
-        m4.metric("통합매출총이익", f"{total_profit:,.0f}")
+        m1.metric("소매매출", fmt_krw(retail_sales))
+        m2.metric("도매매출", fmt_krw(wholesale_sales))
+        m3.metric("통합매출", fmt_krw(total_sales))
+        m4.metric("통합매출총이익", fmt_krw(total_profit))
 
         src_text = []
         if retail_source:
@@ -316,18 +330,21 @@ def render_sales_combined():
                 for c in [c for c in df_month.columns if c != "월"]:
                     df_month[c] = pd.to_numeric(df_month[c], errors="coerce").fillna(0)
 
-                for c in ["소매매출", "도매매출", "소매이익", "도매이익"]:
+                for c in ["소매매출", "도매매출", "소매이익", "도매이익", "소매건수", "도매건수"]:
                     if c not in df_month.columns:
                         df_month[c] = 0
 
                 df_month["통합매출"] = df_month["소매매출"] + df_month["도매매출"]
                 df_month["통합이익"] = df_month["소매이익"] + df_month["도매이익"]
+                df_month["통합건수"] = df_month["소매건수"] + df_month["도매건수"]
                 df_month = df_month.sort_values("월", ascending=False)
 
-                st.dataframe(df_month, use_container_width=True, hide_index=True, height=420)
+                show_df = apply_currency_format(
+                    df_month,
+                    ["소매매출", "도매매출", "통합매출", "소매이익", "도매이익", "통합이익"],
+                )
 
-                chart_df = df_month.sort_values("월")
-                st.line_chart(chart_df.set_index("월")[["소매매출", "도매매출", "통합매출"]])
+                st.dataframe(show_df, use_container_width=True, hide_index=True, height=420)
             else:
                 df_month = pd.DataFrame()
                 st.info("월별 통합 데이터가 없습니다.")
@@ -341,7 +358,31 @@ def render_sales_combined():
                     "product_code", "mst_product_name", "mst_size_name",
                     "qty", "net_sales_amount", "vat_amount", "total_korea_cost_krw", "retail_gross_profit_krw"
                 ] if c in retail_df.columns]
-                st.dataframe(retail_df[cols], use_container_width=True, height=460, hide_index=True)
+
+                show_retail = retail_df[cols].copy().rename(
+                    columns={
+                        "sale_date": "판매일자",
+                        "sale_datetime": "판매일시",
+                        "order_no": "주문번호",
+                        "order_channel": "채널",
+                        "payment_status": "결제상태",
+                        "product_code": "상품코드",
+                        "mst_product_name": "상품명",
+                        "mst_size_name": "사이즈",
+                        "qty": "수량",
+                        "net_sales_amount": "매출액",
+                        "vat_amount": "부가세",
+                        "total_korea_cost_krw": "원가",
+                        "retail_gross_profit_krw": "매출총이익",
+                    }
+                )
+
+                show_retail = apply_currency_format(
+                    show_retail,
+                    ["매출액", "부가세", "원가", "매출총이익"],
+                )
+
+                st.dataframe(show_retail, use_container_width=True, height=460, hide_index=True)
 
         with tab3:
             if wholesale_df.empty:
@@ -352,17 +393,41 @@ def render_sales_combined():
                     "qty", "unit_price", "unit_cost", "net_sales_amount", "gross_profit_krw",
                     "grade_code_applied", "discount_rate_applied", "notes"
                 ] if c in wholesale_df.columns]
-                st.dataframe(wholesale_df[cols], use_container_width=True, height=460, hide_index=True)
+
+                show_wholesale = wholesale_df[cols].copy().rename(
+                    columns={
+                        "sale_date": "판매일자",
+                        "partner_name": "거래처",
+                        "item_type": "품목유형",
+                        "product_code": "상품코드",
+                        "product_name": "상품명",
+                        "qty": "수량",
+                        "unit_price": "판매단가",
+                        "unit_cost": "원가단가",
+                        "net_sales_amount": "매출액",
+                        "gross_profit_krw": "매출총이익",
+                        "grade_code_applied": "적용등급",
+                        "discount_rate_applied": "할인율",
+                        "notes": "비고",
+                    }
+                )
+
+                show_wholesale = apply_currency_format(
+                    show_wholesale,
+                    ["판매단가", "원가단가", "매출액", "매출총이익"],
+                )
+
+                st.dataframe(show_wholesale, use_container_width=True, height=460, hide_index=True)
 
         excel_bytes = to_excel_bytes({
-            "월별통합": df_month if 'df_month' in locals() else pd.DataFrame(),
+            "월별통합": df_month if "df_month" in locals() else pd.DataFrame(),
             "소매상세": retail_df,
             "도매상세": wholesale_df,
         })
         st.download_button(
-            "매출통합조회 엑셀 다운로드",
+            "매출분석 엑셀 다운로드",
             data=excel_bytes,
-            file_name="finance_sales_combined.xlsx",
+            file_name="finance_sales_analysis.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
@@ -371,10 +436,10 @@ def render_sales_combined():
 
 
 # =========================================================
-# 화면 2: 손익분석(월별)
+# 화면 2: 손익분석
 # =========================================================
 def render_profit_loss():
-    st.markdown("### 손익분석 (월별)")
+    st.markdown("### 손익분석")
 
     conn = get_conn()
     try:
@@ -459,17 +524,19 @@ def render_profit_loss():
         total_op = float(df_pl["영업이익"].sum())
 
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("총매출", f"{total_sales:,.0f}")
-        m2.metric("매출총이익", f"{total_gp:,.0f}")
-        m3.metric("지출", f"{total_exp:,.0f}")
-        m4.metric("영업이익", f"{total_op:,.0f}")
+        m1.metric("총매출", fmt_krw(total_sales))
+        m2.metric("매출총이익", fmt_krw(total_gp))
+        m3.metric("지출", fmt_krw(total_exp))
+        m4.metric("영업이익", fmt_krw(total_op))
 
         tab1, tab2 = st.tabs(["월별 손익", "지출 상세"])
 
         with tab1:
-            st.dataframe(df_pl, use_container_width=True, hide_index=True, height=460)
-            chart_df = df_pl.sort_values("월")
-            st.line_chart(chart_df.set_index("월")[["총매출", "매출총이익", "영업이익"]])
+            show_pl = apply_currency_format(
+                df_pl,
+                ["소매매출", "도매매출", "총매출", "소매원가", "도매원가", "총원가", "소매이익", "도매이익", "매출총이익", "지출", "영업이익"],
+            )
+            st.dataframe(show_pl, use_container_width=True, hide_index=True, height=460)
 
         with tab2:
             if expense_df.empty:
@@ -480,7 +547,15 @@ def render_profit_loss():
                     .sum()
                     .reset_index()
                     .sort_values("amount", ascending=False)
+                    .rename(
+                        columns={
+                            "expense_group": "지출그룹",
+                            "expense_name": "지출항목",
+                            "amount": "금액",
+                        }
+                    )
                 )
+                exp_sum = apply_currency_format(exp_sum, ["금액"])
                 st.dataframe(exp_sum, use_container_width=True, hide_index=True, height=420)
 
         excel_bytes = to_excel_bytes({
@@ -501,7 +576,7 @@ def render_profit_loss():
 
 
 def render():
-    tab1, tab2 = st.tabs(["매출통합조회", "손익분석"])
+    tab1, tab2 = st.tabs(["매출분석", "손익분석"])
     with tab1:
         render_sales_combined()
     with tab2:
