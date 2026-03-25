@@ -2,7 +2,7 @@ import os
 import sqlite3
 import pandas as pd
 import streamlit as st
-import plotly.express as px
+import altair as alt
 
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
@@ -36,13 +36,59 @@ def view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
     return cur.fetchone() is not None
 
 
-def get_retail_brand_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
+def group_minor_as_others(df: pd.DataFrame, label_col: str, value_col: str, top_n: int = 6) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    work = df[[label_col, value_col]].copy()
+    work = work.groupby(label_col, as_index=False)[value_col].sum()
+    work = work.sort_values(value_col, ascending=False)
+
+    if len(work) <= top_n:
+        return work
+
+    top_df = work.head(top_n).copy()
+    others_sum = work.iloc[top_n:][value_col].sum()
+
+    if others_sum > 0:
+        top_df = pd.concat(
+            [top_df, pd.DataFrame([{label_col: "기타", value_col: others_sum}])],
+            ignore_index=True,
+        )
+
+    return top_df
+
+
+def render_pie_chart(df: pd.DataFrame, label_col: str, value_col: str, title: str):
+    if df.empty or df[value_col].sum() == 0:
+        st.info("데이터가 없습니다.")
+        return
+
+    chart = (
+        alt.Chart(df)
+        .mark_arc(innerRadius=40)
+        .encode(
+            theta=alt.Theta(field=value_col, type="quantitative"),
+            color=alt.Color(field=label_col, type="nominal", legend=alt.Legend(title=None)),
+            tooltip=[
+                alt.Tooltip(label_col, title="구분"),
+                alt.Tooltip(value_col, title="금액", format=",.0f"),
+            ],
+        )
+        .properties(title=title, height=340)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def get_retail_brand_product_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     if not view_exists(conn, "v_retail_sales_enriched"):
-        return pd.DataFrame(columns=["brand", "qty", "sales", "profit"])
+        return pd.DataFrame(columns=["brand", "product_code", "product_name", "qty", "sales", "profit"])
 
     sql = """
         SELECT
             COALESCE(category, '미분류') AS brand,
+            COALESCE(product_code, product_code_raw, '') AS product_code,
+            COALESCE(mst_product_name, product_code_raw, '미분류') AS product_name,
             COALESCE(qty, 0) AS qty,
             COALESCE(net_sales_amount, 0) AS sales,
             COALESCE(retail_gross_profit_krw, 0) AS profit
@@ -57,7 +103,7 @@ def get_retail_brand_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     return df
 
 
-def get_wholesale_brand_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
+def get_wholesale_brand_product_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     source = None
     if view_exists(conn, "v_wholesale_sales"):
         source = "v_wholesale_sales"
@@ -65,12 +111,14 @@ def get_wholesale_brand_data(conn, date_from: str, date_to: str) -> pd.DataFrame
         source = "wholesale_sales"
 
     if not source:
-        return pd.DataFrame(columns=["brand", "qty", "sales", "profit"])
+        return pd.DataFrame(columns=["brand", "product_code", "product_name", "qty", "sales", "profit"])
 
     if source == "v_wholesale_sales":
         sql = """
             SELECT
-                COALESCE(item_type, product_name, '미분류') AS brand,
+                COALESCE(item_type, '미분류') AS brand,
+                COALESCE(product_code, '') AS product_code,
+                COALESCE(product_name, product_code, '미분류') AS product_name,
                 COALESCE(qty, 0) AS qty,
                 COALESCE(sales_amount, 0) AS sales,
                 COALESCE(profit_amount, 0) AS profit
@@ -80,7 +128,9 @@ def get_wholesale_brand_data(conn, date_from: str, date_to: str) -> pd.DataFrame
     else:
         sql = """
             SELECT
-                COALESCE(item_type, product_name, '미분류') AS brand,
+                COALESCE(item_type, '미분류') AS brand,
+                COALESCE(product_code, '') AS product_code,
+                COALESCE(product_name, product_code, '미분류') AS product_name,
                 COALESCE(qty, 0) AS qty,
                 COALESCE(sales_amount, 0) AS sales,
                 COALESCE(profit_amount, 0) AS profit
@@ -94,32 +144,6 @@ def get_wholesale_brand_data(conn, date_from: str, date_to: str) -> pd.DataFrame
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
     return df
-
-
-def group_minor_as_others(df: pd.DataFrame, value_col: str, label_col: str = "brand", top_n: int = 6) -> pd.DataFrame:
-    if df.empty:
-        return df
-
-    work = df[[label_col, value_col]].copy()
-    work = work.groupby(label_col, as_index=False)[value_col].sum()
-    work = work.sort_values(value_col, ascending=False)
-
-    if len(work) <= top_n:
-        return work
-
-    top_df = work.head(top_n).copy()
-    others_sum = work.iloc[top_n:][value_col].sum()
-
-    if others_sum > 0:
-        top_df = pd.concat(
-            [
-                top_df,
-                pd.DataFrame([{label_col: "기타", value_col: others_sum}])
-            ],
-            ignore_index=True,
-        )
-
-    return top_df
 
 
 def render():
@@ -150,12 +174,12 @@ def render():
         start_date = pd.Timestamp(year=year, month=month, day=1)
         end_date = start_date + pd.offsets.MonthEnd(1)
 
-        retail_df = get_retail_brand_data(
+        retail_df = get_retail_brand_product_data(
             conn,
             start_date.strftime("%Y-%m-%d"),
             end_date.strftime("%Y-%m-%d"),
         )
-        wholesale_df = get_wholesale_brand_data(
+        wholesale_df = get_wholesale_brand_product_data(
             conn,
             start_date.strftime("%Y-%m-%d"),
             end_date.strftime("%Y-%m-%d"),
@@ -173,8 +197,34 @@ def render():
 
         df = pd.concat(frames, ignore_index=True)
 
-        grouped = (
+        df["brand"] = df["brand"].fillna("미분류").astype(str).str.strip()
+        df.loc[df["brand"] == "", "brand"] = "미분류"
+
+        df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
+        df["product_name"] = df["product_name"].fillna("미분류").astype(str).str.strip()
+        df.loc[df["product_name"] == "", "product_name"] = "미분류"
+
+        # 브랜드 집계
+        brand_grouped = (
             df.groupby("brand", dropna=False)
+            .agg(
+                판매량=("qty", "sum"),
+                매출=("sales", "sum"),
+                이익=("profit", "sum"),
+            )
+            .reset_index()
+            .rename(columns={"brand": "브랜드"})
+        )
+
+        brand_grouped["마진율(%)"] = brand_grouped.apply(
+            lambda x: round((x["이익"] / x["매출"] * 100), 1) if x["매출"] else 0,
+            axis=1,
+        )
+        brand_grouped = brand_grouped.sort_values("매출", ascending=False).reset_index(drop=True)
+
+        # 상품 집계
+        product_grouped = (
+            df.groupby(["product_code", "product_name"], dropna=False)
             .agg(
                 판매량=("qty", "sum"),
                 매출=("sales", "sum"),
@@ -183,24 +233,18 @@ def render():
             .reset_index()
         )
 
-        grouped["브랜드"] = grouped["brand"].fillna("미분류").astype(str).str.strip()
-        grouped.loc[grouped["브랜드"] == "", "브랜드"] = "미분류"
+        product_grouped["상품코드"] = product_grouped["product_code"].fillna("").astype(str).str.strip()
+        product_grouped.loc[product_grouped["상품코드"] == "", "상품코드"] = product_grouped["product_name"]
 
-        grouped = (
-            grouped.groupby("브랜드", as_index=False)[["판매량", "매출", "이익"]]
-            .sum()
-        )
-
-        grouped["마진율(%)"] = grouped.apply(
+        product_grouped["마진율(%)"] = product_grouped.apply(
             lambda x: round((x["이익"] / x["매출"] * 100), 1) if x["매출"] else 0,
             axis=1,
         )
+        product_grouped = product_grouped.sort_values("매출", ascending=False).reset_index(drop=True)
 
-        grouped = grouped.sort_values("매출", ascending=False).reset_index(drop=True)
-
-        total_sales = grouped["매출"].sum()
-        total_profit = grouped["이익"].sum()
-        brand_count = len(grouped)
+        total_sales = brand_grouped["매출"].sum()
+        total_profit = brand_grouped["이익"].sum()
+        brand_count = len(brand_grouped)
 
         k1, k2, k3 = st.columns(3)
         k1.metric("총매출", fmt_krw(total_sales))
@@ -211,79 +255,70 @@ def render():
 
         st.divider()
 
-        # 파이차트용 데이터
-        qty_pie_df = group_minor_as_others(
-            grouped.rename(columns={"브랜드": "brand", "판매량": "value"}),
-            value_col="value",
-            label_col="brand",
+        # 파이차트 2개
+        brand_pie_df = group_minor_as_others(
+            brand_grouped.rename(columns={"브랜드": "구분", "매출": "금액"}),
+            label_col="구분",
+            value_col="금액",
             top_n=6,
         )
-        sales_pie_df = group_minor_as_others(
-            grouped.rename(columns={"브랜드": "brand", "매출": "value"}),
-            value_col="value",
-            label_col="brand",
+
+        product_pie_df = group_minor_as_others(
+            product_grouped.rename(columns={"상품코드": "구분", "매출": "금액"}),
+            label_col="구분",
+            value_col="금액",
             top_n=6,
         )
 
         p1, p2 = st.columns(2)
 
         with p1:
-            st.markdown("### 브랜드 판매량 비중")
-            if qty_pie_df.empty or qty_pie_df["value"].sum() == 0:
-                st.info("판매량 데이터가 없습니다.")
-            else:
-                fig_qty = px.pie(
-                    qty_pie_df,
-                    names="brand",
-                    values="value",
-                    hole=0.35,
-                )
-                fig_qty.update_traces(textposition="inside", textinfo="percent+label")
-                fig_qty.update_layout(margin=dict(l=10, r=10, t=10, b=10))
-                st.plotly_chart(fig_qty, use_container_width=True)
+            render_pie_chart(
+                brand_pie_df,
+                label_col="구분",
+                value_col="금액",
+                title="브랜드별 매출금액 비중",
+            )
 
         with p2:
-            st.markdown("### 브랜드 판매금액 비중")
-            if sales_pie_df.empty or sales_pie_df["value"].sum() == 0:
-                st.info("판매금액 데이터가 없습니다.")
-            else:
-                fig_sales = px.pie(
-                    sales_pie_df,
-                    names="brand",
-                    values="value",
-                    hole=0.35,
-                )
-                fig_sales.update_traces(textposition="inside", textinfo="percent+label")
-                fig_sales.update_layout(margin=dict(l=10, r=10, t=10, b=10))
-                st.plotly_chart(fig_sales, use_container_width=True)
+            render_pie_chart(
+                product_pie_df,
+                label_col="구분",
+                value_col="금액",
+                title="시가상품별 매출금액 비중",
+            )
 
         st.divider()
 
+        # 하단 막대차트 2개 - 상품 기준 / X축 상품코드
         b1, b2 = st.columns(2)
 
+        top_product_sales = product_grouped.head(20).copy()
+        top_product_margin = product_grouped.sort_values("마진율(%)", ascending=False).head(20).copy()
+
         with b1:
-            st.markdown("### 브랜드별 매출")
-            sales_bar_df = grouped.set_index("브랜드")[["매출"]]
+            st.markdown("### 시가상품별 매출금액")
+            sales_bar_df = top_product_sales.set_index("상품코드")[["매출"]]
             st.bar_chart(sales_bar_df, use_container_width=True)
 
         with b2:
-            st.markdown("### 브랜드별 마진율")
-            margin_bar_df = grouped.set_index("브랜드")[["마진율(%)"]]
+            st.markdown("### 시가상품별 마진율")
+            margin_bar_df = top_product_margin.set_index("상품코드")[["마진율(%)"]]
             st.bar_chart(margin_bar_df, use_container_width=True)
 
         st.divider()
 
         st.markdown("### 브랜드 상세")
 
-        show_df = grouped.copy()
-        show_df["매출"] = show_df["매출"].apply(fmt_krw)
-        show_df["이익"] = show_df["이익"].apply(fmt_krw)
+        show_brand_df = brand_grouped.copy()
+        show_brand_df["매출"] = show_brand_df["매출"].apply(fmt_krw)
+        show_brand_df["이익"] = show_brand_df["이익"].apply(fmt_krw)
 
         st.dataframe(
-            show_df[["브랜드", "판매량", "매출", "이익", "마진율(%)"]],
+            show_brand_df[["브랜드", "판매량", "매출", "이익", "마진율(%)"]],
             use_container_width=True,
             hide_index=True,
-            height=450,
+            height=420,
         )
 
     finally:
