@@ -340,7 +340,7 @@ def render():
             top_product_margin = pd.DataFrame(columns=["상품코드", "마진율(%)"])
         else:
             top_product_sales = product_grouped.head(20).copy()
-            top_product_margin = product_grouped.sort_values("마진율(%)", ascending=False).head(20).copy()
+            top_product_profit = product_grouped.sort_values("이익", ascending=False).head(20).copy()
 
         with b1:
             st.markdown("### 시가상품별 매출금액")
@@ -351,12 +351,12 @@ def render():
                 st.bar_chart(sales_bar_df, use_container_width=True)
 
         with b2:
-            st.markdown("### 시가상품별 마진율")
-            if top_product_margin.empty:
-                st.info("시가상품 데이터가 없습니다.")
-            else:
-                margin_bar_df = top_product_margin.set_index("상품코드")[["마진율(%)"]]
-                st.bar_chart(margin_bar_df, use_container_width=True)
+    st.markdown("### 시가상품별 마진금액")
+    if top_product_profit.empty:
+        st.info("시가상품 데이터가 없습니다.")
+    else:
+        profit_bar_df = top_product_profit.set_index("상품코드")[["이익"]]
+        st.bar_chart(profit_bar_df, use_container_width=True)
 
         st.divider()
 
