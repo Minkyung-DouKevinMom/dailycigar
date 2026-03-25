@@ -36,7 +36,16 @@ def view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
     return cur.fetchone() is not None
 
 
-def group_minor_as_others(df: pd.DataFrame, label_col: str, value_col: str, top_n: int = 6) -> pd.DataFrame:
+def normalize_code(series: pd.Series) -> pd.Series:
+    return series.fillna("").astype(str).str.strip().str.upper()
+
+
+def group_minor_as_others(
+    df: pd.DataFrame,
+    label_col: str,
+    value_col: str,
+    top_n: int = 6,
+) -> pd.DataFrame:
     if df.empty:
         return df.copy()
 
@@ -78,6 +87,22 @@ def render_pie_chart(df: pd.DataFrame, label_col: str, value_col: str, title: st
         .properties(title=title, height=340)
     )
     st.altair_chart(chart, use_container_width=True)
+
+
+def get_cigar_product_codes(conn) -> set:
+    if not table_exists(conn, "product_mst"):
+        return set()
+
+    df = pd.read_sql_query(
+        """
+        SELECT DISTINCT UPPER(TRIM(COALESCE(product_code, ''))) AS product_code
+        FROM product_mst
+        WHERE TRIM(COALESCE(product_code, '')) <> ''
+        """,
+        conn,
+    )
+
+    return set(df["product_code"].dropna().tolist())
 
 
 def get_retail_brand_product_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
@@ -200,11 +225,11 @@ def render():
         df["brand"] = df["brand"].fillna("미분류").astype(str).str.strip()
         df.loc[df["brand"] == "", "brand"] = "미분류"
 
-        df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
+        df["product_code"] = normalize_code(df["product_code"])
         df["product_name"] = df["product_name"].fillna("미분류").astype(str).str.strip()
         df.loc[df["product_name"] == "", "product_name"] = "미분류"
 
-        # 브랜드 집계
+        # 브랜드 집계 (전체)
         brand_grouped = (
             df.groupby("brand", dropna=False)
             .agg(
@@ -222,25 +247,39 @@ def render():
         )
         brand_grouped = brand_grouped.sort_values("매출", ascending=False).reset_index(drop=True)
 
-        # 상품 집계
-        product_grouped = (
-            df.groupby(["product_code", "product_name"], dropna=False)
-            .agg(
-                판매량=("qty", "sum"),
-                매출=("sales", "sum"),
-                이익=("profit", "sum"),
+        # 시가상품(product_mst 등록 상품)만 필터
+        cigar_codes = get_cigar_product_codes(conn)
+
+        cigar_df = df.copy()
+        if cigar_codes:
+            cigar_df = cigar_df[cigar_df["product_code"].isin(cigar_codes)].copy()
+        else:
+            cigar_df = pd.DataFrame(columns=df.columns)
+
+        # 상품 집계 (시가상품만)
+        if cigar_df.empty:
+            product_grouped = pd.DataFrame(
+                columns=["product_code", "product_name", "판매량", "매출", "이익", "상품코드", "마진율(%)"]
             )
-            .reset_index()
-        )
+        else:
+            product_grouped = (
+                cigar_df.groupby(["product_code", "product_name"], dropna=False)
+                .agg(
+                    판매량=("qty", "sum"),
+                    매출=("sales", "sum"),
+                    이익=("profit", "sum"),
+                )
+                .reset_index()
+            )
 
-        product_grouped["상품코드"] = product_grouped["product_code"].fillna("").astype(str).str.strip()
-        product_grouped.loc[product_grouped["상품코드"] == "", "상품코드"] = product_grouped["product_name"]
+            product_grouped["상품코드"] = product_grouped["product_code"].fillna("").astype(str).str.strip()
+            product_grouped.loc[product_grouped["상품코드"] == "", "상품코드"] = product_grouped["product_name"]
 
-        product_grouped["마진율(%)"] = product_grouped.apply(
-            lambda x: round((x["이익"] / x["매출"] * 100), 1) if x["매출"] else 0,
-            axis=1,
-        )
-        product_grouped = product_grouped.sort_values("매출", ascending=False).reset_index(drop=True)
+            product_grouped["마진율(%)"] = product_grouped.apply(
+                lambda x: round((x["이익"] / x["매출"] * 100), 1) if x["매출"] else 0,
+                axis=1,
+            )
+            product_grouped = product_grouped.sort_values("매출", ascending=False).reset_index(drop=True)
 
         total_sales = brand_grouped["매출"].sum()
         total_profit = brand_grouped["이익"].sum()
@@ -255,7 +294,7 @@ def render():
 
         st.divider()
 
-        # 파이차트 2개
+        # 파이차트
         brand_pie_df = group_minor_as_others(
             brand_grouped.rename(columns={"브랜드": "구분", "매출": "금액"}),
             label_col="구분",
@@ -263,12 +302,15 @@ def render():
             top_n=6,
         )
 
-        product_pie_df = group_minor_as_others(
-            product_grouped.rename(columns={"상품코드": "구분", "매출": "금액"}),
-            label_col="구분",
-            value_col="금액",
-            top_n=6,
-        )
+        if product_grouped.empty:
+            product_pie_df = pd.DataFrame(columns=["구분", "금액"])
+        else:
+            product_pie_df = group_minor_as_others(
+                product_grouped.rename(columns={"상품코드": "구분", "매출": "금액"}),
+                label_col="구분",
+                value_col="금액",
+                top_n=6,
+            )
 
         p1, p2 = st.columns(2)
 
@@ -290,21 +332,31 @@ def render():
 
         st.divider()
 
-        # 하단 막대차트 2개 - 상품 기준 / X축 상품코드
+        # 하단 막대차트 2개 - 시가상품만 / X축 상품코드
         b1, b2 = st.columns(2)
 
-        top_product_sales = product_grouped.head(20).copy()
-        top_product_margin = product_grouped.sort_values("마진율(%)", ascending=False).head(20).copy()
+        if product_grouped.empty:
+            top_product_sales = pd.DataFrame(columns=["상품코드", "매출"])
+            top_product_margin = pd.DataFrame(columns=["상품코드", "마진율(%)"])
+        else:
+            top_product_sales = product_grouped.head(20).copy()
+            top_product_margin = product_grouped.sort_values("마진율(%)", ascending=False).head(20).copy()
 
         with b1:
             st.markdown("### 시가상품별 매출금액")
-            sales_bar_df = top_product_sales.set_index("상품코드")[["매출"]]
-            st.bar_chart(sales_bar_df, use_container_width=True)
+            if top_product_sales.empty:
+                st.info("시가상품 데이터가 없습니다.")
+            else:
+                sales_bar_df = top_product_sales.set_index("상품코드")[["매출"]]
+                st.bar_chart(sales_bar_df, use_container_width=True)
 
         with b2:
             st.markdown("### 시가상품별 마진율")
-            margin_bar_df = top_product_margin.set_index("상품코드")[["마진율(%)"]]
-            st.bar_chart(margin_bar_df, use_container_width=True)
+            if top_product_margin.empty:
+                st.info("시가상품 데이터가 없습니다.")
+            else:
+                margin_bar_df = top_product_margin.set_index("상품코드")[["마진율(%)"]]
+                st.bar_chart(margin_bar_df, use_container_width=True)
 
         st.divider()
 
