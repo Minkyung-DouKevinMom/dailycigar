@@ -65,6 +65,97 @@ def apply_currency_format(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     return result
 
 
+def get_table_columns(conn: sqlite3.Connection, table_name: str) -> List[str]:
+    try:
+        cur = conn.execute(f"PRAGMA table_info({table_name})")
+        rows = cur.fetchall()
+        return [r[1] for r in rows]
+    except Exception:
+        return []
+
+
+def get_non_cigar_purchase_price_map(conn: sqlite3.Connection) -> Dict[str, float]:
+    if not table_exists(conn, "non_cigar_product_mst"):
+        return {}
+
+    cols = get_table_columns(conn, "non_cigar_product_mst")
+    if "product_code" not in cols or "purchase_price" not in cols:
+        return {}
+
+    sql = """
+        SELECT
+            TRIM(COALESCE(product_code, '')) AS product_code,
+            COALESCE(purchase_price, 0) AS purchase_price
+        FROM non_cigar_product_mst
+    """
+    try:
+        df = pd.read_sql_query(sql, conn)
+    except Exception:
+        return {}
+
+    if df.empty:
+        return {}
+
+    df["product_code"] = df["product_code"].astype(str).str.strip()
+    df["purchase_price"] = pd.to_numeric(df["purchase_price"], errors="coerce").fillna(0)
+    df = df[df["product_code"] != ""].copy()
+
+    return dict(zip(df["product_code"], df["purchase_price"]))
+
+
+def apply_non_cigar_cost_logic(retail_df: pd.DataFrame, conn: sqlite3.Connection) -> pd.DataFrame:
+    """
+    시가는 기존 원가/이익 유지
+    시가 외 상품만 purchase_price 기준으로 원가/이익 재계산
+    """
+    if retail_df.empty:
+        return retail_df
+
+    df = retail_df.copy()
+
+    if "product_code" not in df.columns:
+        if "total_korea_cost_krw" not in df.columns:
+            df["total_korea_cost_krw"] = 0.0
+        if "retail_gross_profit_krw" not in df.columns:
+            df["retail_gross_profit_krw"] = 0.0
+        return df
+
+    purchase_price_map = get_non_cigar_purchase_price_map(conn)
+
+    if "total_korea_cost_krw" not in df.columns:
+        df["total_korea_cost_krw"] = 0.0
+    if "retail_gross_profit_krw" not in df.columns:
+        df["retail_gross_profit_krw"] = 0.0
+    if "qty" not in df.columns:
+        df["qty"] = 0.0
+    if "net_sales_amount" not in df.columns:
+        df["net_sales_amount"] = 0.0
+
+    df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
+    df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
+    df["net_sales_amount"] = pd.to_numeric(df["net_sales_amount"], errors="coerce").fillna(0)
+    df["total_korea_cost_krw"] = pd.to_numeric(df["total_korea_cost_krw"], errors="coerce").fillna(0)
+    df["retail_gross_profit_krw"] = pd.to_numeric(df["retail_gross_profit_krw"], errors="coerce").fillna(0)
+
+    if purchase_price_map:
+        non_cigar_mask = df["product_code"].isin(purchase_price_map.keys())
+
+        df.loc[non_cigar_mask, "_purchase_price"] = (
+            df.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
+        )
+        df.loc[non_cigar_mask, "total_korea_cost_krw"] = (
+            df.loc[non_cigar_mask, "_purchase_price"] * df.loc[non_cigar_mask, "qty"]
+        )
+        df.loc[non_cigar_mask, "retail_gross_profit_krw"] = (
+            df.loc[non_cigar_mask, "net_sales_amount"] - df.loc[non_cigar_mask, "total_korea_cost_krw"]
+        )
+
+        if "_purchase_price" in df.columns:
+            df = df.drop(columns=["_purchase_price"])
+
+    return df
+
+
 # =========================================================
 # Retail
 # =========================================================
@@ -127,6 +218,14 @@ def get_retail_data(conn, date_from: Optional[str], date_to: Optional[str]) -> T
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
+    if "total_korea_cost_krw" not in df.columns:
+        df["total_korea_cost_krw"] = 0.0
+    if "retail_gross_profit_krw" not in df.columns:
+        df["retail_gross_profit_krw"] = 0.0
+
+    # 시가 외 상품만 매입가 기준으로 원가/이익 재계산
+    df = apply_non_cigar_cost_logic(df, conn)
+
     return df, source
 
 
@@ -151,40 +250,30 @@ def get_wholesale_data(conn, date_from: Optional[str], date_to: Optional[str]) -
                 unit_price,
                 unit_cost,
                 sales_amount,
-                profit_amount,
-                grade_code_applied,
-                discount_rate_applied,
-                notes,
-                created_at,
-                updated_at
+                vat_amount,
+                profit_amount
             FROM v_wholesale_sales
             WHERE 1=1
         """
-        params = []
-        if date_from:
-            sql += " AND sale_date >= ?"
-            params.append(date_from)
-        if date_to:
-            sql += " AND sale_date <= ?"
-            params.append(date_to)
-        sql += " ORDER BY sale_date DESC, id DESC"
+    else:
+        sql = """
+            SELECT
+                id,
+                sale_date,
+                partner_name,
+                item_type,
+                product_name,
+                product_code,
+                qty,
+                unit_price,
+                unit_cost,
+                sales_amount,
+                vat_amount,
+                profit_amount
+            FROM wholesale_sales
+            WHERE 1=1
+        """
 
-        df = pd.read_sql_query(sql, conn, params=params)
-        if not df.empty:
-            df["net_sales_amount"] = pd.to_numeric(df["sales_amount"], errors="coerce").fillna(0)
-            df["gross_profit_krw"] = pd.to_numeric(df["profit_amount"], errors="coerce").fillna(0)
-            df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
-            df["unit_price"] = pd.to_numeric(df["unit_price"], errors="coerce").fillna(0)
-            df["unit_cost"] = pd.to_numeric(df["unit_cost"], errors="coerce").fillna(0)
-            df["total_korea_cost_krw"] = df["qty"] * df["unit_cost"]
-            df["vat_amount"] = 0.0
-        return df, source
-
-    sql = """
-        SELECT *
-        FROM wholesale_sales
-        WHERE 1=1
-    """
     params = []
     if date_from:
         sql += " AND sale_date >= ?"
@@ -192,23 +281,23 @@ def get_wholesale_data(conn, date_from: Optional[str], date_to: Optional[str]) -
     if date_to:
         sql += " AND sale_date <= ?"
         params.append(date_to)
+
     sql += " ORDER BY sale_date DESC, id DESC"
     df = pd.read_sql_query(sql, conn, params=params)
 
-    rename_map = {}
-    if "sales_amount" in df.columns:
-        rename_map["sales_amount"] = "net_sales_amount"
-    if "profit_amount" in df.columns:
-        rename_map["profit_amount"] = "gross_profit_krw"
-    if rename_map:
-        df = df.rename(columns=rename_map)
-
-    for c in ["qty", "net_sales_amount", "gross_profit_krw", "unit_cost"]:
+    for c in ["qty", "sales_amount", "profit_amount", "unit_cost", "vat_amount"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
+    if "sales_amount" in df.columns and "net_sales_amount" not in df.columns:
+        df["net_sales_amount"] = df["sales_amount"]
+
+    if "profit_amount" in df.columns and "gross_profit_krw" not in df.columns:
+        df["gross_profit_krw"] = df["profit_amount"]
+
     if "total_korea_cost_krw" not in df.columns and "qty" in df.columns and "unit_cost" in df.columns:
         df["total_korea_cost_krw"] = df["qty"] * df["unit_cost"]
+
     if "vat_amount" not in df.columns:
         df["vat_amount"] = 0.0
 
@@ -232,9 +321,10 @@ def get_expense_data(conn, date_from: Optional[str], date_to: Optional[str]) -> 
             t.payment_method
         FROM expense_txn t
         LEFT JOIN expense_category_mst c
-          ON t.expense_category_id = c.id
+            ON t.expense_category_id = c.id
         WHERE 1=1
     """
+
     params = []
     if date_from:
         sql += " AND t.expense_date >= ?"
@@ -245,8 +335,10 @@ def get_expense_data(conn, date_from: Optional[str], date_to: Optional[str]) -> 
 
     sql += " ORDER BY t.expense_date DESC, t.id DESC"
     df = pd.read_sql_query(sql, conn, params=params)
+
     if not df.empty:
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
+
     return df
 
 
@@ -279,11 +371,13 @@ def render_sales_combined():
         total_sales = retail_sales + wholesale_sales
         total_profit = retail_profit + wholesale_profit
 
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("소매매출", fmt_krw(retail_sales))
-        m2.metric("도매매출", fmt_krw(wholesale_sales))
-        m3.metric("통합매출", fmt_krw(total_sales))
-        m4.metric("통합매출총이익", fmt_krw(total_profit))
+        m2.metric("소매이익", fmt_krw(retail_profit))
+        m3.metric("도매매출", fmt_krw(wholesale_sales))
+        m4.metric("도매이익", fmt_krw(wholesale_profit))
+        m5.metric("통합매출", fmt_krw(total_sales))
+        m6.metric("통합매출총이익", fmt_krw(total_profit))
 
         src_text = []
         if retail_source:
@@ -304,10 +398,8 @@ def render_sales_combined():
                 g = x.groupby("월", dropna=False).agg(
                     소매매출=("net_sales_amount", "sum"),
                     소매건수=("order_no", "nunique") if "order_no" in x.columns else ("sale_date", "count"),
+                    소매이익=("retail_gross_profit_krw", "sum"),
                 ).reset_index()
-                if "retail_gross_profit_krw" in x.columns:
-                    gp = x.groupby("월", dropna=False)["retail_gross_profit_krw"].sum().reset_index(name="소매이익")
-                    g = g.merge(gp, on="월", how="left")
                 month_frames.append(g)
 
             if not wholesale_df.empty and "sale_date" in wholesale_df.columns:
@@ -316,120 +408,95 @@ def render_sales_combined():
                 g = x.groupby("월", dropna=False).agg(
                     도매매출=("net_sales_amount", "sum"),
                     도매건수=("id", "count") if "id" in x.columns else ("sale_date", "count"),
+                    도매이익=("gross_profit_krw", "sum"),
                 ).reset_index()
-                if "gross_profit_krw" in x.columns:
-                    gp = x.groupby("월", dropna=False)["gross_profit_krw"].sum().reset_index(name="도매이익")
-                    g = g.merge(gp, on="월", how="left")
                 month_frames.append(g)
 
-            if month_frames:
+            if not month_frames:
+                st.info("해당 기간 데이터가 없습니다.")
+            else:
                 df_month = month_frames[0]
-                for add in month_frames[1:]:
-                    df_month = df_month.merge(add, on="월", how="outer")
+                for extra in month_frames[1:]:
+                    df_month = df_month.merge(extra, on="월", how="outer")
 
-                for c in [c for c in df_month.columns if c != "월"]:
-                    df_month[c] = pd.to_numeric(df_month[c], errors="coerce").fillna(0)
-
-                for c in ["소매매출", "도매매출", "소매이익", "도매이익", "소매건수", "도매건수"]:
+                for c in ["소매매출", "도매매출", "소매이익", "도매이익"]:
                     if c not in df_month.columns:
-                        df_month[c] = 0
+                        df_month[c] = 0.0
+                    df_month[c] = pd.to_numeric(df_month[c], errors="coerce").fillna(0)
 
                 df_month["통합매출"] = df_month["소매매출"] + df_month["도매매출"]
                 df_month["통합이익"] = df_month["소매이익"] + df_month["도매이익"]
-                df_month["통합건수"] = df_month["소매건수"] + df_month["도매건수"]
-                df_month = df_month.sort_values("월", ascending=False)
+                df_month = df_month.sort_values("월")
 
-                show_df = apply_currency_format(
+                show = apply_currency_format(
                     df_month,
                     ["소매매출", "도매매출", "통합매출", "소매이익", "도매이익", "통합이익"],
                 )
+                st.dataframe(show, use_container_width=True, hide_index=True, height=420)
 
-                st.dataframe(show_df, use_container_width=True, hide_index=True, height=420)
-            else:
-                df_month = pd.DataFrame()
-                st.info("월별 통합 데이터가 없습니다.")
+            excel_bytes = to_excel_bytes({
+                "월별통합": df_month if "df_month" in locals() else pd.DataFrame(),
+                "소매상세": retail_df,
+                "도매상세": wholesale_df,
+            })
+            st.download_button(
+                "매출분석 엑셀 다운로드",
+                data=excel_bytes,
+                file_name="finance_sales_analysis.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
         with tab2:
             if retail_df.empty:
-                st.info("소매 데이터가 없습니다.")
+                st.info("해당 기간 소매 데이터가 없습니다.")
             else:
-                cols = [c for c in [
-                    "sale_date", "sale_datetime", "order_no", "order_channel", "payment_status",
-                    "product_code", "mst_product_name", "mst_size_name",
-                    "qty", "net_sales_amount", "vat_amount", "total_korea_cost_krw", "retail_gross_profit_krw"
-                ] if c in retail_df.columns]
+                show = retail_df.copy()
 
-                show_retail = retail_df[cols].copy().rename(
-                    columns={
-                        "sale_date": "판매일자",
-                        "sale_datetime": "판매일시",
-                        "order_no": "주문번호",
-                        "order_channel": "채널",
-                        "payment_status": "결제상태",
-                        "product_code": "상품코드",
-                        "mst_product_name": "상품명",
-                        "mst_size_name": "사이즈",
-                        "qty": "수량",
-                        "net_sales_amount": "매출액",
-                        "vat_amount": "부가세",
-                        "total_korea_cost_krw": "원가",
-                        "retail_gross_profit_krw": "매출총이익",
-                    }
-                )
+                rename_map = {
+                    "sale_date": "판매일자",
+                    "sale_datetime": "판매일시",
+                    "order_no": "주문번호",
+                    "order_channel": "채널",
+                    "payment_status": "결제상태",
+                    "product_code": "상품코드",
+                    "product_code_raw": "원본상품코드",
+                    "mst_product_name": "상품명",
+                    "mst_size_name": "사이즈",
+                    "category": "카테고리",
+                    "qty": "수량",
+                    "net_sales_amount": "매출액",
+                    "vat_amount": "부가세",
+                    "total_korea_cost_krw": "원가",
+                    "retail_gross_profit_krw": "매출총이익",
+                }
+                show = show.rename(columns=rename_map)
 
-                show_retail = apply_currency_format(
-                    show_retail,
-                    ["매출액", "부가세", "원가", "매출총이익"],
-                )
-
-                st.dataframe(show_retail, use_container_width=True, height=460, hide_index=True)
+                show = apply_currency_format(show, ["매출액", "부가세", "원가", "매출총이익"])
+                st.dataframe(show, use_container_width=True, hide_index=True, height=480)
+                st.caption("※ 시가는 기존 원가/이익을 유지하고, 시가 외 항목만 매입가 기준으로 원가/이익을 재계산합니다.")
 
         with tab3:
             if wholesale_df.empty:
-                st.info("도매 데이터가 없습니다.")
+                st.info("해당 기간 도매 데이터가 없습니다.")
             else:
-                cols = [c for c in [
-                    "sale_date", "partner_name", "item_type", "product_code", "product_name",
-                    "qty", "unit_price", "unit_cost", "net_sales_amount", "gross_profit_krw",
-                    "grade_code_applied", "discount_rate_applied", "notes"
-                ] if c in wholesale_df.columns]
-
-                show_wholesale = wholesale_df[cols].copy().rename(
-                    columns={
-                        "sale_date": "판매일자",
-                        "partner_name": "거래처",
-                        "item_type": "품목유형",
-                        "product_code": "상품코드",
-                        "product_name": "상품명",
-                        "qty": "수량",
-                        "unit_price": "판매단가",
-                        "unit_cost": "원가단가",
-                        "net_sales_amount": "매출액",
-                        "gross_profit_krw": "매출총이익",
-                        "grade_code_applied": "적용등급",
-                        "discount_rate_applied": "할인율",
-                        "notes": "비고",
-                    }
-                )
-
-                show_wholesale = apply_currency_format(
-                    show_wholesale,
-                    ["판매단가", "원가단가", "매출액", "매출총이익"],
-                )
-
-                st.dataframe(show_wholesale, use_container_width=True, height=460, hide_index=True)
-
-        excel_bytes = to_excel_bytes({
-            "월별통합": df_month if "df_month" in locals() else pd.DataFrame(),
-            "소매상세": retail_df,
-            "도매상세": wholesale_df,
-        })
-        st.download_button(
-            "매출분석 엑셀 다운로드",
-            data=excel_bytes,
-            file_name="finance_sales_analysis.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+                show = wholesale_df.copy()
+                rename_map = {
+                    "sale_date": "판매일자",
+                    "partner_name": "거래처",
+                    "item_type": "구분",
+                    "product_name": "상품명",
+                    "product_code": "상품코드",
+                    "qty": "수량",
+                    "unit_price": "단가",
+                    "unit_cost": "원가단가",
+                    "net_sales_amount": "매출액",
+                    "vat_amount": "부가세",
+                    "total_korea_cost_krw": "총원가",
+                    "gross_profit_krw": "매출총이익",
+                }
+                show = show.rename(columns=rename_map)
+                show = apply_currency_format(show, ["단가", "원가단가", "매출액", "부가세", "총원가", "매출총이익"])
+                st.dataframe(show, use_container_width=True, hide_index=True, height=480)
 
     finally:
         conn.close()
@@ -462,24 +529,30 @@ def render_profit_loss():
             x = retail_df.copy()
             x["월"] = monthify(x["sale_date"])
             g = x.groupby("월", dropna=False).agg(소매매출=("net_sales_amount", "sum")).reset_index()
+
             if "total_korea_cost_krw" in x.columns:
                 c = x.groupby("월", dropna=False)["total_korea_cost_krw"].sum().reset_index(name="소매원가")
                 g = g.merge(c, on="월", how="left")
+
             if "retail_gross_profit_krw" in x.columns:
                 p = x.groupby("월", dropna=False)["retail_gross_profit_krw"].sum().reset_index(name="소매이익")
                 g = g.merge(p, on="월", how="left")
+
             monthly_frames.append(g)
 
         if not wholesale_df.empty:
             x = wholesale_df.copy()
             x["월"] = monthify(x["sale_date"])
             g = x.groupby("월", dropna=False).agg(도매매출=("net_sales_amount", "sum")).reset_index()
+
             if "total_korea_cost_krw" in x.columns:
                 c = x.groupby("월", dropna=False)["total_korea_cost_krw"].sum().reset_index(name="도매원가")
                 g = g.merge(c, on="월", how="left")
+
             if "gross_profit_krw" in x.columns:
                 p = x.groupby("월", dropna=False)["gross_profit_krw"].sum().reset_index(name="도매이익")
                 g = g.merge(p, on="월", how="left")
+
             monthly_frames.append(g)
 
         if not expense_df.empty:
@@ -493,50 +566,43 @@ def render_profit_loss():
             return
 
         df_pl = monthly_frames[0]
-        for add in monthly_frames[1:]:
-            df_pl = df_pl.merge(add, on="월", how="outer")
+        for extra in monthly_frames[1:]:
+            df_pl = df_pl.merge(extra, on="월", how="outer")
 
-        for c in [c for c in df_pl.columns if c != "월"]:
-            df_pl[c] = pd.to_numeric(df_pl[c], errors="coerce").fillna(0)
-
-        for c in ["소매매출", "도매매출", "소매원가", "도매원가", "소매이익", "도매이익", "지출"]:
+        for c in ["소매매출", "소매원가", "소매이익", "도매매출", "도매원가", "도매이익", "지출"]:
             if c not in df_pl.columns:
-                df_pl[c] = 0
+                df_pl[c] = 0.0
+            df_pl[c] = pd.to_numeric(df_pl[c], errors="coerce").fillna(0)
 
         df_pl["총매출"] = df_pl["소매매출"] + df_pl["도매매출"]
         df_pl["총원가"] = df_pl["소매원가"] + df_pl["도매원가"]
         df_pl["매출총이익"] = df_pl["소매이익"] + df_pl["도매이익"]
-
-        zero_gp_mask = (df_pl["매출총이익"] == 0) & (df_pl["총매출"] != 0)
-        df_pl.loc[zero_gp_mask, "매출총이익"] = df_pl.loc[zero_gp_mask, "총매출"] - df_pl.loc[zero_gp_mask, "총원가"]
-
         df_pl["영업이익"] = df_pl["매출총이익"] - df_pl["지출"]
-        df_pl["영업이익률(%)"] = df_pl.apply(
-            lambda x: round((x["영업이익"] / x["총매출"] * 100), 1) if x["총매출"] else 0,
-            axis=1,
-        )
-
-        df_pl = df_pl.sort_values("월", ascending=False)
+        df_pl = df_pl.sort_values("월")
 
         total_sales = float(df_pl["총매출"].sum())
         total_gp = float(df_pl["매출총이익"].sum())
         total_exp = float(df_pl["지출"].sum())
         total_op = float(df_pl["영업이익"].sum())
+        total_retail_profit = float(df_pl["소매이익"].sum()) if "소매이익" in df_pl.columns else 0
+        total_wholesale_profit = float(df_pl["도매이익"].sum()) if "도매이익" in df_pl.columns else 0
 
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
         m1.metric("총매출", fmt_krw(total_sales))
-        m2.metric("매출총이익", fmt_krw(total_gp))
-        m3.metric("지출", fmt_krw(total_exp))
-        m4.metric("영업이익", fmt_krw(total_op))
+        m2.metric("소매이익", fmt_krw(total_retail_profit))
+        m3.metric("도매이익", fmt_krw(total_wholesale_profit))
+        m4.metric("매출총이익", fmt_krw(total_gp))
+        m5.metric("지출", fmt_krw(total_exp))
+        m6.metric("영업이익", fmt_krw(total_op))
 
         tab1, tab2 = st.tabs(["월별 손익", "지출 상세"])
 
         with tab1:
-            show_pl = apply_currency_format(
+            show = apply_currency_format(
                 df_pl,
-                ["소매매출", "도매매출", "총매출", "소매원가", "도매원가", "총원가", "소매이익", "도매이익", "매출총이익", "지출", "영업이익"],
+                ["소매매출", "소매원가", "소매이익", "도매매출", "도매원가", "도매이익", "총매출", "총원가", "매출총이익", "지출", "영업이익"],
             )
-            st.dataframe(show_pl, use_container_width=True, hide_index=True, height=460)
+            st.dataframe(show, use_container_width=True, hide_index=True, height=420)
 
         with tab2:
             if expense_df.empty:
