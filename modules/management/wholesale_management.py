@@ -7,6 +7,7 @@ from io import BytesIO
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
+from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -17,8 +18,11 @@ STATEMENT_COMPANY_NAME = "㈜ 데일리시가"
 STATEMENT_BANK_NAME = "신한은행"
 STATEMENT_BANK_ACCOUNT = "140-015-512046"
 STATEMENT_ACCOUNT_HOLDER = "㈜데일리시가"
-STATEMENT_DOC_PREFIX = "WS"
+STATEMENT_DOC_PREFIX = "TS"
 STATEMENT_PAYMENT_DUE_DAYS = 3
+STATEMENT_TEMPLATE_DIR = BASE_DIR / "templates"
+STATEMENT_TEMPLATE_PATH = Path(os.getenv("DAILYCIGAR_STATEMENT_TEMPLATE_PATH", str(STATEMENT_TEMPLATE_DIR / "statement_template.xlsx")))
+STATEMENT_MAX_ITEM_ROWS = 20
 
 
 # -----------------------------
@@ -79,6 +83,127 @@ def ensure_wholesale_sales_columns(conn):
             changed = True
     if changed:
         conn.commit()
+
+
+def ensure_statement_tables(conn):
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS statement_doc_sequence (
+            doc_type TEXT NOT NULL,
+            doc_date TEXT NOT NULL,
+            last_seq INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (doc_type, doc_date)
+        )
+        """
+    )
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS statement_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_no TEXT NOT NULL UNIQUE,
+            sale_date TEXT NOT NULL,
+            due_date TEXT,
+            partner_id INTEGER NOT NULL,
+            partner_name TEXT,
+            file_name TEXT,
+            notes TEXT,
+            supply_amount REAL DEFAULT 0,
+            vat_amount REAL DEFAULT 0,
+            total_amount REAL DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+    conn.commit()
+
+
+def issue_statement_document_no(conn, sale_date_str: str) -> str:
+    ensure_statement_tables(conn)
+
+    try:
+        doc_date = pd.to_datetime(sale_date_str).strftime("%Y%m%d")
+    except Exception:
+        doc_date = pd.Timestamp.now().strftime("%Y%m%d")
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT last_seq
+        FROM statement_doc_sequence
+        WHERE doc_type = ? AND doc_date = ?
+        """,
+        ("STATEMENT", doc_date),
+    )
+    row = cur.fetchone()
+
+    if row:
+        next_seq = _safe_int(row[0], 0) + 1
+        cur.execute(
+            """
+            UPDATE statement_doc_sequence
+            SET last_seq = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE doc_type = ? AND doc_date = ?
+            """,
+            (next_seq, "STATEMENT", doc_date),
+        )
+    else:
+        next_seq = 1
+        cur.execute(
+            """
+            INSERT INTO statement_doc_sequence (doc_type, doc_date, last_seq)
+            VALUES (?, ?, ?)
+            """,
+            ("STATEMENT", doc_date, next_seq),
+        )
+
+    conn.commit()
+    return f"{STATEMENT_DOC_PREFIX}-{doc_date}-{next_seq:03d}"
+
+
+def save_statement_history(
+    conn,
+    header: dict,
+    totals: dict,
+    file_name: str,
+):
+    ensure_statement_tables(conn)
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO statement_history (
+            document_no,
+            sale_date,
+            due_date,
+            partner_id,
+            partner_name,
+            file_name,
+            notes,
+            supply_amount,
+            vat_amount,
+            total_amount
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            header.get("document_no", ""),
+            header.get("sale_date", ""),
+            header.get("due_date", ""),
+            _safe_int(header.get("partner_id", 0), 0),
+            header.get("partner_name", ""),
+            file_name,
+            header.get("notes", ""),
+            _safe_float(totals.get("supply_amount", 0), 0),
+            _safe_float(totals.get("vat_amount", 0), 0),
+            _safe_float(totals.get("total_amount", 0), 0),
+        ),
+    )
+    conn.commit()
 
 
 # -----------------------------
@@ -389,41 +514,19 @@ def _validate_statement_rows(selected_df: pd.DataFrame) -> tuple[bool, str]:
     return True, ""
 
 
-def _build_statement_from_rows(selected_df: pd.DataFrame) -> tuple[dict, pd.DataFrame, dict]:
+def _build_statement_from_rows(selected_df: pd.DataFrame, document_no: str | None = None) -> tuple[dict, pd.DataFrame, dict]:
     sale_date_raw = str(selected_df.iloc[0].get("sale_date", "") or "")
     try:
         sale_dt = pd.to_datetime(sale_date_raw).to_pydatetime()
         sale_date_display = sale_dt.strftime("%Y-%m-%d")
         due_date_display = (sale_dt + pd.Timedelta(days=STATEMENT_PAYMENT_DUE_DAYS)).strftime("%Y-%m-%d")
-        doc_no = f"{sale_dt.strftime('%Y%m%d')}{str(selected_df.iloc[0].get('partner_id', '') or '').zfill(3) if str(selected_df.iloc[0].get('partner_id', '') or '').strip() else '001'}"
     except Exception:
         sale_date_display = sale_date_raw
         due_date_display = sale_date_raw
-        doc_no = f"{pd.Timestamp.now().strftime('%Y%m%d')}001"
 
     contact_name = str(selected_df.iloc[0].get("contact_name", "") or "").strip()
     owner_name = str(selected_df.iloc[0].get("owner_name", "") or "").strip()
     partner_contact = contact_name or owner_name or "대표님"
-
-    header = {
-        "partner_name": str(selected_df.iloc[0].get("partner_name", "") or ""),
-        "partner_contact": partner_contact,
-        "partner_phone": str(selected_df.iloc[0].get("phone", "") or ""),
-        "partner_address": str(selected_df.iloc[0].get("address", "") or ""),
-        "business_no": str(selected_df.iloc[0].get("business_no", "") or ""),
-        "sale_date": sale_date_display,
-        "due_date": due_date_display,
-        "document_no": doc_no,
-        "notes": " / ".join(
-            sorted(
-                {
-                    str(x).strip()
-                    for x in selected_df.get("notes", pd.Series(dtype=str)).fillna("").tolist()
-                    if str(x).strip()
-                }
-            )
-        ),
-    }
 
     statement_df = selected_df[
         [
@@ -447,12 +550,40 @@ def _build_statement_from_rows(selected_df: pd.DataFrame) -> tuple[dict, pd.Data
         }
     )
 
+    statement_df["단가"] = pd.to_numeric(statement_df["단가"], errors="coerce").fillna(0)
+    statement_df["수량"] = pd.to_numeric(statement_df["수량"], errors="coerce").fillna(0).astype(int)
+    statement_df["공급가액"] = pd.to_numeric(statement_df["공급가액"], errors="coerce").fillna(0)
+    statement_df["세액"] = pd.to_numeric(statement_df["세액"], errors="coerce").fillna(0)
+    statement_df["합계"] = pd.to_numeric(statement_df["합계"], errors="coerce").fillna(0)
+
     totals = {
-        "qty": int(pd.to_numeric(statement_df["수량"], errors="coerce").fillna(0).sum()),
-        "supply_amount": float(pd.to_numeric(statement_df["공급가액"], errors="coerce").fillna(0).sum()),
-        "vat_amount": float(pd.to_numeric(statement_df["세액"], errors="coerce").fillna(0).sum()),
-        "total_amount": float(pd.to_numeric(statement_df["합계"], errors="coerce").fillna(0).sum()),
+        "qty": int(statement_df["수량"].sum()),
+        "supply_amount": float(statement_df["공급가액"].sum()),
+        "vat_amount": float(statement_df["세액"].sum()),
+        "total_amount": float(statement_df["합계"].sum()),
     }
+
+    header = {
+        "partner_id": _safe_int(selected_df.iloc[0].get("partner_id", 0), 0),
+        "partner_name": str(selected_df.iloc[0].get("partner_name", "") or ""),
+        "partner_contact": partner_contact,
+        "partner_phone": str(selected_df.iloc[0].get("phone", "") or ""),
+        "partner_address": str(selected_df.iloc[0].get("address", "") or ""),
+        "business_no": str(selected_df.iloc[0].get("business_no", "") or ""),
+        "sale_date": sale_date_display,
+        "due_date": due_date_display,
+        "document_no": document_no or "",
+        "notes": " / ".join(
+            sorted(
+                {
+                    str(x).strip()
+                    for x in selected_df.get("notes", pd.Series(dtype=str)).fillna("").tolist()
+                    if str(x).strip()
+                }
+            )
+        ),
+    }
+
     return header, statement_df, totals
 
 
@@ -460,11 +591,14 @@ def _render_statement_preview(header: dict, statement_df: pd.DataFrame, totals: 
     st.divider()
     st.markdown("#### 거래명세서 미리보기")
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         st.write(f"**거래처**: {header['partner_name']}")
     with c2:
         st.write(f"**판매일자**: {header['sale_date']}")
+    with c3:
+        preview_doc_no = header.get("document_no") or "(다운로드 시 발급)"
+        st.write(f"**문서번호**: {preview_doc_no}")
 
     if header.get("notes"):
         st.write(f"**비고**: {header['notes']}")
@@ -492,197 +626,72 @@ def _render_statement_preview(header: dict, statement_df: pd.DataFrame, totals: 
 
 
 def _make_statement_excel_bytes(header: dict, statement_df: pd.DataFrame, totals: dict) -> bytes:
+    if not STATEMENT_TEMPLATE_PATH.exists():
+        raise FileNotFoundError(
+            f"거래명세서 템플릿 파일이 없습니다: {STATEMENT_TEMPLATE_PATH}"
+        )
+
+    wb = load_workbook(STATEMENT_TEMPLATE_PATH)
+    if "거래명세서" not in wb.sheetnames:
+        raise ValueError("거래명세서 템플릿에 '거래명세서' 시트가 없습니다.")
+
+    ws = wb["거래명세서"]
+
+    # 헤더
+    ws["I2"] = header.get("partner_name", "")
+    ws["H3"] = header.get("partner_address", "")
+    ws["I4"] = header.get("partner_contact", "")
+    ws["I5"] = header.get("partner_phone", "")
+
+    ws["C12"] = header.get("document_no", "")
+    ws["C13"] = header.get("sale_date", "")
+    ws["C14"] = header.get("due_date", "")
+
+    ws["H12"] = STATEMENT_BANK_NAME
+    ws["H13"] = STATEMENT_BANK_ACCOUNT
+    ws["H14"] = STATEMENT_ACCOUNT_HOLDER
+
+    ws["B44"] = header.get("notes", "") or "비고를 입력해주세요."
+
+    item_count = len(statement_df)
+    if item_count > STATEMENT_MAX_ITEM_ROWS:
+        raise ValueError(
+            f"거래명세서 템플릿은 최대 {STATEMENT_MAX_ITEM_ROWS}개 품목까지만 지원합니다. 현재 {item_count}개 선택됨"
+        )
+
+    # 기존 품목영역 초기화 (18~37행)
+    for row in range(18, 38):
+        ws[f"B{row}"] = None
+        ws[f"F{row}"] = 0
+        ws[f"G{row}"] = 0
+
+    # 품목 입력
+    start_row = 18
+    for idx, item in statement_df.reset_index(drop=True).iterrows():
+        row = start_row + idx
+        ws[f"B{row}"] = item.get("품목", "")
+        ws[f"F{row}"] = _safe_float(item.get("단가", 0), 0)
+        ws[f"G{row}"] = _safe_int(item.get("수량", 0), 0)
+
+    # 남은 줄 0 처리
+    for row in range(start_row + item_count, 38):
+        ws[f"F{row}"] = 0
+        ws[f"G{row}"] = 0
+
+    # 숫자 포맷 유지
+    for row in range(18, 38):
+        ws[f"F{row}"].number_format = '#,##0'
+        ws[f"G{row}"].number_format = '#,##0'
+        ws[f"H{row}"].number_format = '#,##0'
+        ws[f"I{row}"].number_format = '#,##0'
+        ws[f"J{row}"].number_format = '#,##0'
+
+    ws["I39"].number_format = '#,##0'
+    ws["I40"].number_format = '#,##0'
+    ws["I41"].number_format = '#,##0'
+
     output = BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        sheet_name = "거래명세서"
-        statement_df.to_excel(writer, sheet_name=sheet_name, startrow=0, index=False)
-
-        ws = writer.sheets[sheet_name]
-
-        # 기존 데이터 헤더/본문 제거 후 템플릿 형태로 다시 구성
-        if ws.max_row > 0:
-            ws.delete_rows(1, ws.max_row)
-
-        # 시트 기본 설정
-        ws.sheet_view.showGridLines = False
-        ws.freeze_panes = "B18"
-
-        # 컬럼 폭
-        widths = {
-            "A": 1.55, "B": 16.89, "C": 14.00, "D": 8.00, "E": 10.11,
-            "F": 8.00, "G": 4.66, "H": 9.33, "I": 9.00, "J": 11.22,
-        }
-        for col, width in widths.items():
-            ws.column_dimensions[col].width = width
-
-        # 행 높이
-        row_heights = {
-            2: 36.0, 3: 18.0, 4: 13.5, 5: 13.5, 10: 18.0, 12: 18.0, 13: 18.0,
-            14: 18.0, 17: 18.0, 43: 13.5, 44: 45.0, 47: 49.5,
-        }
-        for r, h in row_heights.items():
-            ws.row_dimensions[r].height = h
-
-        # 공통 스타일
-        dark_fill = PatternFill("solid", fgColor="1A3A5C")
-        light_fill = PatternFill("solid", fgColor="F7F9FC")
-        thin_side = Side(style="thin", color="000000")
-        medium_side = Side(style="medium", color="000000")
-
-        border_thin = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
-        border_bottom_thin = Border(bottom=thin_side)
-        border_bottom_medium = Border(bottom=medium_side)
-        border_header_left = Border(left=medium_side, top=medium_side, bottom=medium_side)
-        border_header_mid = Border(top=medium_side, bottom=medium_side)
-        border_header_right = Border(right=medium_side, top=medium_side, bottom=medium_side)
-
-        def set_cell(cell_ref, value=None, *, font=None, fill=None, align=None, border=None, numfmt=None):
-            cell = ws[cell_ref]
-            if value is not None:
-                cell.value = value
-            if font:
-                cell.font = font
-            if fill:
-                cell.fill = fill
-            if align:
-                cell.alignment = align
-            if border:
-                cell.border = border
-            if numfmt:
-                cell.number_format = numfmt
-            return cell
-
-        # 병합
-        merge_ranges = [
-            "B2:D2", "I2:J2", "H3:J3", "I4:J4", "I5:J5",
-            "B10:D10", "E10:J10",
-            "C12:D12", "H12:J12",
-            "C13:D13", "H13:J13",
-            "C14:D14", "H14:J14",
-        ]
-        for rng in merge_ranges:
-            ws.merge_cells(rng)
-
-        # 헤더
-        set_cell("B2", "거 래 명 세 서", font=Font(size=20, bold=True), align=Alignment(horizontal="left", vertical="center"))
-        set_cell("I2", header.get("partner_name", ""), font=Font(size=12, bold=True), align=Alignment(horizontal="right", vertical="center"))
-        set_cell("H3", header.get("partner_address", ""), font=Font(size=9), align=Alignment(horizontal="right", vertical="center"))
-        set_cell("I4", f"{header.get('partner_contact', '')}", font=Font(size=9), align=Alignment(horizontal="right", vertical="center"))
-        set_cell("I5", header.get("partner_phone", ""), font=Font(size=9), align=Alignment(horizontal="right", vertical="center"))
-
-        # 정보 영역 라벨
-        label_font = Font(size=9, bold=True)
-        value_font = Font(size=9)
-
-        set_cell("B10", "고객명 (담당자명)", font=label_font, align=Alignment(horizontal="left", vertical="center"), border=border_bottom_thin)
-        set_cell("E10", "입금 계좌 정보", font=label_font, align=Alignment(horizontal="right", vertical="center"), border=border_bottom_thin)
-
-        for rng in ["B10:D10", "E10:J10", "B12:E12", "B13:E13", "B14:E14", "F12:J12", "F13:J13", "F14:J14", "B43:J43", "B44:J44"]:
-            start = ws[rng.split(":")[0]]
-            end = ws[rng.split(":")[1]]
-            # bottom border across merged range
-            for row in ws[rng]:
-                for cell in row:
-                    cell.border = border_bottom_thin
-
-        set_cell("B12", "문서번호", font=label_font, align=Alignment(horizontal="left", vertical="center"))
-        set_cell("C12", header.get("document_no", ""), font=value_font, align=Alignment(horizontal="left", vertical="center"))
-        set_cell("F12", "은행명", font=label_font, align=Alignment(horizontal="left", vertical="center"))
-        set_cell("H12", STATEMENT_BANK_NAME, font=value_font, align=Alignment(horizontal="left", vertical="center"))
-
-        set_cell("B13", "청구일", font=label_font, align=Alignment(horizontal="left", vertical="center"))
-        set_cell("C13", header.get("sale_date", ""), font=value_font, align=Alignment(horizontal="left", vertical="center"))
-        set_cell("F13", "계좌번호", font=label_font, align=Alignment(horizontal="left", vertical="center"))
-        set_cell("H13", STATEMENT_BANK_ACCOUNT, font=value_font, align=Alignment(horizontal="left", vertical="center"))
-
-        set_cell("B14", "납부기한", font=label_font, align=Alignment(horizontal="left", vertical="center"))
-        set_cell("C14", header.get("due_date", ""), font=value_font, align=Alignment(horizontal="left", vertical="center"))
-        set_cell("F14", "예금주", font=label_font, align=Alignment(horizontal="left", vertical="center"))
-        set_cell("H14", STATEMENT_ACCOUNT_HOLDER, font=value_font, align=Alignment(horizontal="left", vertical="center"))
-
-        # 표 헤더
-        ws.merge_cells("B17:E17")
-        header_specs = {
-            "B17": ("품목", border_header_left),
-            "F17": ("단가", border_header_mid),
-            "G17": ("수량", border_header_mid),
-            "H17": ("공급가액", border_header_mid),
-            "I17": ("세액", border_header_mid),
-            "J17": ("합계", border_header_right),
-        }
-        for ref, (val, bdr) in header_specs.items():
-            set_cell(ref, val, font=Font(size=9, bold=True, color="FFFFFF"), fill=dark_fill,
-                     align=Alignment(horizontal="center", vertical="center"), border=bdr)
-
-        # 본문
-        start_row = 18
-        item_count = len(statement_df)
-        display_rows = max(20, item_count)
-        end_row = start_row + display_rows - 1
-
-        for idx in range(display_rows):
-            r = start_row + idx
-            actual = idx < item_count
-            item = statement_df.iloc[idx] if actual else None
-
-            ws.merge_cells(f"B{r}:E{r}")
-
-            # 값 입력
-            set_cell(f"B{r}", "" if item is None else item.get("품목", ""), font=Font(size=9),
-                     fill=light_fill, align=Alignment(horizontal="left", vertical="center"), border=border_thin)
-            set_cell(f"F{r}", 0 if item is None else _safe_float(item.get("단가", 0)), font=Font(size=9),
-                     fill=light_fill, align=Alignment(horizontal="right", vertical="center"), border=border_thin, numfmt="#,##0")
-            set_cell(f"G{r}", 0 if item is None else _safe_int(item.get("수량", 0)), font=Font(size=9),
-                     fill=light_fill, align=Alignment(horizontal="center", vertical="center"), border=border_thin, numfmt="0")
-            set_cell(f"H{r}", 0 if item is None else _safe_float(item.get("공급가액", 0)), font=Font(size=9),
-                     fill=light_fill, align=Alignment(horizontal="right", vertical="center"), border=border_thin, numfmt="#,##0")
-            set_cell(f"I{r}", 0 if item is None else _safe_float(item.get("세액", 0)), font=Font(size=9),
-                     fill=light_fill, align=Alignment(horizontal="right", vertical="center"), border=border_thin, numfmt="#,##0")
-            set_cell(f"J{r}", 0 if item is None else _safe_float(item.get("합계", 0)), font=Font(size=9),
-                     fill=light_fill, align=Alignment(horizontal="right", vertical="center"), border=border_thin, numfmt="#,##0")
-
-        # 합계 영역
-        total_supply_row = end_row + 2
-        total_vat_row = end_row + 3
-        total_amount_row = end_row + 4
-        note_title_row = end_row + 6
-        note_body_row = end_row + 7
-        sign_row = end_row + 10
-
-        for rng in [f"E{total_supply_row}:H{total_supply_row}", f"E{total_vat_row}:H{total_vat_row}", f"E{total_amount_row}:H{total_amount_row}"]:
-            for row in ws[rng]:
-                for cell in row:
-                    cell.border = border_bottom_thin
-
-        ws.merge_cells(f"E{total_supply_row}:H{total_supply_row}")
-        ws.merge_cells(f"E{total_vat_row}:H{total_vat_row}")
-        ws.merge_cells(f"E{total_amount_row}:H{total_amount_row}")
-        ws.merge_cells(f"B{note_title_row}:J{note_title_row}")
-        ws.merge_cells(f"B{note_body_row}:J{note_body_row}")
-        ws.merge_cells(f"B{sign_row}:J{sign_row}")
-
-        set_cell(f"E{total_supply_row}", "총 공급가액", font=Font(size=9), align=Alignment(horizontal="right", vertical="center"))
-        set_cell(f"I{total_supply_row}", totals["supply_amount"], font=Font(size=9), align=Alignment(horizontal="right", vertical="center"), border=border_bottom_thin, numfmt="#,##0")
-
-        set_cell(f"E{total_vat_row}", "총 세액", font=Font(size=9), align=Alignment(horizontal="right", vertical="center"))
-        set_cell(f"I{total_vat_row}", totals["vat_amount"], font=Font(size=9), align=Alignment(horizontal="right", vertical="center"), border=border_bottom_thin, numfmt="#,##0")
-
-        set_cell(f"E{total_amount_row}", "총 합계", font=Font(size=10, bold=True), align=Alignment(horizontal="right", vertical="center"))
-        set_cell(f"I{total_amount_row}", totals["total_amount"], font=Font(size=10, bold=True), align=Alignment(horizontal="right", vertical="center"), border=border_bottom_medium, numfmt="#,##0")
-
-        # 비고
-        note_text = header.get("notes", "") or "비고를 입력해주세요."
-        set_cell(f"B{note_title_row}", "비고", font=label_font, align=Alignment(horizontal="left", vertical="center"), border=border_bottom_thin)
-        set_cell(f"B{note_body_row}", note_text, font=Font(size=9), align=Alignment(horizontal="left", vertical="center", wrap_text=True), border=border_bottom_thin)
-
-        # 서명
-        set_cell(f"B{sign_row}", STATEMENT_COMPANY_NAME, font=Font(size=13, bold=True), align=Alignment(horizontal="center", vertical="center"))
-
-        # 행 높이 추가 설정
-        ws.row_dimensions[note_title_row].height = 13.5
-        ws.row_dimensions[note_body_row].height = 45.0
-        ws.row_dimensions[sign_row].height = 49.5
-
+    wb.save(output)
     output.seek(0)
     return output.getvalue()
 
@@ -1341,20 +1350,39 @@ def render_wholesale_management(conn):
     if not selected_grid_df.empty:
         ok, msg = _validate_statement_rows(selected_grid_df)
         if ok:
-            header, statement_df, totals = _build_statement_from_rows(selected_grid_df)
-            _render_statement_preview(header, statement_df, totals)
+            preview_header, statement_df, totals = _build_statement_from_rows(selected_grid_df)
+            _render_statement_preview(preview_header, statement_df, totals)
 
-            excel_bytes = _make_statement_excel_bytes(header, statement_df, totals)
-            safe_partner = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in header["partner_name"]).strip("_") or "거래처"
-            safe_date = str(header["sale_date"]).replace("-", "")
-            st.download_button(
-                "거래명세서 엑셀 다운로드",
-                data=excel_bytes,
-                file_name=f"거래명세서_{safe_partner}_{safe_date}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="download_statement_excel",
-            )
+            safe_partner = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in preview_header["partner_name"]).strip("_") or "거래처"
+            safe_date = str(preview_header["sale_date"]).replace("-", "")
+
+            try:
+                document_no = issue_statement_document_no(conn, preview_header["sale_date"])
+                final_header = dict(preview_header)
+                final_header["document_no"] = document_no
+
+                excel_bytes = _make_statement_excel_bytes(final_header, statement_df, totals)
+                file_name = f"거래명세서_{safe_partner}_{document_no}.xlsx"
+
+                if st.download_button(
+                    "거래명세서 엑셀 다운로드",
+                    data=excel_bytes,
+                    file_name=file_name,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="download_statement_excel",
+                ):
+                    try:
+                        save_statement_history(conn, final_header, totals, file_name)
+                    except sqlite3.IntegrityError:
+                        pass
+                    st.success(f"거래명세서가 발행되었습니다. 문서번호: {document_no}")
+            except Exception as e:
+                st.error(f"거래명세서 생성 중 오류가 발생했습니다: {e}")
+                st.caption(
+                    f"템플릿 파일 경로: {STATEMENT_TEMPLATE_PATH} "
+                    "(프로젝트 루트의 templates/statement_template.xlsx 권장)"
+                )
         else:
             st.warning(msg)
 
