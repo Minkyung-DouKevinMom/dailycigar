@@ -1,4 +1,4 @@
-import sqlite3
+8import sqlite3
 import pandas as pd
 
 DB_PATH = r"cigar.db"
@@ -832,3 +832,46 @@ def delete_import_batch(batch_id: int):
     cur.execute("DELETE FROM import_batch WHERE id = ?", (batch_id,))
     conn.commit()
     conn.close()
+
+def insert_import_item(
+    batch_id,
+    product_name,
+    size_name,
+    product_code,
+    import_unit_qty,
+    import_total_cost_krw,
+    total_weight_g,
+    retail_price_krw,
+    supply_price_krw,
+    margin_krw,
+    source_row_no=None,
+):
+    sql = """
+    INSERT INTO import_item (
+        batch_id,
+        product_name,
+        size_name,
+        product_code,
+        import_unit_qty,
+        import_total_cost_krw,
+        total_weight_g,
+        retail_price_krw,
+        supply_price_krw,
+        margin_krw,
+        source_row_no
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    execute(sql, [
+        batch_id,
+        product_name,
+        size_name,
+        product_code,
+        import_unit_qty,
+        import_total_cost_krw,
+        total_weight_g,
+        retail_price_krw,
+        supply_price_krw,
+        margin_krw,
+        source_row_no,
+    ])
