@@ -5,7 +5,6 @@ from typing import Tuple
 import pandas as pd
 import streamlit as st
 
-
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
 
@@ -28,6 +27,23 @@ def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
 
 def view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
     return object_exists(conn, view_name, "view")
+
+
+def get_table_columns(conn: sqlite3.Connection, object_name: str) -> list[str]:
+    try:
+        cur = conn.execute(f"PRAGMA table_info({object_name})")
+        rows = cur.fetchall()
+        return [r[1] for r in rows]
+    except Exception:
+        return []
+
+
+def pick_col(cols: list[str], candidates: list[str]):
+    col_set = set(cols)
+    for c in candidates:
+        if c in col_set:
+            return c
+    return None
 
 
 def month_range(year: int, month: int) -> Tuple[str, str]:
@@ -64,85 +80,176 @@ def fmt_pct(value) -> str:
         return "0.0%"
 
 
+def get_non_cigar_purchase_price_map(conn) -> dict:
+    if not table_exists(conn, "non_cigar_product_mst"):
+        return {}
+
+    cols = get_table_columns(conn, "non_cigar_product_mst")
+    if "product_code" not in cols or "purchase_price" not in cols:
+        return {}
+
+    sql = """
+        SELECT
+            TRIM(COALESCE(product_code, '')) AS product_code,
+            COALESCE(purchase_price, 0) AS purchase_price
+        FROM non_cigar_product_mst
+    """
+    df = pd.read_sql_query(sql, conn)
+
+    if df.empty:
+        return {}
+
+    df["product_code"] = df["product_code"].astype(str).str.strip()
+    df["purchase_price"] = pd.to_numeric(df["purchase_price"], errors="coerce").fillna(0)
+    df = df[df["product_code"] != ""].copy()
+
+    return dict(zip(df["product_code"], df["purchase_price"]))
+
+
 def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     if view_exists(conn, "v_retail_sales_enriched"):
-        sql = """
-            SELECT
-                sale_date,
-                COALESCE(net_sales_amount, 0) AS net_sales_amount,
-                COALESCE(total_korea_cost_krw, 0) AS total_korea_cost_krw,
-                COALESCE(retail_gross_profit_krw, 0) AS gross_profit_krw
-            FROM v_retail_sales_enriched
-            WHERE sale_date BETWEEN ? AND ?
-        """
-        df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+        vcols = get_table_columns(conn, "v_retail_sales_enriched")
+        sale_date_col = pick_col(vcols, ["sale_date", "sales_date", "dt"])
+        sales_col = pick_col(vcols, ["net_sales_amount", "sales_amount", "amount"])
+        cost_col = pick_col(vcols, ["total_korea_cost_krw", "total_cost_krw"])
+        gp_col = pick_col(vcols, ["retail_gross_profit_krw", "gross_profit_krw", "margin_amount"])
 
-    elif table_exists(conn, "retail_sales"):
-        sql = """
+        if sale_date_col and sales_col:
+            cost_expr = f"COALESCE({cost_col}, 0)" if cost_col else "0"
+            gp_expr = f"COALESCE({gp_col}, 0)" if gp_col else "0"
+
+            sql = f"""
+                SELECT
+                    {sale_date_col} AS sale_date,
+                    COALESCE({sales_col}, 0) AS net_sales_amount,
+                    {cost_expr} AS total_korea_cost_krw,
+                    {gp_expr} AS gross_profit_krw
+                FROM v_retail_sales_enriched
+                WHERE {sale_date_col} BETWEEN ? AND ?
+            """
+            try:
+                df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+            except Exception:
+                df = pd.DataFrame()
+        else:
+            df = pd.DataFrame()
+
+        if not df.empty:
+            for c in ["net_sales_amount", "total_korea_cost_krw", "gross_profit_krw"]:
+                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+            return df
+
+    if table_exists(conn, "retail_sales"):
+        cols = get_table_columns(conn, "retail_sales")
+        sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
+        sales_col = pick_col(cols, ["net_sales_amount", "sales_amount", "amount"])
+
+        if not sale_date_col or not sales_col:
+            return pd.DataFrame()
+
+        sql = f"""
             SELECT
-                sale_date,
-                COALESCE(net_sales_amount, 0) AS net_sales_amount
+                {sale_date_col} AS sale_date,
+                COALESCE({sales_col}, 0) AS net_sales_amount
             FROM retail_sales
-            WHERE sale_date BETWEEN ? AND ?
+            WHERE {sale_date_col} BETWEEN ? AND ?
         """
         df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
         df["total_korea_cost_krw"] = 0
         df["gross_profit_krw"] = 0
 
-    else:
-        return pd.DataFrame()
-
-    for c in ["net_sales_amount", "total_korea_cost_krw", "gross_profit_krw"]:
-        if c in df.columns:
+        for c in ["net_sales_amount", "total_korea_cost_krw", "gross_profit_krw"]:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+        return df
 
-    return df
+    return pd.DataFrame()
 
 
 def get_wholesale_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     if view_exists(conn, "v_wholesale_sales"):
-        sql = """
-            SELECT
-                sale_date,
-                COALESCE(sales_amount, 0) AS net_sales_amount,
-                COALESCE(qty, 0) * COALESCE(unit_cost, 0) AS total_korea_cost_krw,
-                COALESCE(profit_amount, 0) AS gross_profit_krw
-            FROM v_wholesale_sales
-            WHERE sale_date BETWEEN ? AND ?
-        """
-        df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+        cols = get_table_columns(conn, "v_wholesale_sales")
+        sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
+        sales_col = pick_col(cols, ["sales_amount", "net_sales_amount", "amount"])
+        qty_col = pick_col(cols, ["qty", "quantity"])
+        unit_cost_col = pick_col(cols, ["unit_cost", "cost_per_unit"])
+        gp_col = pick_col(cols, ["profit_amount", "gross_profit_krw", "margin_amount"])
 
-    elif table_exists(conn, "wholesale_sales"):
-        sql = """
+        if sale_date_col and sales_col:
+            qty_expr = f"COALESCE({qty_col}, 0)" if qty_col else "0"
+            unit_cost_expr = f"COALESCE({unit_cost_col}, 0)" if unit_cost_col else "0"
+            gp_expr = f"COALESCE({gp_col}, 0)" if gp_col else "0"
+
+            sql = f"""
+                SELECT
+                    {sale_date_col} AS sale_date,
+                    COALESCE({sales_col}, 0) AS net_sales_amount,
+                    ({qty_expr} * {unit_cost_expr}) AS total_korea_cost_krw,
+                    {gp_expr} AS gross_profit_krw
+                FROM v_wholesale_sales
+                WHERE {sale_date_col} BETWEEN ? AND ?
+            """
+            try:
+                df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+            except Exception:
+                df = pd.DataFrame()
+        else:
+            df = pd.DataFrame()
+
+        if not df.empty:
+            for c in ["net_sales_amount", "total_korea_cost_krw", "gross_profit_krw"]:
+                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+            return df
+
+    if table_exists(conn, "wholesale_sales"):
+        cols = get_table_columns(conn, "wholesale_sales")
+        sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
+        sales_col = pick_col(cols, ["sales_amount", "net_sales_amount", "amount"])
+        qty_col = pick_col(cols, ["qty", "quantity"])
+        unit_cost_col = pick_col(cols, ["unit_cost", "cost_per_unit"])
+        gp_col = pick_col(cols, ["profit_amount", "gross_profit_krw", "margin_amount"])
+
+        if not sale_date_col or not sales_col:
+            return pd.DataFrame()
+
+        qty_expr = f"COALESCE({qty_col}, 0)" if qty_col else "0"
+        unit_cost_expr = f"COALESCE({unit_cost_col}, 0)" if unit_cost_col else "0"
+        gp_expr = f"COALESCE({gp_col}, 0)" if gp_col else "0"
+
+        sql = f"""
             SELECT
-                sale_date,
-                COALESCE(sales_amount, 0) AS net_sales_amount,
-                COALESCE(qty, 0) * COALESCE(unit_cost, 0) AS total_korea_cost_krw,
-                COALESCE(profit_amount, 0) AS gross_profit_krw
+                {sale_date_col} AS sale_date,
+                COALESCE({sales_col}, 0) AS net_sales_amount,
+                ({qty_expr} * {unit_cost_expr}) AS total_korea_cost_krw,
+                {gp_expr} AS gross_profit_krw
             FROM wholesale_sales
-            WHERE sale_date BETWEEN ? AND ?
+            WHERE {sale_date_col} BETWEEN ? AND ?
         """
         df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
 
-    else:
-        return pd.DataFrame()
+        for c in ["net_sales_amount", "total_korea_cost_krw", "gross_profit_krw"]:
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+        return df
 
-    for c in ["net_sales_amount", "total_korea_cost_krw", "gross_profit_krw"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-    return df
+    return pd.DataFrame()
 
 
 def get_expense_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     if not table_exists(conn, "expense_txn"):
         return pd.DataFrame()
 
-    sql = """
+    cols = get_table_columns(conn, "expense_txn")
+    date_col = pick_col(cols, ["expense_date", "date", "txn_date"])
+    amount_col = pick_col(cols, ["amount", "expense_amount"])
+
+    if not date_col or not amount_col:
+        return pd.DataFrame()
+
+    sql = f"""
         SELECT
-            expense_date,
-            COALESCE(amount, 0) AS amount
+            {date_col} AS expense_date,
+            COALESCE({amount_col}, 0) AS amount
         FROM expense_txn
-        WHERE expense_date BETWEEN ? AND ?
+        WHERE {date_col} BETWEEN ? AND ?
     """
     df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
 
@@ -218,20 +325,58 @@ def get_recent_expenses(conn, limit: int = 10) -> pd.DataFrame:
     if not table_exists(conn, "expense_txn"):
         return pd.DataFrame()
 
-    sql = """
-        SELECT
-            t.expense_date,
-            c.expense_group,
-            c.expense_name,
-            t.amount,
-            t.vendor_name,
-            t.payment_method
-        FROM expense_txn t
-        LEFT JOIN expense_category_mst c
-            ON t.expense_category_id = c.id
-        ORDER BY t.expense_date DESC, t.id DESC
-        LIMIT ?
-    """
+    txn_cols = get_table_columns(conn, "expense_txn")
+    cat_cols = get_table_columns(conn, "expense_category_mst") if table_exists(conn, "expense_category_mst") else []
+
+    expense_date_col = pick_col(txn_cols, ["expense_date", "date", "txn_date"])
+    amount_col = pick_col(txn_cols, ["amount", "expense_amount"])
+    vendor_col = pick_col(txn_cols, ["vendor_name", "vendor", "partner_name"])
+    payment_col = pick_col(txn_cols, ["payment_method", "payment_type"])
+    category_id_col = pick_col(txn_cols, ["expense_category_id", "category_id"])
+
+    if not expense_date_col or not amount_col:
+        return pd.DataFrame()
+
+    if table_exists(conn, "expense_category_mst") and category_id_col:
+        expense_group_col = pick_col(cat_cols, ["expense_group", "group_name"])
+        expense_name_col = pick_col(cat_cols, ["expense_name", "category_name", "name"])
+
+        group_expr = f"c.{expense_group_col}" if expense_group_col else "''"
+        name_expr = f"c.{expense_name_col}" if expense_name_col else "''"
+        vendor_expr = f"COALESCE(t.{vendor_col}, '')" if vendor_col else "''"
+        payment_expr = f"COALESCE(t.{payment_col}, '')" if payment_col else "''"
+
+        sql = f"""
+            SELECT
+                t.{expense_date_col} AS expense_date,
+                {group_expr} AS expense_group,
+                {name_expr} AS expense_name,
+                t.{amount_col} AS amount,
+                {vendor_expr} AS vendor_name,
+                {payment_expr} AS payment_method
+            FROM expense_txn t
+            LEFT JOIN expense_category_mst c
+              ON t.{category_id_col} = c.id
+            ORDER BY t.{expense_date_col} DESC, t.id DESC
+            LIMIT ?
+        """
+    else:
+        vendor_expr = f"COALESCE({vendor_col}, '')" if vendor_col else "''"
+        payment_expr = f"COALESCE({payment_col}, '')" if payment_col else "''"
+
+        sql = f"""
+            SELECT
+                {expense_date_col} AS expense_date,
+                '' AS expense_group,
+                '' AS expense_name,
+                {amount_col} AS amount,
+                {vendor_expr} AS vendor_name,
+                {payment_expr} AS payment_method
+            FROM expense_txn
+            ORDER BY {expense_date_col} DESC, id DESC
+            LIMIT ?
+        """
+
     df = pd.read_sql_query(sql, conn, params=[limit])
 
     if not df.empty:
@@ -240,60 +385,47 @@ def get_recent_expenses(conn, limit: int = 10) -> pd.DataFrame:
     return df
 
 
-def get_non_cigar_purchase_price_map(conn) -> dict:
-    """
-    시가 외 상품 마스터의 현재 purchase_price를 product_code 기준으로 매핑
-    """
-    if not table_exists(conn, "non_cigar_product_mst"):
-        return {}
-
-    sql = """
-        SELECT
-            TRIM(COALESCE(product_code, '')) AS product_code,
-            COALESCE(purchase_price, 0) AS purchase_price
-        FROM non_cigar_product_mst
-    """
-    mst_df = pd.read_sql_query(sql, conn)
-
-    if mst_df.empty:
-        return {}
-
-    mst_df["product_code"] = mst_df["product_code"].astype(str).str.strip()
-    mst_df["purchase_price"] = pd.to_numeric(
-        mst_df["purchase_price"], errors="coerce"
-    ).fillna(0)
-
-    mst_df = mst_df[mst_df["product_code"] != ""].copy()
-    return dict(zip(mst_df["product_code"], mst_df["purchase_price"]))
-
-
 def get_recent_sales_with_margin(conn, limit: int = 20) -> pd.DataFrame:
-    """
-    최근 판매 내역 조회
-    - retail_sales 기준
-    - 상품코드 표시
-    - 시가 외 상품은 non_cigar_product_mst.purchase_price를 사용해 조회 시점 마진 계산
-    - 마진 = 매출액 - (매입가 × 수량)
-    """
-    if not table_exists(conn, "retail_sales"):
-        return pd.DataFrame()
+    empty = pd.DataFrame(
+        columns=["sale_date", "product_code", "product_name", "qty", "unit_price", "net_sales_amount", "매입가", "마진"]
+    )
 
-    sql = """
+    if not table_exists(conn, "retail_sales"):
+        return empty
+
+    cols = get_table_columns(conn, "retail_sales")
+    sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
+    product_code_col = pick_col(cols, ["product_code", "product_code_raw"])
+    product_name_col = pick_col(cols, ["product_name", "item_name"])
+    qty_col = pick_col(cols, ["qty", "quantity"])
+    unit_price_col = pick_col(cols, ["unit_price", "price"])
+    sales_col = pick_col(cols, ["net_sales_amount", "sales_amount", "amount"])
+
+    if not sale_date_col or not sales_col:
+        return empty
+
+    product_code_expr = f"COALESCE({product_code_col}, '')" if product_code_col else "''"
+    product_name_expr = f"COALESCE({product_name_col}, '')" if product_name_col else "''"
+    qty_expr = f"COALESCE({qty_col}, 0)" if qty_col else "0"
+    unit_price_expr = f"COALESCE({unit_price_col}, 0)" if unit_price_col else "0"
+
+    sql = f"""
         SELECT
-            sale_date,
-            COALESCE(product_code, product_code_raw, '') AS product_code,
-            COALESCE(product_name, '') AS product_name,
-            COALESCE(qty, 0) AS qty,
-            COALESCE(unit_price, 0) AS unit_price,
-            COALESCE(net_sales_amount, 0) AS net_sales_amount
+            {sale_date_col} AS sale_date,
+            {product_code_expr} AS product_code,
+            {product_name_expr} AS product_name,
+            {qty_expr} AS qty,
+            {unit_price_expr} AS unit_price,
+            COALESCE({sales_col}, 0) AS net_sales_amount
         FROM retail_sales
-        ORDER BY sale_date DESC, id DESC
+        ORDER BY {sale_date_col} DESC, id DESC
         LIMIT ?
     """
+
     df = pd.read_sql_query(sql, conn, params=[limit])
 
     if df.empty:
-        return df
+        return empty
 
     for c in ["qty", "unit_price", "net_sales_amount"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
@@ -302,9 +434,9 @@ def get_recent_sales_with_margin(conn, limit: int = 20) -> pd.DataFrame:
     df["product_name"] = df["product_name"].fillna("").astype(str).str.strip()
 
     purchase_price_map = get_non_cigar_purchase_price_map(conn)
-
-    # 시가 외 상품 마스터에 등록된 product_code인 경우에만 매입가/마진 계산
     df["매입가"] = df["product_code"].map(purchase_price_map).fillna(0)
+
+    # 판매금액 - (매입가 × 수량)
     df["마진"] = df["net_sales_amount"] - (df["매입가"] * df["qty"])
 
     return df
@@ -322,38 +454,56 @@ def get_top_products(conn, date_from: str, date_to: str, limit: int = 10, metric
         wholesale_metric_sql = "COALESCE(profit_amount, 0)"
 
     if view_exists(conn, "v_retail_sales_enriched"):
-        sql = f"""
-            SELECT
-                COALESCE(product_code, product_code_raw) AS product_code,
-                COALESCE(mst_product_name, product_code_raw) AS product_name,
-                {retail_metric_sql} AS {metric_col_name}
-            FROM v_retail_sales_enriched
-            WHERE sale_date BETWEEN ? AND ?
-        """
-        retail_df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+        cols = get_table_columns(conn, "v_retail_sales_enriched")
+        sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
+        product_code_col = pick_col(cols, ["product_code", "product_code_raw"])
+        product_name_col = pick_col(cols, ["mst_product_name", "product_name", "product_code_raw"])
 
-        if not retail_df.empty:
-            retail_df[metric_col_name] = pd.to_numeric(
-                retail_df[metric_col_name], errors="coerce"
-            ).fillna(0)
-            frames.append(retail_df)
+        if sale_date_col:
+            code_expr = f"COALESCE({product_code_col}, '')" if product_code_col else "''"
+            name_expr = f"COALESCE({product_name_col}, {code_expr})" if product_name_col else code_expr
+
+            sql = f"""
+                SELECT
+                    {code_expr} AS product_code,
+                    {name_expr} AS product_name,
+                    {retail_metric_sql} AS {metric_col_name}
+                FROM v_retail_sales_enriched
+                WHERE {sale_date_col} BETWEEN ? AND ?
+            """
+            try:
+                retail_df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+                if not retail_df.empty:
+                    retail_df[metric_col_name] = pd.to_numeric(retail_df[metric_col_name], errors="coerce").fillna(0)
+                    frames.append(retail_df)
+            except Exception:
+                pass
 
     if view_exists(conn, "v_wholesale_sales"):
-        sql = f"""
-            SELECT
-                COALESCE(product_code, '') AS product_code,
-                COALESCE(product_name, product_code) AS product_name,
-                {wholesale_metric_sql} AS {metric_col_name}
-            FROM v_wholesale_sales
-            WHERE sale_date BETWEEN ? AND ?
-        """
-        wholesale_df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+        cols = get_table_columns(conn, "v_wholesale_sales")
+        sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
+        product_code_col = pick_col(cols, ["product_code"])
+        product_name_col = pick_col(cols, ["product_name"])
 
-        if not wholesale_df.empty:
-            wholesale_df[metric_col_name] = pd.to_numeric(
-                wholesale_df[metric_col_name], errors="coerce"
-            ).fillna(0)
-            frames.append(wholesale_df)
+        if sale_date_col:
+            code_expr = f"COALESCE({product_code_col}, '')" if product_code_col else "''"
+            name_expr = f"COALESCE({product_name_col}, {code_expr})" if product_name_col else code_expr
+
+            sql = f"""
+                SELECT
+                    {code_expr} AS product_code,
+                    {name_expr} AS product_name,
+                    {wholesale_metric_sql} AS {metric_col_name}
+                FROM v_wholesale_sales
+                WHERE {sale_date_col} BETWEEN ? AND ?
+            """
+            try:
+                wholesale_df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+                if not wholesale_df.empty:
+                    wholesale_df[metric_col_name] = pd.to_numeric(wholesale_df[metric_col_name], errors="coerce").fillna(0)
+                    frames.append(wholesale_df)
+            except Exception:
+                pass
 
     if not frames:
         return pd.DataFrame()
@@ -447,9 +597,7 @@ def render():
             f"비교기간: {previous['date_from']} ~ {previous['date_to']}"
         )
 
-        tab1, tab2, tab3, tab4 = st.tabs(
-            ["월별 추이", "최근 판매 내역", "최근 지출", "상위 제품"]
-        )
+        tab1, tab2, tab3, tab4 = st.tabs(["월별 추이", "최근 판매 내역", "최근 지출", "상위 제품"])
 
         with tab1:
             trend_df = get_monthly_trend(conn, months=12)
@@ -508,7 +656,7 @@ def render():
                     height=360,
                 )
 
-                st.caption("※ 시가 외 상품의 마진은 현재 마스터의 매입가(purchase_price) 기준으로 계산됩니다.")
+                st.caption("※ 시가 외 상품 마진은 판매금액 - (매입가 × 수량) 기준으로 계산합니다.")
 
         with tab3:
             recent_exp_df = get_recent_expenses(conn, limit=12)
