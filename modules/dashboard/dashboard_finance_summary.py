@@ -5,6 +5,7 @@ from typing import Tuple
 import pandas as pd
 import streamlit as st
 
+
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
 
@@ -66,23 +67,23 @@ def fmt_pct(value) -> str:
 def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     if view_exists(conn, "v_retail_sales_enriched"):
         sql = """
-        SELECT
-            sale_date,
-            COALESCE(net_sales_amount, 0) AS net_sales_amount,
-            COALESCE(total_korea_cost_krw, 0) AS total_korea_cost_krw,
-            COALESCE(retail_gross_profit_krw, 0) AS gross_profit_krw
-        FROM v_retail_sales_enriched
-        WHERE sale_date BETWEEN ? AND ?
+            SELECT
+                sale_date,
+                COALESCE(net_sales_amount, 0) AS net_sales_amount,
+                COALESCE(total_korea_cost_krw, 0) AS total_korea_cost_krw,
+                COALESCE(retail_gross_profit_krw, 0) AS gross_profit_krw
+            FROM v_retail_sales_enriched
+            WHERE sale_date BETWEEN ? AND ?
         """
         df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
 
     elif table_exists(conn, "retail_sales"):
         sql = """
-        SELECT
-            sale_date,
-            COALESCE(net_sales_amount, 0) AS net_sales_amount
-        FROM retail_sales
-        WHERE sale_date BETWEEN ? AND ?
+            SELECT
+                sale_date,
+                COALESCE(net_sales_amount, 0) AS net_sales_amount
+            FROM retail_sales
+            WHERE sale_date BETWEEN ? AND ?
         """
         df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
         df["total_korea_cost_krw"] = 0
@@ -101,25 +102,25 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
 def get_wholesale_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     if view_exists(conn, "v_wholesale_sales"):
         sql = """
-        SELECT
-            sale_date,
-            COALESCE(sales_amount, 0) AS net_sales_amount,
-            COALESCE(qty, 0) * COALESCE(unit_cost, 0) AS total_korea_cost_krw,
-            COALESCE(profit_amount, 0) AS gross_profit_krw
-        FROM v_wholesale_sales
-        WHERE sale_date BETWEEN ? AND ?
+            SELECT
+                sale_date,
+                COALESCE(sales_amount, 0) AS net_sales_amount,
+                COALESCE(qty, 0) * COALESCE(unit_cost, 0) AS total_korea_cost_krw,
+                COALESCE(profit_amount, 0) AS gross_profit_krw
+            FROM v_wholesale_sales
+            WHERE sale_date BETWEEN ? AND ?
         """
         df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
 
     elif table_exists(conn, "wholesale_sales"):
         sql = """
-        SELECT
-            sale_date,
-            COALESCE(sales_amount, 0) AS net_sales_amount,
-            COALESCE(qty, 0) * COALESCE(unit_cost, 0) AS total_korea_cost_krw,
-            COALESCE(profit_amount, 0) AS gross_profit_krw
-        FROM wholesale_sales
-        WHERE sale_date BETWEEN ? AND ?
+            SELECT
+                sale_date,
+                COALESCE(sales_amount, 0) AS net_sales_amount,
+                COALESCE(qty, 0) * COALESCE(unit_cost, 0) AS total_korea_cost_krw,
+                COALESCE(profit_amount, 0) AS gross_profit_krw
+            FROM wholesale_sales
+            WHERE sale_date BETWEEN ? AND ?
         """
         df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
 
@@ -137,11 +138,11 @@ def get_expense_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
         return pd.DataFrame()
 
     sql = """
-    SELECT
-        expense_date,
-        COALESCE(amount, 0) AS amount
-    FROM expense_txn
-    WHERE expense_date BETWEEN ? AND ?
+        SELECT
+            expense_date,
+            COALESCE(amount, 0) AS amount
+        FROM expense_txn
+        WHERE expense_date BETWEEN ? AND ?
     """
     df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
 
@@ -218,23 +219,93 @@ def get_recent_expenses(conn, limit: int = 10) -> pd.DataFrame:
         return pd.DataFrame()
 
     sql = """
-    SELECT
-        t.expense_date,
-        c.expense_group,
-        c.expense_name,
-        t.amount,
-        t.vendor_name,
-        t.payment_method
-    FROM expense_txn t
-    LEFT JOIN expense_category_mst c
-        ON t.expense_category_id = c.id
-    ORDER BY t.expense_date DESC, t.id DESC
-    LIMIT ?
+        SELECT
+            t.expense_date,
+            c.expense_group,
+            c.expense_name,
+            t.amount,
+            t.vendor_name,
+            t.payment_method
+        FROM expense_txn t
+        LEFT JOIN expense_category_mst c
+            ON t.expense_category_id = c.id
+        ORDER BY t.expense_date DESC, t.id DESC
+        LIMIT ?
     """
     df = pd.read_sql_query(sql, conn, params=[limit])
 
     if not df.empty:
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
+
+    return df
+
+
+def get_non_cigar_purchase_price_map(conn) -> dict:
+    """
+    시가 외 상품 마스터의 현재 purchase_price를 product_code 기준으로 매핑
+    """
+    if not table_exists(conn, "non_cigar_product_mst"):
+        return {}
+
+    sql = """
+        SELECT
+            TRIM(COALESCE(product_code, '')) AS product_code,
+            COALESCE(purchase_price, 0) AS purchase_price
+        FROM non_cigar_product_mst
+    """
+    mst_df = pd.read_sql_query(sql, conn)
+
+    if mst_df.empty:
+        return {}
+
+    mst_df["product_code"] = mst_df["product_code"].astype(str).str.strip()
+    mst_df["purchase_price"] = pd.to_numeric(
+        mst_df["purchase_price"], errors="coerce"
+    ).fillna(0)
+
+    mst_df = mst_df[mst_df["product_code"] != ""].copy()
+    return dict(zip(mst_df["product_code"], mst_df["purchase_price"]))
+
+
+def get_recent_sales_with_margin(conn, limit: int = 20) -> pd.DataFrame:
+    """
+    최근 판매 내역 조회
+    - retail_sales 기준
+    - 상품코드 표시
+    - 시가 외 상품은 non_cigar_product_mst.purchase_price를 사용해 조회 시점 마진 계산
+    - 마진 = 매출액 - (매입가 × 수량)
+    """
+    if not table_exists(conn, "retail_sales"):
+        return pd.DataFrame()
+
+    sql = """
+        SELECT
+            sale_date,
+            COALESCE(product_code, product_code_raw, '') AS product_code,
+            COALESCE(product_name, '') AS product_name,
+            COALESCE(qty, 0) AS qty,
+            COALESCE(unit_price, 0) AS unit_price,
+            COALESCE(net_sales_amount, 0) AS net_sales_amount
+        FROM retail_sales
+        ORDER BY sale_date DESC, id DESC
+        LIMIT ?
+    """
+    df = pd.read_sql_query(sql, conn, params=[limit])
+
+    if df.empty:
+        return df
+
+    for c in ["qty", "unit_price", "net_sales_amount"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
+    df["product_name"] = df["product_name"].fillna("").astype(str).str.strip()
+
+    purchase_price_map = get_non_cigar_purchase_price_map(conn)
+
+    # 시가 외 상품 마스터에 등록된 product_code인 경우에만 매입가/마진 계산
+    df["매입가"] = df["product_code"].map(purchase_price_map).fillna(0)
+    df["마진"] = df["net_sales_amount"] - (df["매입가"] * df["qty"])
 
     return df
 
@@ -252,14 +323,15 @@ def get_top_products(conn, date_from: str, date_to: str, limit: int = 10, metric
 
     if view_exists(conn, "v_retail_sales_enriched"):
         sql = f"""
-        SELECT
-            COALESCE(product_code, product_code_raw) AS product_code,
-            COALESCE(mst_product_name, product_code_raw) AS product_name,
-            {retail_metric_sql} AS {metric_col_name}
-        FROM v_retail_sales_enriched
-        WHERE sale_date BETWEEN ? AND ?
+            SELECT
+                COALESCE(product_code, product_code_raw) AS product_code,
+                COALESCE(mst_product_name, product_code_raw) AS product_name,
+                {retail_metric_sql} AS {metric_col_name}
+            FROM v_retail_sales_enriched
+            WHERE sale_date BETWEEN ? AND ?
         """
         retail_df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+
         if not retail_df.empty:
             retail_df[metric_col_name] = pd.to_numeric(
                 retail_df[metric_col_name], errors="coerce"
@@ -268,14 +340,15 @@ def get_top_products(conn, date_from: str, date_to: str, limit: int = 10, metric
 
     if view_exists(conn, "v_wholesale_sales"):
         sql = f"""
-        SELECT
-            COALESCE(product_code, '') AS product_code,
-            COALESCE(product_name, product_code) AS product_name,
-            {wholesale_metric_sql} AS {metric_col_name}
-        FROM v_wholesale_sales
-        WHERE sale_date BETWEEN ? AND ?
+            SELECT
+                COALESCE(product_code, '') AS product_code,
+                COALESCE(product_name, product_code) AS product_name,
+                {wholesale_metric_sql} AS {metric_col_name}
+            FROM v_wholesale_sales
+            WHERE sale_date BETWEEN ? AND ?
         """
         wholesale_df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+
         if not wholesale_df.empty:
             wholesale_df[metric_col_name] = pd.to_numeric(
                 wholesale_df[metric_col_name], errors="coerce"
@@ -301,6 +374,7 @@ def render():
     st.subheader("경영 대시보드")
 
     conn = get_conn()
+
     try:
         today = pd.Timestamp.today()
         current_year = today.year
@@ -373,7 +447,9 @@ def render():
             f"비교기간: {previous['date_from']} ~ {previous['date_to']}"
         )
 
-        tab1, tab2, tab3 = st.tabs(["월별 추이", "최근 지출", "상위 제품"])
+        tab1, tab2, tab3, tab4 = st.tabs(
+            ["월별 추이", "최근 판매 내역", "최근 지출", "상위 제품"]
+        )
 
         with tab1:
             trend_df = get_monthly_trend(conn, months=12)
@@ -381,7 +457,6 @@ def render():
             if not trend_df.empty:
                 show_trend_df = trend_df.copy()
                 money_cols = ["소매매출", "도매매출", "총매출", "매출총이익", "지출", "영업이익"]
-
                 for col in money_cols:
                     show_trend_df[col] = show_trend_df[col].apply(fmt_krw)
 
@@ -405,6 +480,37 @@ def render():
                 st.info("월별 추이 데이터가 없습니다.")
 
         with tab2:
+            recent_sales_df = get_recent_sales_with_margin(conn, limit=20)
+
+            if recent_sales_df.empty:
+                st.info("최근 판매 내역이 없습니다.")
+            else:
+                show_sales_df = recent_sales_df.rename(
+                    columns={
+                        "sale_date": "판매일자",
+                        "product_code": "상품코드",
+                        "product_name": "상품명",
+                        "qty": "수량",
+                        "unit_price": "단가",
+                        "net_sales_amount": "매출액",
+                    }
+                ).copy()
+
+                for col in ["단가", "매출액", "매입가", "마진"]:
+                    show_sales_df[col] = show_sales_df[col].apply(fmt_krw)
+
+                st.dataframe(
+                    show_sales_df[
+                        ["판매일자", "상품코드", "상품명", "수량", "단가", "매출액", "매입가", "마진"]
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                    height=360,
+                )
+
+                st.caption("※ 시가 외 상품의 마진은 현재 마스터의 매입가(purchase_price) 기준으로 계산됩니다.")
+
+        with tab3:
             recent_exp_df = get_recent_expenses(conn, limit=12)
 
             if recent_exp_df.empty:
@@ -429,7 +535,7 @@ def render():
                     height=360,
                 )
 
-        with tab3:
+        with tab4:
             basis = st.radio(
                 "집계 기준",
                 options=["매출액", "마진"],
