@@ -156,52 +156,52 @@ def apply_non_cigar_cost_logic(retail_df: pd.DataFrame, conn: sqlite3.Connection
     return df
 
 
-# =========================================================
-# Retail
-# =========================================================
 def get_retail_data(conn, date_from: Optional[str], date_to: Optional[str]) -> Tuple[pd.DataFrame, str]:
     source = choose_source(conn, ["v_retail_sales_enriched", "retail_sales"])
     if not source:
         return pd.DataFrame(), ""
 
-    if source == "v_retail_sales_enriched":
-        sql = """
-            SELECT
-                sale_date,
-                sale_datetime,
-                order_no,
-                order_channel,
-                payment_status,
-                product_code,
-                product_code_raw,
-                mst_product_name,
-                mst_size_name,
-                category,
-                qty,
-                net_sales_amount,
-                vat_amount,
-                total_korea_cost_krw,
-                retail_gross_profit_krw
-            FROM v_retail_sales_enriched
-            WHERE 1=1
-        """
-    else:
-        sql = """
-            SELECT
-                sale_date,
-                sale_datetime,
-                order_no,
-                order_channel,
-                payment_status,
-                product_code,
-                product_code_raw,
-                category,
-                qty,
-                net_sales_amount,
-                vat_amount
-            FROM retail_sales
-            WHERE 1=1
-        """
+    cols = get_table_columns(conn, source)
+
+    sale_date_col = "sale_date" if "sale_date" in cols else "sales_date" if "sales_date" in cols else None
+    sale_datetime_col = "sale_datetime" if "sale_datetime" in cols else None
+    order_no_col = "order_no" if "order_no" in cols else None
+    order_channel_col = "order_channel" if "order_channel" in cols else None
+    payment_status_col = "payment_status" if "payment_status" in cols else None
+    product_code_col = "product_code" if "product_code" in cols else None
+    product_code_raw_col = "product_code_raw" if "product_code_raw" in cols else None
+    mst_product_name_col = "mst_product_name" if "mst_product_name" in cols else "product_name" if "product_name" in cols else None
+    mst_size_name_col = "mst_size_name" if "mst_size_name" in cols else "size_name" if "size_name" in cols else None
+    category_col = "category" if "category" in cols else None
+    qty_col = "qty" if "qty" in cols else "quantity" if "quantity" in cols else None
+    net_sales_col = "net_sales_amount" if "net_sales_amount" in cols else "sales_amount" if "sales_amount" in cols else "amount" if "amount" in cols else None
+    vat_col = "vat_amount" if "vat_amount" in cols else "vat" if "vat" in cols else None
+    cost_col = "total_korea_cost_krw" if "total_korea_cost_krw" in cols else None
+    gp_col = "retail_gross_profit_krw" if "retail_gross_profit_krw" in cols else "gross_profit_krw" if "gross_profit_krw" in cols else "margin_amount" if "margin_amount" in cols else None
+
+    if not sale_date_col or not net_sales_col:
+        return pd.DataFrame(), source
+
+    sql = f"""
+        SELECT
+            {sale_date_col} AS sale_date,
+            {"COALESCE(" + sale_datetime_col + ", '')" if sale_datetime_col else "''"} AS sale_datetime,
+            {"COALESCE(" + order_no_col + ", '')" if order_no_col else "''"} AS order_no,
+            {"COALESCE(" + order_channel_col + ", '')" if order_channel_col else "''"} AS order_channel,
+            {"COALESCE(" + payment_status_col + ", '')" if payment_status_col else "''"} AS payment_status,
+            {"COALESCE(" + product_code_col + ", '')" if product_code_col else "''"} AS product_code,
+            {"COALESCE(" + product_code_raw_col + ", '')" if product_code_raw_col else "''"} AS product_code_raw,
+            {"COALESCE(" + mst_product_name_col + ", '')" if mst_product_name_col else "''"} AS mst_product_name,
+            {"COALESCE(" + mst_size_name_col + ", '')" if mst_size_name_col else "''"} AS mst_size_name,
+            {"COALESCE(" + category_col + ", '')" if category_col else "''"} AS category,
+            {"COALESCE(" + qty_col + ", 0)" if qty_col else "0"} AS qty,
+            COALESCE({net_sales_col}, 0) AS net_sales_amount,
+            {"COALESCE(" + vat_col + ", 0)" if vat_col else "0"} AS vat_amount,
+            {"COALESCE(" + cost_col + ", 0)" if cost_col else "0"} AS total_korea_cost_krw,
+            {"COALESCE(" + gp_col + ", 0)" if gp_col else "0"} AS retail_gross_profit_krw
+        FROM {source}
+        WHERE 1=1
+    """
 
     params = []
     if date_from:
@@ -211,68 +211,123 @@ def get_retail_data(conn, date_from: Optional[str], date_to: Optional[str]) -> T
         sql += " AND sale_date <= ?"
         params.append(date_to)
 
-    sql += " ORDER BY sale_date DESC, id DESC" if source == "retail_sales" else " ORDER BY sale_date DESC"
+    sql += " ORDER BY sale_date DESC"
     df = pd.read_sql_query(sql, conn, params=params)
 
     for c in ["qty", "net_sales_amount", "vat_amount", "total_korea_cost_krw", "retail_gross_profit_krw"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
-    if "total_korea_cost_krw" not in df.columns:
-        df["total_korea_cost_krw"] = 0.0
-    if "retail_gross_profit_krw" not in df.columns:
-        df["retail_gross_profit_krw"] = 0.0
-
-    # 시가 외 상품만 매입가 기준으로 원가/이익 재계산
     df = apply_non_cigar_cost_logic(df, conn)
 
     return df, source
 
 
-# =========================================================
-# Wholesale
-# =========================================================
 def get_wholesale_data(conn, date_from: Optional[str], date_to: Optional[str]) -> Tuple[pd.DataFrame, str]:
+    empty_cols = [
+        "id", "sale_date", "partner_name", "item_type", "product_name", "product_code",
+        "qty", "unit_price", "unit_cost", "sales_amount", "net_sales_amount",
+        "vat_amount", "profit_amount", "gross_profit_krw", "total_korea_cost_krw"
+    ]
+
     source = choose_source(conn, ["v_wholesale_sales", "wholesale_sales"])
     if not source:
-        return pd.DataFrame(), ""
+        return pd.DataFrame(columns=empty_cols), ""
 
-    if source == "v_wholesale_sales":
-        sql = """
-            SELECT
-                id,
-                sale_date,
-                partner_name,
-                item_type,
-                product_name,
-                product_code,
-                qty,
-                unit_price,
-                unit_cost,
-                sales_amount,
-                vat_amount,
-                profit_amount
-            FROM v_wholesale_sales
-            WHERE 1=1
-        """
-    else:
-        sql = """
-            SELECT
-                id,
-                sale_date,
-                partner_name,
-                item_type,
-                product_name,
-                product_code,
-                qty,
-                unit_price,
-                unit_cost,
-                sales_amount,
-                vat_amount,
-                profit_amount
-            FROM wholesale_sales
-            WHERE 1=1
-        """
+    cols = get_table_columns(conn, source)
+
+    sale_date_col = None
+    for c in ["sale_date", "sales_date", "dt"]:
+        if c in cols:
+            sale_date_col = c
+            break
+
+    if not sale_date_col:
+        return pd.DataFrame(columns=empty_cols), source
+
+    id_expr = "id" if "id" in cols else "NULL AS id"
+    partner_expr = (
+        "COALESCE(partner_name, '')"
+        if "partner_name" in cols
+        else "COALESCE(customer_name, '')"
+        if "customer_name" in cols
+        else "''"
+    )
+    item_type_expr = (
+        "COALESCE(item_type, '')"
+        if "item_type" in cols
+        else "COALESCE(category, '')"
+        if "category" in cols
+        else "''"
+    )
+    product_name_expr = (
+        "COALESCE(product_name, '')"
+        if "product_name" in cols
+        else "COALESCE(item_name, '')"
+        if "item_name" in cols
+        else "''"
+    )
+    product_code_expr = "COALESCE(product_code, '')" if "product_code" in cols else "''"
+    qty_expr = (
+        "COALESCE(qty, 0)"
+        if "qty" in cols
+        else "COALESCE(quantity, 0)"
+        if "quantity" in cols
+        else "0"
+    )
+    unit_price_expr = "COALESCE(unit_price, 0)" if "unit_price" in cols else "0"
+    unit_cost_expr = (
+        "COALESCE(unit_cost, 0)"
+        if "unit_cost" in cols
+        else "COALESCE(cost_per_unit, 0)"
+        if "cost_per_unit" in cols
+        else "0"
+    )
+    sales_expr = (
+        "COALESCE(sales_amount, 0)"
+        if "sales_amount" in cols
+        else "COALESCE(net_sales_amount, 0)"
+        if "net_sales_amount" in cols
+        else "COALESCE(amount, 0)"
+        if "amount" in cols
+        else "0"
+    )
+    vat_expr = (
+        "COALESCE(vat_amount, 0)"
+        if "vat_amount" in cols
+        else "COALESCE(vat, 0)"
+        if "vat" in cols
+        else "0"
+    )
+    profit_expr = (
+        "COALESCE(profit_amount, 0)"
+        if "profit_amount" in cols
+        else "COALESCE(gross_profit_krw, 0)"
+        if "gross_profit_krw" in cols
+        else "COALESCE(margin_amount, 0)"
+        if "margin_amount" in cols
+        else "0"
+    )
+
+    sql = f"""
+        SELECT
+            {id_expr},
+            {sale_date_col} AS sale_date,
+            {partner_expr} AS partner_name,
+            {item_type_expr} AS item_type,
+            {product_name_expr} AS product_name,
+            {product_code_expr} AS product_code,
+            {qty_expr} AS qty,
+            {unit_price_expr} AS unit_price,
+            {unit_cost_expr} AS unit_cost,
+            {sales_expr} AS sales_amount,
+            {sales_expr} AS net_sales_amount,
+            {vat_expr} AS vat_amount,
+            {profit_expr} AS profit_amount,
+            {profit_expr} AS gross_profit_krw
+        FROM {source}
+        WHERE 1=1
+    """
 
     params = []
     if date_from:
@@ -282,58 +337,92 @@ def get_wholesale_data(conn, date_from: Optional[str], date_to: Optional[str]) -
         sql += " AND sale_date <= ?"
         params.append(date_to)
 
-    sql += " ORDER BY sale_date DESC, id DESC"
+    if "id" in cols:
+        sql += " ORDER BY sale_date DESC, id DESC"
+    else:
+        sql += " ORDER BY sale_date DESC"
+
     df = pd.read_sql_query(sql, conn, params=params)
 
-    for c in ["qty", "sales_amount", "profit_amount", "unit_cost", "vat_amount"]:
+    if df.empty:
+        return pd.DataFrame(columns=empty_cols), source
+
+    for c in [
+        "qty", "unit_price", "unit_cost", "sales_amount", "net_sales_amount",
+        "vat_amount", "profit_amount", "gross_profit_krw"
+    ]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
 
-    if "sales_amount" in df.columns and "net_sales_amount" not in df.columns:
-        df["net_sales_amount"] = df["sales_amount"]
-
-    if "profit_amount" in df.columns and "gross_profit_krw" not in df.columns:
-        df["gross_profit_krw"] = df["profit_amount"]
-
-    if "total_korea_cost_krw" not in df.columns and "qty" in df.columns and "unit_cost" in df.columns:
+    if "total_korea_cost_krw" not in df.columns:
         df["total_korea_cost_krw"] = df["qty"] * df["unit_cost"]
 
-    if "vat_amount" not in df.columns:
-        df["vat_amount"] = 0.0
+    for c in empty_cols:
+        if c not in df.columns:
+            if c in ["partner_name", "item_type", "product_name", "product_code"]:
+                df[c] = ""
+            else:
+                df[c] = 0
 
-    return df, source
+    return df[empty_cols], source
 
 
-# =========================================================
-# Expense
-# =========================================================
 def get_expense_data(conn, date_from: Optional[str], date_to: Optional[str]) -> pd.DataFrame:
     if not table_exists(conn, "expense_txn"):
         return pd.DataFrame()
 
-    sql = """
-        SELECT
-            t.expense_date,
-            c.expense_group,
-            c.expense_name,
-            t.amount,
-            t.vendor_name,
-            t.payment_method
-        FROM expense_txn t
-        LEFT JOIN expense_category_mst c
-            ON t.expense_category_id = c.id
-        WHERE 1=1
-    """
+    txn_cols = get_table_columns(conn, "expense_txn")
+    cat_exists = table_exists(conn, "expense_category_mst")
+    cat_cols = get_table_columns(conn, "expense_category_mst") if cat_exists else []
+
+    date_col = "expense_date" if "expense_date" in txn_cols else None
+    amount_col = "amount" if "amount" in txn_cols else None
+    vendor_col = "vendor_name" if "vendor_name" in txn_cols else "vendor" if "vendor" in txn_cols else None
+    payment_col = "payment_method" if "payment_method" in txn_cols else None
+    category_id_col = "expense_category_id" if "expense_category_id" in txn_cols else None
+
+    if not date_col or not amount_col:
+        return pd.DataFrame()
+
+    if cat_exists and category_id_col:
+        group_col = "expense_group" if "expense_group" in cat_cols else None
+        name_col = "expense_name" if "expense_name" in cat_cols else "name" if "name" in cat_cols else None
+
+        sql = f"""
+            SELECT
+                t.{date_col} AS expense_date,
+                {"COALESCE(c." + group_col + ", '')" if group_col else "''"} AS expense_group,
+                {"COALESCE(c." + name_col + ", '')" if name_col else "''"} AS expense_name,
+                COALESCE(t.{amount_col}, 0) AS amount,
+                {"COALESCE(t." + vendor_col + ", '')" if vendor_col else "''"} AS vendor_name,
+                {"COALESCE(t." + payment_col + ", '')" if payment_col else "''"} AS payment_method
+            FROM expense_txn t
+            LEFT JOIN expense_category_mst c
+                ON t.{category_id_col} = c.id
+            WHERE 1=1
+        """
+    else:
+        sql = f"""
+            SELECT
+                {date_col} AS expense_date,
+                '' AS expense_group,
+                '' AS expense_name,
+                COALESCE({amount_col}, 0) AS amount,
+                {"COALESCE(" + vendor_col + ", '')" if vendor_col else "''"} AS vendor_name,
+                {"COALESCE(" + payment_col + ", '')" if payment_col else "''"} AS payment_method
+            FROM expense_txn
+            WHERE 1=1
+        """
 
     params = []
     if date_from:
-        sql += " AND t.expense_date >= ?"
+        sql += " AND expense_date >= ?"
         params.append(date_from)
     if date_to:
-        sql += " AND t.expense_date <= ?"
+        sql += " AND expense_date <= ?"
         params.append(date_to)
 
-    sql += " ORDER BY t.expense_date DESC, t.id DESC"
+    sql += " ORDER BY expense_date DESC"
     df = pd.read_sql_query(sql, conn, params=params)
 
     if not df.empty:
@@ -342,9 +431,6 @@ def get_expense_data(conn, date_from: Optional[str], date_to: Optional[str]) -> 
     return df
 
 
-# =========================================================
-# 화면 1: 매출분석
-# =========================================================
 def render_sales_combined():
     st.markdown("### 매출분석")
 
@@ -414,6 +500,7 @@ def render_sales_combined():
 
             if not month_frames:
                 st.info("해당 기간 데이터가 없습니다.")
+                df_month = pd.DataFrame()
             else:
                 df_month = month_frames[0]
                 for extra in month_frames[1:]:
@@ -435,7 +522,7 @@ def render_sales_combined():
                 st.dataframe(show, use_container_width=True, hide_index=True, height=420)
 
             excel_bytes = to_excel_bytes({
-                "월별통합": df_month if "df_month" in locals() else pd.DataFrame(),
+                "월별통합": df_month,
                 "소매상세": retail_df,
                 "도매상세": wholesale_df,
             })
@@ -502,9 +589,6 @@ def render_sales_combined():
         conn.close()
 
 
-# =========================================================
-# 화면 2: 손익분석
-# =========================================================
 def render_profit_loss():
     st.markdown("### 손익분석")
 
