@@ -30,6 +30,15 @@ def view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
     return cur.fetchone() is not None
 
 
+def get_table_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
+    try:
+        cur = conn.execute(f"PRAGMA table_info({table_name})")
+        rows = cur.fetchall()
+        return [r[1] for r in rows]
+    except Exception:
+        return []
+
+
 def load_filter_values(conn: sqlite3.Connection):
     channels = []
     statuses = []
@@ -116,15 +125,101 @@ def build_query(use_view: bool, filters: dict):
         keyword_fields = ["order_no", "product_code_raw", "product_code"]
         if use_view:
             keyword_fields.extend(["mst_product_name", "mst_size_name"])
-
         where.append("(" + " OR ".join([f"COALESCE({f}, '') LIKE ?" for f in keyword_fields]) + ")")
         params.extend([kw] * len(keyword_fields))
 
     sql = f"SELECT * FROM {base}"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY sale_datetime DESC, id DESC"
+
+    if use_view:
+        sql += " ORDER BY sale_datetime DESC, id DESC"
+    else:
+        sql += " ORDER BY sale_datetime DESC, id DESC"
+
     return sql, params
+
+
+def get_non_cigar_purchase_price_map(conn: sqlite3.Connection) -> dict:
+    if not table_exists(conn, "non_cigar_product_mst"):
+        return {}
+
+    cols = get_table_columns(conn, "non_cigar_product_mst")
+    if "product_code" not in cols or "purchase_price" not in cols:
+        return {}
+
+    sql = """
+        SELECT
+            TRIM(COALESCE(product_code, '')) AS product_code,
+            COALESCE(purchase_price, 0) AS purchase_price
+        FROM non_cigar_product_mst
+    """
+    try:
+        df = pd.read_sql_query(sql, conn)
+    except Exception:
+        return {}
+
+    if df.empty:
+        return {}
+
+    df["product_code"] = df["product_code"].astype(str).str.strip()
+    df["purchase_price"] = pd.to_numeric(df["purchase_price"], errors="coerce").fillna(0)
+    df = df[df["product_code"] != ""].copy()
+
+    return dict(zip(df["product_code"], df["purchase_price"]))
+
+
+def apply_non_cigar_margin_logic(df: pd.DataFrame, conn: sqlite3.Connection) -> pd.DataFrame:
+    """
+    - 시가(product_mst): 기존 로직 유지
+    - 시가 외(non_cigar_product_mst): 판매금액 - (매입가 * 수량)
+    """
+    if df.empty:
+        return df
+
+    out = df.copy()
+
+    if "product_code" not in out.columns:
+        return out
+
+    purchase_price_map = get_non_cigar_purchase_price_map(conn)
+    if not purchase_price_map:
+        return out
+
+    if "qty" not in out.columns:
+        out["qty"] = 0.0
+    if "net_sales_amount" not in out.columns:
+        out["net_sales_amount"] = 0.0
+    if "total_korea_cost_krw" not in out.columns:
+        out["total_korea_cost_krw"] = 0.0
+    if "retail_gross_profit_krw" not in out.columns:
+        out["retail_gross_profit_krw"] = 0.0
+
+    out["product_code"] = out["product_code"].fillna("").astype(str).str.strip()
+    out["qty"] = pd.to_numeric(out["qty"], errors="coerce").fillna(0)
+    out["net_sales_amount"] = pd.to_numeric(out["net_sales_amount"], errors="coerce").fillna(0)
+    out["total_korea_cost_krw"] = pd.to_numeric(out["total_korea_cost_krw"], errors="coerce").fillna(0)
+    out["retail_gross_profit_krw"] = pd.to_numeric(out["retail_gross_profit_krw"], errors="coerce").fillna(0)
+
+    # 시가 외 항목만 덮어쓰기
+    non_cigar_mask = out["product_code"].isin(purchase_price_map.keys())
+
+    out.loc[non_cigar_mask, "_purchase_price"] = (
+        out.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
+    )
+
+    out.loc[non_cigar_mask, "total_korea_cost_krw"] = (
+        out.loc[non_cigar_mask, "_purchase_price"] * out.loc[non_cigar_mask, "qty"]
+    )
+
+    out.loc[non_cigar_mask, "retail_gross_profit_krw"] = (
+        out.loc[non_cigar_mask, "net_sales_amount"] - out.loc[non_cigar_mask, "total_korea_cost_krw"]
+    )
+
+    if "_purchase_price" in out.columns:
+        out = out.drop(columns=["_purchase_price"])
+
+    return out
 
 
 def calc_kpis(df: pd.DataFrame):
@@ -135,15 +230,19 @@ def calc_kpis(df: pd.DataFrame):
         "실매출": float(df["net_sales_amount"].fillna(0).sum()) if "net_sales_amount" in df.columns else 0,
         "부가세": float(df["vat_amount"].fillna(0).sum()) if "vat_amount" in df.columns else 0,
     }
+
     if "total_korea_cost_krw" in df.columns:
         result["원가합계"] = float(df["total_korea_cost_krw"].fillna(0).sum())
+
     if "total_supply_price_krw" in df.columns:
         result["공급가합계"] = float(df["total_supply_price_krw"].fillna(0).sum())
+
     if "retail_gross_profit_krw" in df.columns:
         gross_profit = float(df["retail_gross_profit_krw"].fillna(0).sum())
         result["매출총이익"] = gross_profit
         sales = result["실매출"]
         result["마진율"] = (gross_profit / sales * 100) if sales else 0
+
     return result
 
 
@@ -157,9 +256,6 @@ def make_excel_download(df_detail: pd.DataFrame, df_product: pd.DataFrame, df_da
     return output.getvalue()
 
 
-# -----------------------------
-# 표시용 포맷 함수 추가
-# -----------------------------
 KRW_COLUMNS = [
     "unit_price",
     "option_price",
@@ -213,11 +309,9 @@ def format_krw(v) -> str:
 
 def prettify_df(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-
     for col in KRW_COLUMNS:
         if col in out.columns:
             out[col] = out[col].apply(format_krw)
-
     out = out.rename(columns={k: v for k, v in HEADER_MAP.items() if k in out.columns})
     return out
 
@@ -235,7 +329,7 @@ def render():
             return
 
         channels, statuses, categories, codes = load_filter_values(conn)
-        st.caption("분석 뷰가 있으면 원가/공급가/마진까지 함께 조회합니다.")
+        st.caption("시가는 기존 로직, 시가 외 항목은 판매금액 - (매입가 × 수량) 기준으로 마진을 계산합니다.")
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -271,6 +365,9 @@ def render():
         if df.empty:
             st.warning("조회된 데이터가 없습니다.")
             return
+
+        # 핵심 보정: 시가 외 항목만 매입가 기준 재계산
+        df = apply_non_cigar_margin_logic(df, conn)
 
         kpis = calc_kpis(df)
         metric_cols = st.columns(4)
@@ -312,20 +409,20 @@ def render():
                     "supply_price_krw",
                     "retail_price_krw",
                     "retail_gross_profit_krw",
+                    "total_korea_cost_krw",
                     "source_file_name",
                     "source_row_no",
                 ] if c in df.columns
             ]
-
             df_detail = df[display_cols].copy()
             st.dataframe(prettify_df(df_detail), use_container_width=True, height=520)
 
-            if "mst_product_name" in df.columns:
-                group_name_col = "mst_product_name"
-            elif "product_code" in df.columns:
-                group_name_col = "product_code"
-            else:
-                group_name_col = "product_code_raw"
+        if "mst_product_name" in df.columns:
+            group_name_col = "mst_product_name"
+        elif "product_code" in df.columns:
+            group_name_col = "product_code"
+        else:
+            group_name_col = "product_code_raw"
 
         with tab2:
             agg_map = {
@@ -338,6 +435,7 @@ def render():
                     agg_map[extra] = "sum"
 
             group_cols = [c for c in ["product_code", group_name_col, "mst_size_name"] if c in df.columns]
+
             df_product = (
                 df.groupby(group_cols, dropna=False)
                 .agg(agg_map)
@@ -349,7 +447,7 @@ def render():
                 df_product["마진율(%)"] = df_product.apply(
                     lambda x: round((x["retail_gross_profit_krw"] / x["net_sales_amount"] * 100), 1)
                     if x["net_sales_amount"] else 0,
-                    axis=1
+                    axis=1,
                 )
 
             st.dataframe(prettify_df(df_product), use_container_width=True, height=520)
@@ -377,17 +475,16 @@ def render():
                 df_daily["마진율(%)"] = df_daily.apply(
                     lambda x: round((x["retail_gross_profit_krw"] / x["net_sales_amount"] * 100), 1)
                     if x["net_sales_amount"] else 0,
-                    axis=1
+                    axis=1,
                 )
 
             st.dataframe(prettify_df(df_daily), use_container_width=True, height=520)
 
         excel_bytes = make_excel_download(
             df_detail=df,
-            df_product=df_product if 'df_product' in locals() else pd.DataFrame(),
-            df_daily=df_daily if 'df_daily' in locals() else pd.DataFrame(),
+            df_product=df_product if "df_product" in locals() else pd.DataFrame(),
+            df_daily=df_daily if "df_daily" in locals() else pd.DataFrame(),
         )
-
         st.download_button(
             "조회결과 엑셀 다운로드",
             data=excel_bytes,
