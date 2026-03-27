@@ -1,4 +1,4 @@
-8import sqlite3
+import sqlite3
 import pandas as pd
 
 DB_PATH = r"cigar.db"
