@@ -876,115 +876,205 @@ def insert_import_item(
         source_row_no,
     ])
 
+def _get_table_columns(conn, table_name: str) -> set:
+    try:
+        sql = f"PRAGMA table_info({table_name})"
+        df = pd.read_sql_query(sql, conn)
+        if df.empty or "name" not in df.columns:
+            return set()
+        return set(df["name"].astype(str).tolist())
+    except Exception:
+        return set()
+
+
+def _pick_expr(alias: str, columns: set, candidates: list, default_sql: str = "''") -> str:
+    """
+    alias: 테이블 별칭 (예: p, i)
+    columns: 실제 존재하는 컬럼 집합
+    candidates: 우선순위 컬럼명 리스트
+    default_sql: 아무 컬럼도 없을 때 사용할 SQL
+    """
+    for col in candidates:
+        if col in columns:
+            return f"{alias}.{col}"
+    return default_sql
+
+
 def get_product_intro_export_data(brand_keyword: str = "", use_yn: str = "전체") -> pd.DataFrame:
     """
     상품소개서 엑셀 출력용 데이터 조회
-    반환 컬럼:
-      product_name, size_name, flavor, strength,
-      length_text, rg, time_text, guide_text, retail_price_krw
+    실제 존재하는 컬럼만 사용하도록 동적으로 SQL 생성
     """
 
     conn = get_conn()
 
-    sql = """
+    p_cols = _get_table_columns(conn, "product_mst")
+    i_cols = _get_table_columns(conn, "import_item")
+
+    # product_name
+    p_product_name = _pick_expr("p", p_cols, ["product_name", "product_nm", "name"], "''")
+
+    # brand_name
+    p_brand_name = _pick_expr("p", p_cols, ["brand_name", "brand", "brand_nm"], "''")
+
+    # use_yn
+    p_use_yn = _pick_expr("p", p_cols, ["use_yn"], "'Y'")
+
+    # size
+    i_size = _pick_expr("i", i_cols, ["size_name", "size_nm", "vitola", "size"], "NULL")
+    p_size = _pick_expr("p", p_cols, ["size_name", "size_nm", "vitola", "size"], "''")
+
+    # flavor
+    i_flavor = _pick_expr("i", i_cols, ["flavor", "flavor_text", "taste", "tasting_note"], "NULL")
+    p_flavor = _pick_expr("p", p_cols, ["flavor", "flavor_text", "taste", "tasting_note"], "''")
+
+    # strength
+    i_strength = _pick_expr("i", i_cols, ["strength", "strength_text"], "NULL")
+    p_strength = _pick_expr("p", p_cols, ["strength", "strength_text"], "''")
+
+    # length
+    i_length = _pick_expr("i", i_cols, ["length_mm", "length"], "NULL")
+    p_length = _pick_expr("p", p_cols, ["length_mm", "length"], "NULL")
+
+    # rg
+    i_rg = _pick_expr("i", i_cols, ["ring_gauge", "rg"], "NULL")
+    p_rg = _pick_expr("p", p_cols, ["ring_gauge", "rg"], "''")
+
+    # time
+    i_time = _pick_expr("i", i_cols, ["enjoyment_time", "smoking_time", "time_text", "time"], "NULL")
+    p_time = _pick_expr("p", p_cols, ["enjoyment_time", "smoking_time", "time_text", "time"], "''")
+
+    # guide
+    i_guide = _pick_expr("i", i_cols, ["guide_text", "guide", "description", "intro_text"], "NULL")
+    p_guide = _pick_expr("p", p_cols, ["guide_text", "guide", "description", "intro_text"], "''")
+
+    # retail price
+    i_price = _pick_expr(
+        "i", i_cols,
+        ["retail_price_krw", "consumer_price_krw", "retail_price", "price_krw", "sell_price"],
+        "NULL"
+    )
+    p_price = _pick_expr(
+        "p", p_cols,
+        ["retail_price_krw", "consumer_price_krw", "retail_price", "price_krw", "sell_price"],
+        "''"
+    )
+
+    # join 여부
+    has_import_item = len(i_cols) > 0
+    join_sql = ""
+    order_size_expr = p_size
+
+    if has_import_item:
+        # product_id가 있을 때만 join
+        if "product_id" in i_cols and "id" in p_cols:
+            join_sql = " LEFT JOIN import_item i ON p.id = i.product_id "
+            order_size_expr = f"COALESCE({i_size}, {p_size}, '')"
+        else:
+            # import_item은 있지만 연결키가 없으면 join 생략
+            join_sql = ""
+
+    sql = f"""
     SELECT
-        p.id AS product_id,
-        COALESCE(p.product_name, '') AS product_name,
+        {p_product_name} AS product_name,
 
         COALESCE(
-            i.size_name,
-            p.size_name,
+            {i_size if has_import_item and join_sql else 'NULL'},
+            {p_size},
             ''
         ) AS size_name,
 
         COALESCE(
-            i.flavor,
-            p.flavor,
+            {i_flavor if has_import_item and join_sql else 'NULL'},
+            {p_flavor},
             ''
         ) AS flavor,
 
         COALESCE(
-            i.strength,
-            p.strength,
+            {i_strength if has_import_item and join_sql else 'NULL'},
+            {p_strength},
             ''
         ) AS strength,
 
         CASE
-            WHEN i.length_mm IS NOT NULL AND i.length_mm <> ''
-                THEN CAST(i.length_mm AS TEXT) || ' mm'
-            WHEN p.length_mm IS NOT NULL AND p.length_mm <> ''
-                THEN CAST(p.length_mm AS TEXT) || ' mm'
+            WHEN {i_length if has_import_item and join_sql else 'NULL'} IS NOT NULL
+                 AND {i_length if has_import_item and join_sql else 'NULL'} <> ''
+                THEN CAST({i_length if has_import_item and join_sql else 'NULL'} AS TEXT) || ' mm'
+            WHEN {p_length} IS NOT NULL
+                 AND {p_length} <> ''
+                THEN CAST({p_length} AS TEXT) || ' mm'
             ELSE ''
         END AS length_text,
 
         COALESCE(
-            i.ring_gauge,
-            p.ring_gauge,
+            {i_rg if has_import_item and join_sql else 'NULL'},
+            {p_rg},
             ''
         ) AS rg,
 
         COALESCE(
-            i.enjoyment_time,
-            p.enjoyment_time,
+            {i_time if has_import_item and join_sql else 'NULL'},
+            {p_time},
             ''
         ) AS time_text,
 
         COALESCE(
-            i.guide_text,
-            p.guide_text,
+            {i_guide if has_import_item and join_sql else 'NULL'},
+            {p_guide},
             ''
         ) AS guide_text,
 
         COALESCE(
-            i.retail_price_krw,
-            p.retail_price_krw,
+            {i_price if has_import_item and join_sql else 'NULL'},
+            {p_price},
             ''
         ) AS retail_price_krw,
 
-        COALESCE(p.use_yn, 'Y') AS use_yn,
-        COALESCE(p.brand_name, '') AS brand_name
+        COALESCE({p_use_yn}, 'Y') AS use_yn,
+        COALESCE({p_brand_name}, '') AS brand_name
     FROM product_mst p
-    LEFT JOIN import_item i
-        ON p.id = i.product_id
+    {join_sql}
     WHERE 1=1
     """
 
     params = []
 
     if brand_keyword:
-        sql += """
+        sql += f"""
         AND (
-            COALESCE(p.product_name, '') LIKE ?
-            OR COALESCE(p.brand_name, '') LIKE ?
-            OR COALESCE(i.size_name, '') LIKE ?
+            COALESCE({p_product_name}, '') LIKE ?
+            OR COALESCE({p_brand_name}, '') LIKE ?
+            OR COALESCE(
+                {i_size if has_import_item and join_sql else 'NULL'},
+                {p_size},
+                ''
+            ) LIKE ?
         )
         """
         kw = f"%{brand_keyword}%"
         params.extend([kw, kw, kw])
 
     if use_yn in ("Y", "N"):
-        sql += " AND COALESCE(p.use_yn, 'Y') = ? "
+        sql += f" AND COALESCE({p_use_yn}, 'Y') = ? "
         params.append(use_yn)
 
-    sql += """
+    sql += f"""
     ORDER BY
-        COALESCE(p.brand_name, ''),
-        COALESCE(p.product_name, ''),
-        COALESCE(i.size_name, p.size_name, '')
+        COALESCE({p_brand_name}, ''),
+        COALESCE({p_product_name}, ''),
+        {order_size_expr}
     """
 
     df = pd.read_sql_query(sql, conn, params=params)
     conn.close()
 
-    # 컬럼 보정
-    for col in [
+    # 결과 컬럼 보정
+    wanted_cols = [
         "product_name", "size_name", "flavor", "strength",
         "length_text", "rg", "time_text", "guide_text", "retail_price_krw"
-    ]:
+    ]
+    for col in wanted_cols:
         if col not in df.columns:
             df[col] = ""
 
-    return df[[
-        "product_name", "size_name", "flavor", "strength",
-        "length_text", "rg", "time_text", "guide_text", "retail_price_krw"
-    ]]
+    return df[wanted_cols]
