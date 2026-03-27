@@ -65,7 +65,7 @@ def render():
     # 신규 추가
     # ---------------------------
     with tab_add:
-        st.subheader("Import Item 신규 추가")
+        st.subheader("수입제품 신규 추가")
 
         with st.form("import_item_insert_form", clear_on_submit=True):
             col1, col2, col3 = st.columns(3)
@@ -178,7 +178,7 @@ def render():
     # ---------------------------
     with tab_edit:
         selected_item_label = st.selectbox(
-            "수정할 import_item 선택",
+            "수정할 수입제품 선택",
             list(item_options.keys()),
             key="edit_item_selectbox",
         )
