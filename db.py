@@ -1090,14 +1090,19 @@ def get_latest_tax_rule_for_import_calc():
 
 
 def get_import_batch_one(batch_id):
+    """
+    import_version.py에서 실제 사용하는 import_batch 컬럼 기준 조회
+    """
     sql = """
     SELECT
         id,
         version_name,
+        import_date,
+        supplier_name,
         usd_to_krw_rate,
         php_to_krw_rate,
-        tax_rule_id,
-        raw_json,
+        local_markup_rate,
+        notes,
         created_at
     FROM import_batch
     WHERE id = ?
@@ -1106,29 +1111,139 @@ def get_import_batch_one(batch_id):
     return df.iloc[0].to_dict() if not df.empty else {}
 
 
-def update_import_batch_rates_and_tax_rule(batch_id, usd_to_krw_rate, php_to_krw_rate, tax_rule_id):
+def get_export_price_product_names():
     sql = """
-    UPDATE import_batch
-    SET
-        usd_to_krw_rate = ?,
-        php_to_krw_rate = ?,
-        tax_rule_id = ?
-    WHERE id = ?
+    SELECT DISTINCT product_name
+    FROM export_price_item
+    WHERE COALESCE(product_name, '') <> ''
+    ORDER BY product_name
     """
-    execute(sql, [usd_to_krw_rate, php_to_krw_rate, tax_rule_id, batch_id])
+    df = run_query(sql)
+    return df["product_name"].tolist() if not df.empty else []
 
 
-def get_tax_rule_options():
+def get_export_price_sizes_by_product(product_name):
+    sql = """
+    SELECT DISTINCT size_name
+    FROM export_price_item
+    WHERE product_name = ?
+      AND COALESCE(size_name, '') <> ''
+    ORDER BY size_name
+    """
+    df = run_query(sql, [product_name])
+    return df["size_name"].tolist() if not df.empty else []
+
+
+def get_export_price_package_options(product_name, size_name):
+    sql = """
+    SELECT
+        id,
+        product_name,
+        size_name,
+        package_type,
+        package_qty,
+        export_price_usd,
+        created_at
+    FROM export_price_item
+    WHERE product_name = ?
+      AND size_name = ?
+    ORDER BY package_type, package_qty
+    """
+    return run_query(sql, [product_name, size_name])
+
+
+def get_product_mst_one(product_name, size_name):
+    sql = """
+    SELECT
+        id,
+        product_name,
+        size_name,
+        product_code,
+        use_yn,
+        length_mm,
+        ring_gauge,
+        smoking_time_text,
+        unit_weight_g
+    FROM product_mst
+    WHERE product_name = ?
+      AND size_name = ?
+    ORDER BY id DESC
+    LIMIT 1
+    """
+    df = run_query(sql, [product_name, size_name])
+    return df.iloc[0].to_dict() if not df.empty else {}
+
+
+def get_latest_tax_rule_for_import_calc():
     sql = """
     SELECT
         id,
         rule_name,
         effective_from,
-        effective_to
+        effective_to,
+        individual_tax_per_g,
+        tobacco_tax_per_g,
+        local_education_rate,
+        health_charge_per_g,
+        import_vat_rate,
+        notes
     FROM tax_rule
     ORDER BY effective_from DESC, id DESC
+    LIMIT 1
     """
-    return run_query(sql)
+    df = run_query(sql)
+    return df.iloc[0].to_dict() if not df.empty else {
+        "id": None,
+        "rule_name": "",
+        "individual_tax_per_g": 0,
+        "tobacco_tax_per_g": 0,
+        "local_education_rate": 0,
+        "health_charge_per_g": 0,
+        "import_vat_rate": 0,
+    }
+
+
+def get_import_item_detail(item_id):
+    sql = """
+    SELECT
+        id,
+        batch_id,
+        product_name,
+        size_name,
+        product_code,
+        export_box_price_usd,
+        discounted_box_price_usd,
+        discount_rate,
+        import_unit_qty,
+        export_unit_price_usd,
+        import_unit_cost_krw,
+        import_total_cost_krw,
+        unit_weight_g,
+        total_weight_g,
+        individual_tax_krw,
+        tobacco_tax_krw,
+        local_education_tax_krw,
+        health_charge_krw,
+        import_vat_krw,
+        tax_total_krw,
+        tax_total_all_krw,
+        korea_cost_krw,
+        local_box_price_php,
+        local_unit_price_php,
+        local_unit_price_krw,
+        usd_to_krw_rate,
+        php_to_krw_rate,
+        use_php_price,
+        retail_price_krw,
+        supply_price_krw,
+        margin_krw,
+        source_row_no,
+        raw_row_json,
+        raw_formula_json
+    FROM import_item
+    WHERE id = ?
+    """
+    return run_query(sql, [item_id])
 
 
 def upsert_import_item_full(
@@ -1160,7 +1275,6 @@ def upsert_import_item_full(
     php_to_krw_rate,
     use_php_price,
     usd_to_krw_rate,
-    tax_rule_id,
     retail_price_krw,
     supply_price_krw,
     margin_krw,
@@ -1199,7 +1313,6 @@ def upsert_import_item_full(
             php_to_krw_rate = ?,
             use_php_price = ?,
             usd_to_krw_rate = ?,
-            tax_rule_id = ?,
             retail_price_krw = ?,
             supply_price_krw = ?,
             margin_krw = ?,
@@ -1236,7 +1349,6 @@ def upsert_import_item_full(
             php_to_krw_rate,
             use_php_price,
             usd_to_krw_rate,
-            tax_rule_id,
             retail_price_krw,
             supply_price_krw,
             margin_krw,
@@ -1275,7 +1387,6 @@ def upsert_import_item_full(
             php_to_krw_rate,
             use_php_price,
             usd_to_krw_rate,
-            tax_rule_id,
             retail_price_krw,
             supply_price_krw,
             margin_krw,
@@ -1283,7 +1394,7 @@ def upsert_import_item_full(
             raw_row_json,
             raw_formula_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         execute(sql, [
             batch_id,
@@ -1313,7 +1424,6 @@ def upsert_import_item_full(
             php_to_krw_rate,
             use_php_price,
             usd_to_krw_rate,
-            tax_rule_id,
             retail_price_krw,
             supply_price_krw,
             margin_krw,
