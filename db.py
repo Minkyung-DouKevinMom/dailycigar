@@ -689,19 +689,19 @@ def get_price_analysis_view(batch_id=None, keyword=None):
     sql = f"""
     SELECT
         b.version_name,
+        i.product_code,
         i.product_name,
         i.size_name,
-        i.product_code,
-        i.import_unit_qty,
+        (1-i.discount_rate)*100 discount_rate,
+        i.export_unit_price_usd,
+        i.import_unit_cost_krw,
         i.unit_weight_g,
-        i.total_weight_g,
         i.individual_tax_krw,
         i.tobacco_tax_krw,
         i.local_education_tax_krw,
         i.health_charge_krw,
         i.import_vat_krw,
-        i.tax_total_all_krw,
-        i.import_total_cost_krw,
+        i.tax_total_krw,
         i.korea_cost_krw,
 
         i.local_box_price_php,
@@ -710,8 +710,11 @@ def get_price_analysis_view(batch_id=None, keyword=None):
 
         i.retail_price_krw,
         i.supply_price_krw,
-        i.store_retail_price_krw,
-        i.margin_krw
+        i.supply_vat_krw,
+        i.margin_krw,
+        i.retail_margin_rate,
+        i.wholesale_margin_rate,
+        i.store_retail_price_krw
 
     FROM import_item i
     JOIN import_batch b ON i.batch_id = b.id
@@ -1248,9 +1251,11 @@ def get_import_item_detail(item_id):
     SELECT
         id,
         batch_id,
+        product_code,
         product_name,
         size_name,
-        product_code,
+        discount_rate,
+        export_unit_price_usd,
         export_box_price_usd,
         discounted_box_price_usd,
         discount_rate,
