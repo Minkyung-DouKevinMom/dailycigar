@@ -676,10 +676,11 @@ def get_price_analysis_view(batch_id=None, keyword=None):
         (
             COALESCE(i.product_name, '') LIKE ?
             OR COALESCE(i.size_name, '') LIKE ?
+            OR COALESCE(i.product_code, '') LIKE ?
         )
         """)
         kw = f"%{keyword}%"
-        params.extend([kw, kw])
+        params.extend([kw, kw, kw])
 
     where_sql = ""
     if conditions:
@@ -691,20 +692,21 @@ def get_price_analysis_view(batch_id=None, keyword=None):
         i.product_name,
         i.size_name,
         i.product_code,
-
         i.import_unit_qty,
         i.unit_weight_g,
         i.total_weight_g,
-
         i.individual_tax_krw,
         i.tobacco_tax_krw,
         i.local_education_tax_krw,
         i.health_charge_krw,
         i.import_vat_krw,
         i.tax_total_all_krw,
-
         i.import_total_cost_krw,
         i.korea_cost_krw,
+
+        i.local_box_price_php,
+        i.local_unit_price_php,
+        i.local_unit_price_krw,
 
         i.retail_price_krw,
         i.supply_price_krw,
@@ -716,7 +718,6 @@ def get_price_analysis_view(batch_id=None, keyword=None):
     {where_sql}
     ORDER BY b.id DESC, i.product_name, i.size_name
     """
-
     return run_query(sql, params)
 
 def get_import_batch_detail(batch_id: int) -> pd.DataFrame:
