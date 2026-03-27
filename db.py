@@ -878,38 +878,71 @@ def insert_import_item(
 
 def get_product_intro_export_data(brand_keyword: str = "", use_yn: str = "전체") -> pd.DataFrame:
     """
-    상품소개서 발송용 엑셀 데이터를 반환합니다.
-
-    우선순위:
-    1) product_mst 기본정보
-    2) import_item 또는 유사 테이블의 가격/규격 정보
-    3) 없는 값은 빈값으로 처리
+    상품소개서 엑셀 출력용 데이터 조회
+    반환 컬럼:
+      product_name, size_name, flavor, strength,
+      length_text, rg, time_text, guide_text, retail_price_krw
     """
 
-    conn = get_connection()
+    conn = get_conn()
 
-    # 실제 프로젝트 구조에 맞춰 필요 시 테이블명/컬럼명 보정
-    # 아래 쿼리는 product_mst + import_item 조합을 가정
     sql = """
     SELECT
         p.id AS product_id,
         COALESCE(p.product_name, '') AS product_name,
-        COALESCE(i.size_name, p.size_name, '') AS size_name,
-        COALESCE(i.flavor, p.flavor, '') AS flavor,
-        COALESCE(i.strength, p.strength, '') AS strength,
+
         COALESCE(
-            CASE
-                WHEN i.length_mm IS NOT NULL THEN CAST(i.length_mm AS TEXT) || ' mm'
-                WHEN p.length_mm IS NOT NULL THEN CAST(p.length_mm AS TEXT) || ' mm'
-                ELSE ''
-            END,
+            i.size_name,
+            p.size_name,
             ''
-        ) AS length_text,
-        COALESCE(i.ring_gauge, p.ring_gauge, '') AS rg,
-        COALESCE(i.enjoyment_time, p.enjoyment_time, '') AS time_text,
-        COALESCE(i.guide_text, p.guide_text, '') AS guide_text,
-        COALESCE(i.retail_price_krw, p.retail_price_krw, 0) AS retail_price_krw,
-        COALESCE(p.use_yn, 'Y') AS use_yn
+        ) AS size_name,
+
+        COALESCE(
+            i.flavor,
+            p.flavor,
+            ''
+        ) AS flavor,
+
+        COALESCE(
+            i.strength,
+            p.strength,
+            ''
+        ) AS strength,
+
+        CASE
+            WHEN i.length_mm IS NOT NULL AND i.length_mm <> ''
+                THEN CAST(i.length_mm AS TEXT) || ' mm'
+            WHEN p.length_mm IS NOT NULL AND p.length_mm <> ''
+                THEN CAST(p.length_mm AS TEXT) || ' mm'
+            ELSE ''
+        END AS length_text,
+
+        COALESCE(
+            i.ring_gauge,
+            p.ring_gauge,
+            ''
+        ) AS rg,
+
+        COALESCE(
+            i.enjoyment_time,
+            p.enjoyment_time,
+            ''
+        ) AS time_text,
+
+        COALESCE(
+            i.guide_text,
+            p.guide_text,
+            ''
+        ) AS guide_text,
+
+        COALESCE(
+            i.retail_price_krw,
+            p.retail_price_krw,
+            ''
+        ) AS retail_price_krw,
+
+        COALESCE(p.use_yn, 'Y') AS use_yn,
+        COALESCE(p.brand_name, '') AS brand_name
     FROM product_mst p
     LEFT JOIN import_item i
         ON p.id = i.product_id
@@ -921,13 +954,13 @@ def get_product_intro_export_data(brand_keyword: str = "", use_yn: str = "전체
     if brand_keyword:
         sql += """
         AND (
-            p.product_name LIKE ?
+            COALESCE(p.product_name, '') LIKE ?
             OR COALESCE(p.brand_name, '') LIKE ?
             OR COALESCE(i.size_name, '') LIKE ?
         )
         """
-        keyword = f"%{brand_keyword}%"
-        params.extend([keyword, keyword, keyword])
+        kw = f"%{brand_keyword}%"
+        params.extend([kw, kw, kw])
 
     if use_yn in ("Y", "N"):
         sql += " AND COALESCE(p.use_yn, 'Y') = ? "
@@ -936,19 +969,22 @@ def get_product_intro_export_data(brand_keyword: str = "", use_yn: str = "전체
     sql += """
     ORDER BY
         COALESCE(p.brand_name, ''),
-        p.product_name,
+        COALESCE(p.product_name, ''),
         COALESCE(i.size_name, p.size_name, '')
     """
 
     df = pd.read_sql_query(sql, conn, params=params)
     conn.close()
 
-    # 후처리: NaN 정리
-    for col in ["product_name", "size_name", "flavor", "strength", "length_text", "rg", "time_text", "guide_text"]:
-        if col in df.columns:
-            df[col] = df[col].fillna("")
+    # 컬럼 보정
+    for col in [
+        "product_name", "size_name", "flavor", "strength",
+        "length_text", "rg", "time_text", "guide_text", "retail_price_krw"
+    ]:
+        if col not in df.columns:
+            df[col] = ""
 
-    if "retail_price_krw" in df.columns:
-        df["retail_price_krw"] = pd.to_numeric(df["retail_price_krw"], errors="coerce")
-
-    return df
+    return df[[
+        "product_name", "size_name", "flavor", "strength",
+        "length_text", "rg", "time_text", "guide_text", "retail_price_krw"
+    ]]
