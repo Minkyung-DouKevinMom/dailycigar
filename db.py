@@ -746,33 +746,48 @@ def create_import_batch(
     local_markup_rate=None,
     notes=None,
 ):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO import_batch (
-            version_name,
-            import_date,
-            supplier_name,
-            usd_to_krw_rate,
-            php_to_krw_rate,
-            local_markup_rate,
-            notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            version_name,
-            import_date,
-            supplier_name,
-            usd_to_krw_rate,
-            php_to_krw_rate,
-            local_markup_rate,
-            notes,
-        ),
-    )
-    conn.commit()
-    conn.close()
+    """
+    import_version.py 신규 등록 화면과 맞춘 안전한 INSERT
+    실제 import_batch 테이블에 존재하는 컬럼만 INSERT 한다.
+    """
 
+    cols_df = run_query("PRAGMA table_info(import_batch)")
+    existing_cols = set(cols_df["name"].tolist()) if not cols_df.empty else set()
+
+    insert_cols = []
+    placeholders = []
+    params = []
+
+    def add_col(col_name, value):
+        if col_name in existing_cols:
+            insert_cols.append(col_name)
+            placeholders.append("?")
+            params.append(value)
+
+    add_col("version_name", version_name)
+    add_col("import_date", import_date)
+    add_col("supplier_name", supplier_name)
+    add_col("usd_to_krw_rate", usd_to_krw_rate)
+    add_col("php_to_krw_rate", php_to_krw_rate)
+    add_col("local_markup_rate", local_markup_rate)
+    add_col("notes", notes)
+
+    if "created_at" in existing_cols:
+        insert_cols.append("created_at")
+        placeholders.append("CURRENT_TIMESTAMP")
+
+    if not insert_cols:
+        raise Exception("import_batch 테이블에 INSERT 가능한 컬럼이 없습니다.")
+
+    sql = f"""
+    INSERT INTO import_batch (
+        {", ".join(insert_cols)}
+    )
+    VALUES (
+        {", ".join(placeholders)}
+    )
+    """
+    execute(sql, params)
 
 def update_import_batch(
     batch_id,
@@ -784,36 +799,60 @@ def update_import_batch(
     local_markup_rate=None,
     notes=None,
 ):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        UPDATE import_batch
-        SET
-            version_name = ?,
-            import_date = ?,
-            supplier_name = ?,
-            usd_to_krw_rate = ?,
-            php_to_krw_rate = ?,
-            local_markup_rate = ?,
-            notes = ?,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-        """,
-        (
-            version_name,
-            import_date,
-            supplier_name,
-            usd_to_krw_rate,
-            php_to_krw_rate,
-            local_markup_rate,
-            notes,
-            batch_id,
-        ),
-    )
-    conn.commit()
-    conn.close()
+    """
+    import_version.py 수정 화면과 맞춘 안전한 UPDATE
+    실제 import_batch 테이블에 존재하는 컬럼만 업데이트한다.
+    """
 
+    cols_df = run_query("PRAGMA table_info(import_batch)")
+    existing_cols = set(cols_df["name"].tolist()) if not cols_df.empty else set()
+
+    update_parts = []
+    params = []
+
+    if "version_name" in existing_cols:
+        update_parts.append("version_name = ?")
+        params.append(version_name)
+
+    if "import_date" in existing_cols:
+        update_parts.append("import_date = ?")
+        params.append(import_date)
+
+    if "supplier_name" in existing_cols:
+        update_parts.append("supplier_name = ?")
+        params.append(supplier_name)
+
+    if "usd_to_krw_rate" in existing_cols:
+        update_parts.append("usd_to_krw_rate = ?")
+        params.append(usd_to_krw_rate)
+
+    if "php_to_krw_rate" in existing_cols:
+        update_parts.append("php_to_krw_rate = ?")
+        params.append(php_to_krw_rate)
+
+    if "local_markup_rate" in existing_cols:
+        update_parts.append("local_markup_rate = ?")
+        params.append(local_markup_rate)
+
+    if "notes" in existing_cols:
+        update_parts.append("notes = ?")
+        params.append(notes)
+
+    if "updated_at" in existing_cols:
+        update_parts.append("updated_at = CURRENT_TIMESTAMP")
+
+    if not update_parts:
+        raise Exception("import_batch 테이블에 업데이트 가능한 컬럼이 없습니다.")
+
+    sql = f"""
+    UPDATE import_batch
+    SET
+        {", ".join(update_parts)}
+    WHERE id = ?
+    """
+    params.append(batch_id)
+
+    execute(sql, params)
 
 def delete_import_batch(batch_id: int):
     conn = get_conn()
