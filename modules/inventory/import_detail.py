@@ -11,7 +11,6 @@ from db import (
     get_export_price_sizes_by_product,
     get_export_price_package_options,
     get_product_mst_one,
-    get_tax_rule_by_id,
     get_latest_tax_rule_for_import_calc,
     upsert_import_item_full,
 )
@@ -124,7 +123,7 @@ def render():
     batch_df = get_all_import_batch()
     if batch_df.empty:
         st.info("수입 버전 데이터가 없습니다.")
-        st.stop()
+        return
 
     batch_options = {"선택하세요": None}
     for _, row in batch_df.iterrows():
@@ -142,16 +141,12 @@ def render():
         return
 
     batch_row = get_import_batch_one(selected_batch_id)
-    tax_rule = {}
-    if batch_row.get("tax_rule_id"):
-        tax_rule = get_tax_rule_by_id(batch_row["tax_rule_id"])
-    if not tax_rule:
-        tax_rule = get_latest_tax_rule_for_import_calc()
+    tax_rule = get_latest_tax_rule_for_import_calc()
 
     info1, info2, info3 = st.columns(3)
-    info1.metric("USD 환율", f'{_n(batch_row.get("usd_to_krw_rate"), USD_TO_KRW_DEFAULT):,.0f}')
+    info1.metric("USD 환율", f'{_n(batch_row.get("usd_to_krw_rate"), USD_TO_KRW_DEFAULT):,.2f}')
     info2.metric("PHP 환율", f'{_n(batch_row.get("php_to_krw_rate"), PHP_TO_KRW_DEFAULT):,.2f}')
-    info3.metric("세금 규칙", tax_rule.get("rule_name", "미설정"))
+    info3.metric("세금 규칙", tax_rule.get("rule_name", "최신 규칙"))
 
     df = get_import_item_list_filtered(selected_batch_id, keyword)
 
@@ -402,7 +397,6 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 php_to_krw_rate=_none_if_zero_num(php_to_krw_rate),
                 use_php_price=1 if use_php_price else 0,
                 usd_to_krw_rate=_none_if_zero_num(usd_to_krw_rate),
-                tax_rule_id=batch_row.get("tax_rule_id"),
                 retail_price_krw=_none_if_zero_num(retail_price_krw),
                 supply_price_krw=_none_if_zero_num(supply_price_krw),
                 margin_krw=_none_if_zero_num(margin_krw),
