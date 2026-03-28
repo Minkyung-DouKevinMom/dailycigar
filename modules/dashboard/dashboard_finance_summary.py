@@ -4,6 +4,7 @@ from typing import Tuple
 
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
@@ -67,8 +68,11 @@ def fmt_krw(value) -> str:
 def fmt_delta_krw(curr, prev) -> str:
     try:
         diff = float(curr) - float(prev)
-        sign = "+" if diff > 0 else ""
-        return f"{sign}₩{diff:,.0f}"
+        if diff > 0:
+            return f"+₩{diff:,.0f}"
+        if diff < 0:
+            return f"-₩{abs(diff):,.0f}"
+        return "₩0"
     except Exception:
         return "₩0"
 
@@ -78,6 +82,31 @@ def fmt_pct(value) -> str:
         return f"{float(value):.1f}%"
     except Exception:
         return "0.0%"
+
+
+def inject_expense_metric_css():
+    st.markdown(
+        '''
+        <style>
+        /* 첫 번째 4개 KPI 카드 중 두 번째 카드(월 지출)만 색상 반전 */
+        div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:nth-of-type(2) div[data-testid="stMetricDelta"] svg {
+            color: rgb(220, 38, 38) !important;
+            fill: rgb(220, 38, 38) !important;
+        }
+        div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:nth-of-type(2) div[data-testid="stMetricDelta"] > div {
+            color: rgb(220, 38, 38) !important;
+        }
+        div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:nth-of-type(2) div[data-testid="stMetricDelta"][data-streamlit-negative="true"] svg {
+            color: rgb(22, 163, 74) !important;
+            fill: rgb(22, 163, 74) !important;
+        }
+        div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:nth-of-type(2) div[data-testid="stMetricDelta"][data-streamlit-negative="true"] > div {
+            color: rgb(22, 163, 74) !important;
+        }
+        </style>
+        ''',
+        unsafe_allow_html=True,
+    )
 
 
 def get_non_cigar_purchase_price_map(conn) -> dict:
@@ -108,6 +137,56 @@ def get_non_cigar_purchase_price_map(conn) -> dict:
 
     return dict(zip(df["product_code"], df["purchase_price"]))
 
+
+
+def get_product_name_map(conn) -> dict:
+    name_map = {}
+
+    if table_exists(conn, "product_mst"):
+        cols = get_table_columns(conn, "product_mst")
+        if "product_code" in cols:
+            name_col = pick_col(cols, ["product_name", "display_name", "item_name", "name"])
+            if name_col:
+                try:
+                    sql = f"""
+                        SELECT
+                            TRIM(COALESCE(product_code, '')) AS product_code,
+                            TRIM(COALESCE({name_col}, '')) AS product_name
+                        FROM product_mst
+                    """
+                    df = pd.read_sql_query(sql, conn)
+                    if not df.empty:
+                        df["product_code"] = df["product_code"].astype(str).str.strip()
+                        df["product_name"] = df["product_name"].astype(str).str.strip()
+                        df = df[(df["product_code"] != "") & (df["product_name"] != "")]
+                        name_map.update(dict(zip(df["product_code"], df["product_name"])))
+                except Exception:
+                    pass
+
+    if table_exists(conn, "non_cigar_product_mst"):
+        cols = get_table_columns(conn, "non_cigar_product_mst")
+        if "product_code" in cols:
+            name_col = pick_col(cols, ["product_name", "display_name", "item_name", "name"])
+            if name_col:
+                try:
+                    sql = f"""
+                        SELECT
+                            TRIM(COALESCE(product_code, '')) AS product_code,
+                            TRIM(COALESCE({name_col}, '')) AS product_name
+                        FROM non_cigar_product_mst
+                    """
+                    df = pd.read_sql_query(sql, conn)
+                    if not df.empty:
+                        df["product_code"] = df["product_code"].astype(str).str.strip()
+                        df["product_name"] = df["product_name"].astype(str).str.strip()
+                        df = df[(df["product_code"] != "") & (df["product_name"] != "")]
+                        for code, name in zip(df["product_code"], df["product_name"]):
+                            if code not in name_map:
+                                name_map[code] = name
+                except Exception:
+                    pass
+
+    return name_map
 
 def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     """
@@ -493,6 +572,12 @@ def get_recent_sales_with_margin(conn, limit: int = 20) -> pd.DataFrame:
     df["product_name"] = df["product_name"].fillna("").astype(str).str.strip()
 
     purchase_price_map = get_non_cigar_purchase_price_map(conn)
+    product_name_map = get_product_name_map(conn)
+
+    blank_name_mask = df["product_name"].eq("") & df["product_code"].ne("")
+    df.loc[blank_name_mask, "product_name"] = (
+        df.loc[blank_name_mask, "product_code"].map(product_name_map).fillna("")
+    )
 
     # 기본은 기존 마진
     df["매입가"] = 0
@@ -642,6 +727,8 @@ def render():
             fmt_delta_krw(current["operating_profit"], previous["operating_profit"]),
         )
 
+        inject_expense_metric_css()
+
         c5, c6, c7, c8 = st.columns(4)
         op_margin = (
             current["operating_profit"] / current["total_sales"] * 100
@@ -756,55 +843,118 @@ def render():
                 )
 
         with tab4:
-            basis = st.radio(
-                "집계 기준",
-                options=["매출액", "마진"],
-                horizontal=True,
-                key="dashboard_top_product_basis",
-            )
-
-            metric = "sales" if basis == "매출액" else "profit"
-            value_col = "metric_value"
-            value_label = "매출액" if basis == "매출액" else "마진"
-
-            top_df = get_top_products(
+            sales_top_df = get_top_products(
                 conn,
                 current["date_from"],
                 current["date_to"],
                 limit=10,
-                metric=metric,
+                metric="sales",
             )
 
-            if top_df.empty:
+            profit_top_df = get_top_products(
+                conn,
+                current["date_from"],
+                current["date_to"],
+                limit=10,
+                metric="profit",
+            )
+
+            if sales_top_df.empty and profit_top_df.empty:
                 st.info("상위 제품 데이터가 없습니다.")
             else:
-                show_top_df = top_df.rename(
-                    columns={
-                        "product_code": "상품코드",
-                        "product_name": "상품명",
-                        value_col: value_label,
-                    }
-                ).copy()
+                left_col, right_col = st.columns(2)
 
-                show_top_df[value_label] = show_top_df[value_label].apply(fmt_krw)
+                with left_col:
+                    st.markdown("###### 매출액 상위 제품")
+                    if sales_top_df.empty:
+                        st.info("매출액 상위 제품 데이터가 없습니다.")
+                    else:
+                        show_sales_top_df = sales_top_df.rename(
+                            columns={
+                                "product_code": "상품코드",
+                                "product_name": "상품명",
+                                "metric_value": "매출액",
+                            }
+                        ).copy()
+                        show_sales_top_df["매출액"] = show_sales_top_df["매출액"].apply(fmt_krw)
 
-                st.dataframe(
-                    show_top_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    height=360,
-                )
+                        st.dataframe(
+                            show_sales_top_df,
+                            use_container_width=True,
+                            hide_index=True,
+                            height=320,
+                        )
 
-                chart_df = top_df.copy()
-                chart_df["상품코드_표시"] = chart_df["product_code"].fillna("").astype(str).str.strip()
-                chart_df.loc[chart_df["상품코드_표시"] == "", "상품코드_표시"] = (
-                    chart_df.loc[chart_df["상품코드_표시"] == "", "product_name"]
-                    .fillna("")
-                    .astype(str)
-                    .str.strip()
-                )
+                        sales_chart_df = sales_top_df.copy().sort_values("metric_value", ascending=False)
+                        sales_chart_df["상품코드_표시"] = sales_chart_df["product_code"].fillna("").astype(str).str.strip()
+                        sales_chart_df.loc[sales_chart_df["상품코드_표시"] == "", "상품코드_표시"] = (
+                            sales_chart_df.loc[sales_chart_df["상품코드_표시"] == "", "product_name"]
+                            .fillna("")
+                            .astype(str)
+                            .str.strip()
+                        )
+                        sales_chart_df = sales_chart_df.sort_values("metric_value", ascending=False).head(10).reset_index(drop=True)
+                        sales_chart_df["정렬순서"] = range(len(sales_chart_df))
+                        sales_chart = (
+                            alt.Chart(sales_chart_df)
+                            .mark_bar()
+                            .encode(
+                                x=alt.X("상품코드_표시:N", sort=list(sales_chart_df["상품코드_표시"])),
+                                y=alt.Y("metric_value:Q", title="매출액"),
+                                tooltip=[
+                                    alt.Tooltip("상품코드_표시:N", title="상품"),
+                                    alt.Tooltip("metric_value:Q", title="매출액", format=",.0f"),
+                                ],
+                            )
+                            .properties(height=320)
+                        )
+                        st.altair_chart(sales_chart, use_container_width=True)
 
-                st.bar_chart(chart_df.set_index("상품코드_표시")[[value_col]])
+                with right_col:
+                    st.markdown("###### 마진 상위 제품")
+                    if profit_top_df.empty:
+                        st.info("마진 상위 제품 데이터가 없습니다.")
+                    else:
+                        show_profit_top_df = profit_top_df.rename(
+                            columns={
+                                "product_code": "상품코드",
+                                "product_name": "상품명",
+                                "metric_value": "마진",
+                            }
+                        ).copy()
+                        show_profit_top_df["마진"] = show_profit_top_df["마진"].apply(fmt_krw)
+
+                        st.dataframe(
+                            show_profit_top_df,
+                            use_container_width=True,
+                            hide_index=True,
+                            height=320,
+                        )
+
+                        profit_chart_df = profit_top_df.copy().sort_values("metric_value", ascending=False)
+                        profit_chart_df["상품코드_표시"] = profit_chart_df["product_code"].fillna("").astype(str).str.strip()
+                        profit_chart_df.loc[profit_chart_df["상품코드_표시"] == "", "상품코드_표시"] = (
+                            profit_chart_df.loc[profit_chart_df["상품코드_표시"] == "", "product_name"]
+                            .fillna("")
+                            .astype(str)
+                            .str.strip()
+                        )
+                        profit_chart_df = profit_chart_df.sort_values("metric_value", ascending=False).head(10).reset_index(drop=True)
+                        profit_chart_df["정렬순서"] = range(len(profit_chart_df))
+                        profit_chart = (
+                            alt.Chart(profit_chart_df)
+                            .mark_bar()
+                            .encode(
+                                x=alt.X("상품코드_표시:N", sort=list(profit_chart_df["상품코드_표시"])),
+                                y=alt.Y("metric_value:Q", title="마진"),
+                                tooltip=[
+                                    alt.Tooltip("상품코드_표시:N", title="상품"),
+                                    alt.Tooltip("metric_value:Q", title="마진", format=",.0f"),
+                                ],
+                            )
+                            .properties(height=320)
+                        )
+                        st.altair_chart(profit_chart, use_container_width=True)
 
     finally:
         conn.close()

@@ -35,9 +35,9 @@ def render():
             "unit_weight_g",
             "box_width_cm",
             "box_depth_cm",
-            "box_height_cm",
-            "created_at",
-            "updated_at"
+            "box_height_cm"#,
+            #"created_at",
+            #"updated_at"
         ])
 
     keyword = st.text_input("검색", placeholder="상품명 / 사이즈 / 코드")
@@ -65,9 +65,9 @@ def render():
         "unit_weight_g",
         "box_width_cm",
         "box_depth_cm",
-        "box_height_cm",
-        "created_at",
-        "updated_at",
+        "box_height_cm"#,
+        #"created_at",
+        #"updated_at",
     ]
 
     grid_df = df[display_columns].copy()
@@ -127,8 +127,8 @@ def render():
         gb.configure_column("box_width_cm", header_name="박스가로(cm)", width=130)
         gb.configure_column("box_depth_cm", header_name="박스세로(cm)", width=130)
         gb.configure_column("box_height_cm", header_name="박스높이(cm)", width=130)
-        gb.configure_column("created_at", header_name="생성일", editable=False, minWidth=160)
-        gb.configure_column("updated_at", header_name="수정일", editable=False, minWidth=160)
+        #gb.configure_column("created_at", header_name="생성일", editable=False, minWidth=160)
+        #gb.configure_column("updated_at", header_name="수정일", editable=False, minWidth=160)
 
         grid_options = gb.build()
 
@@ -146,7 +146,7 @@ def render():
         )
 
     edited_df = pd.DataFrame(grid_response["data"])
-
+    st.caption(f"총 {len(edited_df):,}건 조회되었습니다.")
     st.info("삭제할 행은 맨 왼쪽 '삭제'를 체크한 뒤 저장하세요.")
 
     if st.button("저장", type="primary", use_container_width=True):

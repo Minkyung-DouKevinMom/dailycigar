@@ -19,6 +19,18 @@ def fmt_krw(value) -> str:
         return "₩0"
 
 
+def fmt_count(value) -> str:
+    try:
+        return f"{int(value):,}건"
+    except Exception:
+        return "0건"
+
+
+def metric_with_caption(column, label: str, value: str, caption: str):
+    column.metric(label, value)
+    column.caption(caption)
+
+
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
@@ -63,9 +75,6 @@ def view_exists(conn, view_name: str) -> bool:
 
 
 def get_non_cigar_purchase_price_map(conn) -> dict:
-    """
-    non_cigar_product_mst의 현재 purchase_price를 product_code 기준으로 매핑
-    """
     if not has_table(conn, "non_cigar_product_mst"):
         return {}
 
@@ -89,6 +98,50 @@ def get_non_cigar_purchase_price_map(conn) -> dict:
     df = df[df["product_code"] != ""].copy()
 
     return dict(zip(df["product_code"], df["purchase_price"]))
+
+
+def get_product_name_map(conn) -> dict:
+    result = {}
+
+    if has_table(conn, "product_mst"):
+        cols = get_table_columns(conn, "product_mst")
+        if "product_code" in cols:
+            name_col = pick_col(cols, ["product_name", "product_nm", "name"])
+            if name_col:
+                sql = f"""
+                    SELECT
+                        TRIM(COALESCE(product_code, '')) AS product_code,
+                        TRIM(COALESCE({name_col}, '')) AS product_name
+                    FROM product_mst
+                """
+                df = pd.read_sql_query(sql, conn)
+                if not df.empty:
+                    df["product_code"] = df["product_code"].astype(str).str.strip()
+                    df["product_name"] = df["product_name"].astype(str).str.strip()
+                    df = df[(df["product_code"] != "") & (df["product_name"] != "")]
+                    result.update(dict(zip(df["product_code"], df["product_name"])))
+
+    if has_table(conn, "non_cigar_product_mst"):
+        cols = get_table_columns(conn, "non_cigar_product_mst")
+        if "product_code" in cols:
+            name_col = pick_col(cols, ["product_name", "product_nm", "name"])
+            if name_col:
+                sql = f"""
+                    SELECT
+                        TRIM(COALESCE(product_code, '')) AS product_code,
+                        TRIM(COALESCE({name_col}, '')) AS product_name
+                    FROM non_cigar_product_mst
+                """
+                df = pd.read_sql_query(sql, conn)
+                if not df.empty:
+                    df["product_code"] = df["product_code"].astype(str).str.strip()
+                    df["product_name"] = df["product_name"].astype(str).str.strip()
+                    df = df[(df["product_code"] != "") & (df["product_name"] != "")]
+                    for code, name in zip(df["product_code"], df["product_name"]):
+                        if code not in result:
+                            result[code] = name
+
+    return result
 
 
 # =========================
@@ -121,19 +174,13 @@ def render_db_download_section():
 # 매출 로딩
 # =========================
 def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
-    """
-    소매 데이터 로드
-    - v_retail_sales_enriched 가 있으면 우선 사용
-    - 최근 판매내역 표시에 필요한 상품코드/상품명/수량/단가를 retail_sales 에서 보강
-    - 마진은 retail_sales 기준으로 non_cigar_product_mst.purchase_price 를 이용해 재계산
-      => 판매금액 - (매입가 * 수량)
-    """
     empty_cols = [
         "dt", "sales_amount", "margin_amount", "customer_name",
         "sales_type", "product_code", "product_name", "qty", "unit_price"
     ]
 
     purchase_price_map = get_non_cigar_purchase_price_map(conn)
+    product_name_map = get_product_name_map(conn)
 
     if not has_table(conn, "retail_sales"):
         return pd.DataFrame(columns=empty_cols)
@@ -187,7 +234,9 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
     df["unit_price"] = pd.to_numeric(df["unit_price"], errors="coerce").fillna(0)
 
-    # 핵심: 판매금액 - (매입가 * 수량)
+    missing_name_mask = df["product_name"].eq("") & df["product_code"].ne("")
+    df.loc[missing_name_mask, "product_name"] = df.loc[missing_name_mask, "product_code"].map(product_name_map).fillna("")
+
     df["purchase_price"] = df["product_code"].map(purchase_price_map).fillna(0)
     df["margin_amount"] = df["sales_amount"] - (df["purchase_price"] * df["qty"])
 
@@ -206,6 +255,7 @@ def get_wholesale_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame
         "dt", "sales_amount", "margin_amount", "customer_name",
         "sales_type", "product_code", "product_name", "qty", "unit_price"
     ]
+    product_name_map = get_product_name_map(conn)
 
     if view_exists(conn, "v_wholesale_sales"):
         vcols = get_table_columns(conn, "v_wholesale_sales")
@@ -256,6 +306,8 @@ def get_wholesale_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame
             df["product_name"] = df["product_name"].fillna("").astype(str).str.strip()
             df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
             df["unit_price"] = pd.to_numeric(df["unit_price"], errors="coerce").fillna(0)
+            missing_name_mask = df["product_name"].eq("") & df["product_code"].ne("")
+            df.loc[missing_name_mask, "product_name"] = df.loc[missing_name_mask, "product_code"].map(product_name_map).fillna("")
             df["sales_type"] = "도매"
 
             df = df.dropna(subset=["dt"])
@@ -315,6 +367,8 @@ def get_wholesale_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame
         df["product_name"] = df["product_name"].fillna("").astype(str).str.strip()
         df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
         df["unit_price"] = pd.to_numeric(df["unit_price"], errors="coerce").fillna(0)
+        missing_name_mask = df["product_name"].eq("") & df["product_code"].ne("")
+        df.loc[missing_name_mask, "product_name"] = df.loc[missing_name_mask, "product_code"].map(product_name_map).fillna("")
         df["sales_type"] = "도매"
 
         df = df.dropna(subset=["dt"])
@@ -402,6 +456,7 @@ try:
     today = pd.Timestamp.today().normalize()
     month_start = today.replace(day=1)
     last_30_start = today - pd.Timedelta(days=29)
+    recent_period_start = today - pd.Timedelta(days=90)
 
     month_df = load_period_sales(
         conn,
@@ -417,26 +472,55 @@ try:
 
     sales_df = load_period_sales(
         conn,
-        (today - pd.Timedelta(days=90)).strftime("%Y-%m-%d"),
+        recent_period_start.strftime("%Y-%m-%d"),
         today.strftime("%Y-%m-%d"),
     )
 
-    month_sales = month_df["sales_amount"].sum() if not month_df.empty else 0
-    month_margin = month_df["margin_amount"].sum() if not month_df.empty else 0
-    deal_count = len(month_df)
-    avg_ticket = month_sales / deal_count if deal_count > 0 else 0
+    card_df = last_30_df.copy()
+    st.caption(f"계산기간: {last_30_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')}")
+    
+    card_sales = card_df["sales_amount"].sum() if not card_df.empty else 0
+    card_margin = card_df["margin_amount"].sum() if not card_df.empty else 0
+    deal_count = len(card_df)
+    avg_ticket = card_sales / deal_count if deal_count > 0 else 0
 
-    wholesale_sales = month_df.loc[month_df["sales_type"] == "도매", "sales_amount"].sum() if not month_df.empty else 0
-    retail_sales = month_df.loc[month_df["sales_type"] == "소매", "sales_amount"].sum() if not month_df.empty else 0
+    wholesale_sales = card_df.loc[card_df["sales_type"] == "도매", "sales_amount"].sum() if not card_df.empty else 0
+    retail_sales = card_df.loc[card_df["sales_type"] == "소매", "sales_amount"].sum() if not card_df.empty else 0
 
-    wholesale_ratio = (wholesale_sales / month_sales * 100) if month_sales else 0
-    retail_ratio = (retail_sales / month_sales * 100) if month_sales else 0
+    wholesale_margin = card_df.loc[card_df["sales_type"] == "도매", "margin_amount"].sum() if not card_df.empty else 0
+    retail_margin = card_df.loc[card_df["sales_type"] == "소매", "margin_amount"].sum() if not card_df.empty else 0
+
+    wholesale_count = int((card_df["sales_type"] == "도매").sum()) if not card_df.empty else 0
+    retail_count = int((card_df["sales_type"] == "소매").sum()) if not card_df.empty else 0
+
+    wholesale_ratio = (wholesale_sales / card_sales * 100) if card_sales else 0
+    retail_ratio = (retail_sales / card_sales * 100) if card_sales else 0
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("이번달 매출", fmt_krw(month_sales))
-    k2.metric("이번달 마진", fmt_krw(month_margin))
-    k3.metric("거래건수", f"{deal_count:,}건")
-    k4.metric("객단가", fmt_krw(avg_ticket))
+    metric_with_caption(
+        k1,
+        "최근 30일 매출",
+        fmt_krw(card_sales),
+        f"소매: {fmt_krw(retail_sales)}, 도매: {fmt_krw(wholesale_sales)}",
+    )
+    metric_with_caption(
+        k2,
+        "최근 30일 마진",
+        fmt_krw(card_margin),
+        f"소매: {fmt_krw(retail_margin)}, 도매: {fmt_krw(wholesale_margin)}",
+    )
+    metric_with_caption(
+        k3,
+        "거래건수",
+        fmt_count(deal_count),
+        f"소매: {retail_count:,}건, 도매: {wholesale_count:,}건",
+    )
+    metric_with_caption(
+        k4,
+        "객단가",
+        fmt_krw(avg_ticket),
+        f"최근 30일 매출 ÷ 거래건수",
+    )
 
     st.divider()
 
@@ -450,15 +534,26 @@ try:
         else:
             daily_sales = (
                 last_30_df.assign(date=last_30_df["dt"].dt.normalize())
-                .groupby("date", as_index=True)["sales_amount"]
-                .sum()
+                .pivot_table(
+                    index="date",
+                    columns="sales_type",
+                    values="sales_amount",
+                    aggfunc="sum",
+                    fill_value=0,
+                )
                 .sort_index()
-                .to_frame("매출액")
             )
+
+            for col in ["소매", "도매"]:
+                if col not in daily_sales.columns:
+                    daily_sales[col] = 0
+            daily_sales = daily_sales[["소매", "도매"]]
+
             st.line_chart(daily_sales, use_container_width=True)
+            st.caption(f"계산기간: {last_30_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')}")
 
     with right:
-        st.subheader("이번달 채널 비중")
+        st.subheader("최근 30일 채널 비중")
         r1, r2 = st.columns(2)
         r1.metric("소매", f"{retail_ratio:.1f}%")
         r2.metric("도매", f"{wholesale_ratio:.1f}%")
@@ -469,6 +564,7 @@ try:
     st.subheader("인사이트")
     for msg in calc_insights(sales_df):
         st.write(f"- {msg}")
+    st.caption(f"계산기간: {recent_period_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')}")
 
     st.divider()
 
@@ -493,6 +589,9 @@ try:
             }
         )
 
+        recent_df["상품명"] = recent_df["상품명"].fillna("").astype(str).str.strip()
+        recent_df.loc[recent_df["상품명"].eq(""), "상품명"] = "-"
+
         for col in ["단가", "매출액", "마진"]:
             recent_df[col] = recent_df[col].apply(fmt_krw)
 
@@ -503,6 +602,7 @@ try:
         )
 
         st.caption("※ 소매 시가 외 상품 마진은 판매금액 - (매입가 × 수량) 기준으로 계산합니다.")
+        st.caption(f"계산기간: {recent_period_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')}")
 
     st.divider()
 
@@ -549,6 +649,11 @@ try:
                 st.write("non_cigar_product_mst 컬럼:", get_table_columns(conn, "non_cigar_product_mst"))
             else:
                 st.write("non_cigar_product_mst 테이블 없음")
+
+            if has_table(conn, "product_mst"):
+                st.write("product_mst 컬럼:", get_table_columns(conn, "product_mst"))
+            else:
+                st.write("product_mst 테이블 없음")
 
             if view_exists(conn, "v_wholesale_sales"):
                 st.write("v_wholesale_sales 컬럼:", get_table_columns(conn, "v_wholesale_sales"))

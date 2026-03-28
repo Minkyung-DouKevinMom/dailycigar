@@ -40,6 +40,72 @@ def execute_many(sql, data):
         conn.close()
 
 
+def refresh_import_batch_totals(batch_id):
+    if batch_id in (None, ""):
+        return
+
+    summary_sql = """
+    SELECT
+        COUNT(*) AS total_item_count,
+        COALESCE(SUM(import_unit_qty), 0) AS total_unit_qty,
+        COALESCE(SUM(total_weight_g), 0) AS total_weight_g,
+        COALESCE(SUM(COALESCE(export_unit_price_usd, 0) * COALESCE(import_unit_qty, 0)), 0) AS total_amount_usd,
+        COALESCE(SUM(import_total_cost_krw), 0) AS total_amount_krw
+    FROM import_item
+    WHERE batch_id = ?
+    """
+    df = run_query(summary_sql, [batch_id])
+
+    if df.empty:
+        total_item_count = 0
+        total_unit_qty = 0
+        total_weight_g = 0.0
+        total_amount_usd = 0.0
+        total_amount_krw = 0.0
+    else:
+        row = df.iloc[0]
+        total_item_count = int(row.get("total_item_count", 0) or 0)
+        total_unit_qty = int(row.get("total_unit_qty", 0) or 0)
+        total_weight_g = float(row.get("total_weight_g", 0) or 0)
+        total_amount_usd = float(row.get("total_amount_usd", 0) or 0)
+        total_amount_krw = float(row.get("total_amount_krw", 0) or 0)
+
+    cols_df = run_query("PRAGMA table_info(import_batch)")
+    existing_cols = set(cols_df["name"].tolist()) if not cols_df.empty else set()
+
+    update_parts = []
+    params = []
+
+    if "total_item_count" in existing_cols:
+        update_parts.append("total_item_count = ?")
+        params.append(total_item_count)
+    if "total_unit_qty" in existing_cols:
+        update_parts.append("total_unit_qty = ?")
+        params.append(total_unit_qty)
+    if "total_weight_g" in existing_cols:
+        update_parts.append("total_weight_g = ?")
+        params.append(total_weight_g)
+    if "total_amount_usd" in existing_cols:
+        update_parts.append("total_amount_usd = ?")
+        params.append(total_amount_usd)
+    if "total_amount_krw" in existing_cols:
+        update_parts.append("total_amount_krw = ?")
+        params.append(total_amount_krw)
+    if "updated_at" in existing_cols:
+        update_parts.append("updated_at = CURRENT_TIMESTAMP")
+
+    if not update_parts:
+        return
+
+    sql = f"""
+    UPDATE import_batch
+    SET {", ".join(update_parts)}
+    WHERE id = ?
+    """
+    params.append(batch_id)
+    execute(sql, params)
+
+
 def table_exists(table_name: str) -> bool:
     sql = """
     SELECT COUNT(*) AS cnt
@@ -146,6 +212,7 @@ def get_all_import_batch():
         usd_to_krw_rate,
         php_to_krw_rate,
         local_markup_rate,
+        tax_rule_id,
         total_item_count,
         total_unit_qty,
         total_weight_g,
@@ -295,9 +362,9 @@ def get_import_item_detail(item_id):
     SELECT
         id,
         batch_id,
+        product_code,
         product_name,
         size_name,
-        product_code,
         export_box_price_usd,
         discounted_box_price_usd,
         discount_rate,
@@ -320,22 +387,14 @@ def get_import_item_detail(item_id):
         local_unit_price_krw,
         retail_price_krw,
         supply_price_krw,
-        supply_vat_krw,
-        supply_total_krw,
         margin_krw,
-        retail_margin_rate,
-        wholesale_margin_rate,
-        store_retail_price_krw,
         source_row_no,
         raw_row_json,
-        raw_formula_json,
-        created_at
+        raw_formula_json
     FROM import_item
     WHERE id = ?
     """
-    df = run_query(sql, [item_id])
-    return df
-
+    return run_query(sql, [item_id])
 
 def update_import_item(
     item_id,
@@ -378,40 +437,24 @@ def update_import_item(
 
 
 def delete_import_item(item_id):
+    df = run_query("SELECT batch_id FROM import_item WHERE id = ?", [item_id])
+    old_batch_id = int(df.iloc[0]["batch_id"]) if not df.empty and pd.notna(df.iloc[0]["batch_id"]) else None
+
     sql = "DELETE FROM import_item WHERE id = ?"
     execute(sql, [item_id])
 
+    if old_batch_id:
+        refresh_import_batch_totals(old_batch_id)
 
-def get_import_item_list_filtered(batch_id=None, keyword=None):
-    conditions = []
-    params = []
 
-    if batch_id is not None:
-        conditions.append("batch_id = ?")
-        params.append(batch_id)
-
-    if keyword:
-        conditions.append("""
-        (
-            COALESCE(product_name, '') LIKE ?
-            OR COALESCE(size_name, '') LIKE ?
-            OR COALESCE(product_code, '') LIKE ?
-        )
-        """)
-        like_kw = f"%{keyword}%"
-        params.extend([like_kw, like_kw, like_kw])
-
-    where_sql = ""
-    if conditions:
-        where_sql = "WHERE " + " AND ".join(conditions)
-
-    sql = f"""
+def get_import_item_list_filtered(batch_id, keyword=""):
+    sql = """
     SELECT
         id,
         batch_id,
+        product_code,
         product_name,
         size_name,
-        product_code,
         import_unit_qty,
         import_total_cost_krw,
         total_weight_g,
@@ -420,9 +463,22 @@ def get_import_item_list_filtered(batch_id=None, keyword=None):
         margin_krw,
         source_row_no
     FROM import_item
-    {where_sql}
-    ORDER BY batch_id DESC, source_row_no ASC, id ASC
+    WHERE batch_id = ?
     """
+    params = [batch_id]
+
+    if keyword and str(keyword).strip():
+        sql += """
+        AND (
+            product_name LIKE ?
+            OR size_name LIKE ?
+            OR product_code LIKE ?
+        )
+        """
+        like_kw = f"%{keyword.strip()}%"
+        params.extend([like_kw, like_kw, like_kw])
+
+    sql += " ORDER BY id DESC"
     return run_query(sql, params)
 
 def get_export_price_item_filtered(keyword=None, package_type=None, package_qty=None):
@@ -733,6 +789,7 @@ def get_import_batch_detail(batch_id: int) -> pd.DataFrame:
             usd_to_krw_rate,
             php_to_krw_rate,
             local_markup_rate,
+            tax_rule_id,
             notes,
             created_at
         FROM import_batch
@@ -748,6 +805,7 @@ def create_import_batch(
     usd_to_krw_rate=None,
     php_to_krw_rate=None,
     local_markup_rate=None,
+    tax_rule_id=None,
     notes=None,
 ):
     """
@@ -774,6 +832,7 @@ def create_import_batch(
     add_col("usd_to_krw_rate", usd_to_krw_rate)
     add_col("php_to_krw_rate", php_to_krw_rate)
     add_col("local_markup_rate", local_markup_rate)
+    add_col("tax_rule_id", tax_rule_id)
     add_col("notes", notes)
 
     if "created_at" in existing_cols:
@@ -801,6 +860,7 @@ def update_import_batch(
     usd_to_krw_rate=None,
     php_to_krw_rate=None,
     local_markup_rate=None,
+    tax_rule_id=None,
     notes=None,
 ):
     """
@@ -837,6 +897,10 @@ def update_import_batch(
     if "local_markup_rate" in existing_cols:
         update_parts.append("local_markup_rate = ?")
         params.append(local_markup_rate)
+
+    if "tax_rule_id" in existing_cols:
+        update_parts.append("tax_rule_id = ?")
+        params.append(tax_rule_id)
 
     if "notes" in existing_cols:
         update_parts.append("notes = ?")
@@ -936,89 +1000,47 @@ def _pick_expr(alias: str, columns: set, candidates: list, default_sql: str = "'
             return f"{alias}.{col}"
     return default_sql
 
-def get_product_intro_export_data(brand_keyword: str = "", use_yn: str = "전체") -> pd.DataFrame:
-    """
-    상품소개서 엑셀 출력용 데이터 조회
-
-    기준:
-    - 상품 기본: product_mst
-    - 프로파일: blend_profile_mst (product_name 기준 조인)
-    - 소비자가: import_item.retail_price_krw 우선
-    """
-
+def get_product_intro_export_data(brand_keyword="", use_yn="전체"):
     sql = """
     SELECT
-        p.product_name AS product_name,
-        COALESCE(i.size_name, p.size_name, '') AS size_name,
-        COALESCE(bp.flavor, '') AS flavor,
-        COALESCE(bp.strength, '') AS strength,
-
-        CASE
-            WHEN p.length_mm IS NOT NULL AND p.length_mm <> ''
-                THEN CAST(p.length_mm AS TEXT) || ' mm'
-            ELSE ''
-        END AS length_text,
-
-        COALESCE(p.ring_gauge, '') AS rg,
-        COALESCE(p.smoking_time_text, '') AS time_text,
-        COALESCE(bp.guide, '') AS guide_text,
-        COALESCE(i.retail_price_krw, '') AS retail_price_krw
-
-    FROM product_mst p
-    LEFT JOIN blend_profile_mst bp
-        ON TRIM(p.product_name) = TRIM(bp.product_name)
-    LEFT JOIN (
-        SELECT
-            product_name,
-            size_name,
-            retail_price_krw,
-            ROW_NUMBER() OVER (
-                PARTITION BY product_name, size_name
-                ORDER BY id DESC
-            ) AS rn
-        FROM import_item
-    ) i
-        ON TRIM(p.product_name) = TRIM(i.product_name)
-       AND TRIM(COALESCE(p.size_name, '')) = TRIM(COALESCE(i.size_name, ''))
-       AND i.rn = 1
+        A.product_name,
+        A.size_name,
+        B.flavor,
+        B.strength,
+        CAST(C.length_mm AS TEXT) || ' mm' AS length_text,
+        CAST(C.ring_gauge AS TEXT) AS rg,
+        C.smoking_time_text AS time_text,
+        B.guide AS guide_text,
+        A.retail_price_krw,
+        A.supply_price_krw,
+        A.supply_total_krw
+    FROM import_item A
+    LEFT JOIN blend_profile_mst B
+        ON A.product_name = B.product_name
+    LEFT JOIN product_mst C
+        ON A.product_name = C.product_name
+        AND A.SIZE_NAME = C.SIZE_NAME
     WHERE 1=1
     """
-
     params = []
 
     if brand_keyword:
         sql += """
         AND (
-            COALESCE(p.product_name, '') LIKE ?
-            OR COALESCE(p.size_name, '') LIKE ?
-            OR COALESCE(p.product_code, '') LIKE ?
+            A.product_name LIKE ?
+            OR C.brand_name LIKE ?
         )
         """
-        kw = f"%{brand_keyword}%"
-        params.extend([kw, kw, kw])
+        keyword = f"%{brand_keyword}%"
+        params.extend([keyword, keyword])
 
     if use_yn in ("Y", "N"):
-        sql += " AND COALESCE(p.use_yn, 'Y') = ? "
+        sql += " AND COALESCE(C.use_yn, 'Y') = ? "
         params.append(use_yn)
 
-    sql += """
-    ORDER BY
-        COALESCE(p.product_name, ''),
-        COALESCE(p.size_name, '')
-    """
+    sql += " ORDER BY C.id "
 
-    df = run_query(sql, params)
-
-    wanted_cols = [
-        "product_name", "size_name", "flavor", "strength",
-        "length_text", "rg", "time_text", "guide_text", "retail_price_krw"
-    ]
-
-    for col in wanted_cols:
-        if col not in df.columns:
-            df[col] = ""
-
-    return df[wanted_cols]
+    return run_query(sql, params)
 
 def get_export_price_product_names():
     sql = """
@@ -1103,6 +1125,26 @@ def get_tax_rule_by_id(rule_id):
     return df.iloc[0].to_dict() if not df.empty else {}
 
 
+def get_import_batch_tax_rule(batch_id):
+    cols_df = run_query("PRAGMA table_info(import_batch)")
+    existing_cols = set(cols_df["name"].tolist()) if not cols_df.empty else set()
+
+    if "tax_rule_id" not in existing_cols:
+        return get_latest_tax_rule_for_import_calc()
+
+    sql = """
+    SELECT tax_rule_id
+    FROM import_batch
+    WHERE id = ?
+    """
+    df = run_query(sql, [batch_id])
+
+    if df.empty or pd.isna(df.iloc[0]["tax_rule_id"]):
+        return get_latest_tax_rule_for_import_calc()
+
+    return get_tax_rule_by_id(int(df.iloc[0]["tax_rule_id"])) or get_latest_tax_rule_for_import_calc()
+
+
 def get_latest_tax_rule_for_import_calc():
     sql = """
     SELECT
@@ -1145,6 +1187,7 @@ def get_import_batch_one(batch_id):
         usd_to_krw_rate,
         php_to_krw_rate,
         local_markup_rate,
+        tax_rule_id,
         notes,
         created_at
     FROM import_batch
@@ -1276,9 +1319,6 @@ def get_import_item_detail(item_id):
         local_box_price_php,
         local_unit_price_php,
         local_unit_price_krw,
-        usd_to_krw_rate,
-        php_to_krw_rate,
-        use_php_price,
         retail_price_krw,
         supply_price_krw,
         margin_krw,
@@ -1292,80 +1332,87 @@ def get_import_item_detail(item_id):
 
 
 def upsert_import_item_full(
-    item_id,
-    batch_id,
-    product_name,
-    size_name,
-    product_code,
-    export_box_price_usd,
-    discounted_box_price_usd,
-    discount_rate,
-    import_unit_qty,
-    export_unit_price_usd,
-    import_unit_cost_krw,
-    import_total_cost_krw,
-    unit_weight_g,
-    total_weight_g,
-    individual_tax_krw,
-    tobacco_tax_krw,
-    local_education_tax_krw,
-    health_charge_krw,
-    import_vat_krw,
-    tax_total_krw,
-    tax_total_all_krw,
-    korea_cost_krw,
-    local_box_price_php,
-    local_unit_price_php,
-    local_unit_price_krw,
-    php_to_krw_rate,
-    use_php_price,
-    usd_to_krw_rate,
-    retail_price_krw,
-    supply_price_krw,
-    margin_krw,
-    source_row_no,
-    raw_row_json,
-    raw_formula_json,
+    item_id=None,
+    batch_id=None,
+    product_name=None,
+    size_name=None,
+    product_code=None,
+    export_box_price_usd=None,
+    discounted_box_price_usd=None,
+    discount_rate=None,
+    import_unit_qty=None,
+    export_unit_price_usd=None,
+    import_unit_cost_krw=None,
+    import_total_cost_krw=None,
+    unit_weight_g=None,
+    total_weight_g=None,
+    individual_tax_krw=None,
+    tobacco_tax_krw=None,
+    local_education_tax_krw=None,
+    health_charge_krw=None,
+    import_vat_krw=None,
+    tax_total_krw=None,
+    tax_total_all_krw=None,
+    korea_cost_krw=None,
+    local_box_price_php=None,
+    local_unit_price_php=None,
+    local_unit_price_krw=None,
+    retail_price_krw=None,
+    supply_price_krw=None,
+    margin_krw=None,
+    source_row_no=None,
+    raw_row_json=None,
+    raw_formula_json=None,
 ):
+    import_item_cols_df = run_query("PRAGMA table_info(import_item)")
+    import_item_cols = set(import_item_cols_df["name"].tolist()) if not import_item_cols_df.empty else set()
+
     if item_id:
-        sql = """
+        prev_df = run_query("SELECT batch_id FROM import_item WHERE id = ?", [item_id])
+        old_batch_id = int(prev_df.iloc[0]["batch_id"]) if not prev_df.empty and pd.notna(prev_df.iloc[0]["batch_id"]) else None
+
+        update_parts = [
+            "batch_id = ?",
+            "product_name = ?",
+            "size_name = ?",
+            "product_code = ?",
+            "export_box_price_usd = ?",
+            "discounted_box_price_usd = ?",
+            "discount_rate = ?",
+            "import_unit_qty = ?",
+            "export_unit_price_usd = ?",
+            "import_unit_cost_krw = ?",
+            "import_total_cost_krw = ?",
+            "unit_weight_g = ?",
+            "total_weight_g = ?",
+            "individual_tax_krw = ?",
+            "tobacco_tax_krw = ?",
+            "local_education_tax_krw = ?",
+            "health_charge_krw = ?",
+            "import_vat_krw = ?",
+            "tax_total_krw = ?",
+            "tax_total_all_krw = ?",
+            "korea_cost_krw = ?",
+            "local_box_price_php = ?",
+            "local_unit_price_php = ?",
+            "local_unit_price_krw = ?",
+            "retail_price_krw = ?",
+            "supply_price_krw = ?",
+            "margin_krw = ?",
+            "source_row_no = ?",
+            "raw_row_json = ?",
+            "raw_formula_json = ?",
+        ]
+
+        if "updated_at" in import_item_cols:
+            update_parts.append("updated_at = CURRENT_TIMESTAMP")
+
+        sql = f"""
         UPDATE import_item
-        SET
-            batch_id = ?,
-            product_name = ?,
-            size_name = ?,
-            product_code = ?,
-            export_box_price_usd = ?,
-            discounted_box_price_usd = ?,
-            discount_rate = ?,
-            import_unit_qty = ?,
-            export_unit_price_usd = ?,
-            import_unit_cost_krw = ?,
-            import_total_cost_krw = ?,
-            unit_weight_g = ?,
-            total_weight_g = ?,
-            individual_tax_krw = ?,
-            tobacco_tax_krw = ?,
-            local_education_tax_krw = ?,
-            health_charge_krw = ?,
-            import_vat_krw = ?,
-            tax_total_krw = ?,
-            tax_total_all_krw = ?,
-            korea_cost_krw = ?,
-            local_box_price_php = ?,
-            local_unit_price_php = ?,
-            local_unit_price_krw = ?,
-            php_to_krw_rate = ?,
-            use_php_price = ?,
-            usd_to_krw_rate = ?,
-            retail_price_krw = ?,
-            supply_price_krw = ?,
-            margin_krw = ?,
-            source_row_no = ?,
-            raw_row_json = ?,
-            raw_formula_json = ?
-        WHERE id = ?
+           SET {", ".join(update_parts)}
+         WHERE id = ?
         """
+
         execute(sql, [
             batch_id,
             product_name,
@@ -1391,9 +1438,6 @@ def upsert_import_item_full(
             local_box_price_php,
             local_unit_price_php,
             local_unit_price_krw,
-            php_to_krw_rate,
-            use_php_price,
-            usd_to_krw_rate,
             retail_price_krw,
             supply_price_krw,
             margin_krw,
@@ -1402,6 +1446,14 @@ def upsert_import_item_full(
             raw_formula_json,
             item_id,
         ])
+
+        if old_batch_id:
+            refresh_import_batch_totals(old_batch_id)
+        if batch_id and batch_id != old_batch_id:
+            refresh_import_batch_totals(batch_id)
+        elif batch_id:
+            refresh_import_batch_totals(batch_id)
+
     else:
         sql = """
         INSERT INTO import_item (
@@ -1429,17 +1481,13 @@ def upsert_import_item_full(
             local_box_price_php,
             local_unit_price_php,
             local_unit_price_krw,
-            php_to_krw_rate,
-            use_php_price,
-            usd_to_krw_rate,
             retail_price_krw,
             supply_price_krw,
             margin_krw,
             source_row_no,
             raw_row_json,
             raw_formula_json
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         execute(sql, [
             batch_id,
@@ -1466,9 +1514,6 @@ def upsert_import_item_full(
             local_box_price_php,
             local_unit_price_php,
             local_unit_price_krw,
-            php_to_krw_rate,
-            use_php_price,
-            usd_to_krw_rate,
             retail_price_krw,
             supply_price_krw,
             margin_krw,
@@ -1476,3 +1521,6 @@ def upsert_import_item_full(
             raw_row_json,
             raw_formula_json,
         ])
+
+        if batch_id:
+            refresh_import_batch_totals(batch_id)

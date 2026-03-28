@@ -12,6 +12,7 @@ from db import (
     get_export_price_package_options,
     get_product_mst_one,
     get_latest_tax_rule_for_import_calc,
+    get_import_batch_tax_rule,
     upsert_import_item_full,
 )
 
@@ -55,35 +56,40 @@ def _calc_values(
     export_price_usd: float,
     effective_discount_rate: float,
     import_unit_qty: int,
+    package_qty: int,
     unit_weight_g: float,
     usd_to_krw_rate: float,
     tax_rule: dict,
     local_box_price_php: float = 0.0,
+    local_unit_price_php: float = 0.0,
     php_to_krw_rate: float = 0.0,
-    use_php_price: bool = False,
 ):
     discounted_box_price_usd = export_price_usd * (1 - (effective_discount_rate / 100.0))
-    export_unit_price_usd = discounted_box_price_usd / import_unit_qty if import_unit_qty > 0 else 0.0
 
-    import_total_cost_krw_usd = discounted_box_price_usd * usd_to_krw_rate
+    box_qty = package_qty if package_qty and package_qty > 0 else 1
+    box_count = (import_unit_qty / box_qty) if import_unit_qty > 0 else 0.0
 
-    local_unit_price_php = local_box_price_php / import_unit_qty if import_unit_qty > 0 else 0.0
-    local_unit_price_krw = local_unit_price_php * php_to_krw_rate
-    import_total_cost_krw_php = local_box_price_php * php_to_krw_rate
+    # 개당 수출단가
+    export_unit_price_usd = discounted_box_price_usd / box_qty if box_qty > 0 else 0.0
 
-    if use_php_price and import_total_cost_krw_php > 0:
-        import_total_cost_krw = import_total_cost_krw_php
-    else:
-        import_total_cost_krw = import_total_cost_krw_usd
+    # USD 기준 총수입금액
+    import_total_cost_krw_usd = discounted_box_price_usd * box_count * usd_to_krw_rate
 
+    # PHP 기준 입력값
+    local_unit_price_krw = local_unit_price_php * php_to_krw_rate * 1.12
+    
+    # 최종 수입원가는 기존처럼 USD 기준 사용
+    import_total_cost_krw = import_total_cost_krw_usd
+
+    # 개당 수입원가
     import_unit_cost_krw = import_total_cost_krw / import_unit_qty if import_unit_qty > 0 else 0.0
     total_weight_g = unit_weight_g * import_unit_qty
 
     individual_tax_krw = total_weight_g * _n(tax_rule.get("individual_tax_per_g"))
     tobacco_tax_krw = total_weight_g * _n(tax_rule.get("tobacco_tax_per_g"))
-    local_education_tax_krw = (individual_tax_krw + import_total_cost_krw) * _n(tax_rule.get("local_education_rate"))
+    local_education_tax_krw = tobacco_tax_krw * _n(tax_rule.get("local_education_rate"))
     health_charge_krw = total_weight_g * _n(tax_rule.get("health_charge_per_g"))
-    import_vat_krw = import_total_cost_krw * _n(tax_rule.get("import_vat_rate"))
+    import_vat_krw = (import_total_cost_krw + individual_tax_krw) * _n(tax_rule.get("import_vat_rate"))
 
     tax_total_krw = (
         individual_tax_krw
@@ -104,7 +110,6 @@ def _calc_values(
         "local_box_price_php": local_box_price_php,
         "local_unit_price_php": local_unit_price_php,
         "local_unit_price_krw": local_unit_price_krw,
-        "import_total_cost_krw_php": import_total_cost_krw_php,
         "total_weight_g": total_weight_g,
         "individual_tax_krw": individual_tax_krw,
         "tobacco_tax_krw": tobacco_tax_krw,
@@ -141,7 +146,7 @@ def render():
         return
 
     batch_row = get_import_batch_one(selected_batch_id)
-    tax_rule = get_latest_tax_rule_for_import_calc()
+    tax_rule = get_import_batch_tax_rule(selected_batch_id)
 
     info1, info2, info3 = st.columns(3)
     info1.metric("USD 환율", f'{_n(batch_row.get("usd_to_krw_rate"), USD_TO_KRW_DEFAULT):,.2f}')
@@ -169,9 +174,12 @@ def render():
 
         for col in ["총수입금액", "소비자가", "공급가", "마진"]:
             if col in show_df.columns:
-                show_df[col] = show_df[col].apply(lambda x: f"₩{x:,.0f}" if pd.notna(x) else "")
+                show_df[col] = show_df[col].apply(
+                    lambda x: f"₩{x:,.0f}" if pd.notna(x) else ""
+                )
 
         st.dataframe(show_df, use_container_width=True, hide_index=True, height=340)
+        st.caption(f"{len(show_df):,}건 조회되었습니다.")
     else:
         st.info("조회 결과가 없습니다.")
 
@@ -203,66 +211,204 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
             return
         detail_row = detail_df.iloc[0].to_dict()
 
-    product_names = get_export_price_product_names()
-    if not product_names:
-        st.error("본사수출배포가격 데이터가 없습니다.")
-        return
-
-    default_product = detail_row.get("product_name") if detail_row else product_names[0]
-    if default_product not in product_names:
-        default_product = product_names[0]
+    product_names = get_export_price_product_names() or []
 
     st.markdown("### 수입제품 입력")
 
-    with st.form("import_item_form", clear_on_submit=False):
+    manual_default = False
+    if detail_row and detail_row.get("product_name") not in product_names:
+        manual_default = True
+
+    manual_input = st.checkbox(
+        "목록에 없는 상품/사이즈 직접 입력",
+        value=manual_default,
+        key=f"manual_input_mode_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
+    )
+
+    # ---- 의존 선택값은 form 밖에서 즉시 반영되도록 처리 ----
+    export_box_price_usd = 0.0
+    package_qty = 1
+    product_info = {}
+    product_name = ""
+    size_name = ""
+    product_code = ""
+
+    selection_col1, selection_col2, selection_col3 = st.columns(3)
+
+    with selection_col1:
+        if manual_input:
+            product_name = st.text_input(
+                "상품명",
+                value=str(detail_row.get("product_name") or ""),
+                key=f"product_name_manual_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
+            )
+
+            size_name = st.text_input(
+                "사이즈",
+                value=str(detail_row.get("size_name") or ""),
+                key=f"size_name_manual_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
+            )
+
+            package_qty = st.number_input(
+                "포장 수량(개)",
+                min_value=1,
+                value=max(_i(detail_row.get("import_unit_qty"), 1), 1),
+                step=1,
+                key=f"package_qty_manual_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
+            )
+
+            export_box_price_usd = st.number_input(
+                "본사 수출가격(USD, 박스기준)",
+                min_value=0.0,
+                value=_n(detail_row.get("export_box_price_usd"), 0.0),
+                step=0.01,
+                key=f"export_usd_manual_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
+            )
+        else:
+            if not product_names:
+                st.warning("본사수출배포가격 데이터가 없습니다. 직접 입력을 사용해 주세요.")
+                product_name = st.text_input(
+                    "상품명",
+                    value=str(detail_row.get("product_name") or ""),
+                    key=f"product_name_fallback_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
+                )
+                size_name = st.text_input(
+                    "사이즈",
+                    value=str(detail_row.get("size_name") or ""),
+                    key=f"size_name_fallback_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
+                )
+                package_qty = st.number_input(
+                    "포장 수량(개)",
+                    min_value=1,
+                    value=max(_i(detail_row.get("import_unit_qty"), 1), 1),
+                    step=1,
+                    key=f"package_qty_fallback_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
+                )
+                export_box_price_usd = st.number_input(
+                    "본사 수출가격(USD, 박스기준)",
+                    min_value=0.0,
+                    value=_n(detail_row.get("export_box_price_usd"), 0.0),
+                    step=0.01,
+                    key=f"export_usd_fallback_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
+                )
+            else:
+                default_product = detail_row.get("product_name") if detail_row else product_names[0]
+                if default_product not in product_names:
+                    default_product = product_names[0]
+
+                product_name = st.selectbox(
+                    "상품명",
+                    product_names,
+                    index=product_names.index(default_product),
+                    key=f"product_select_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
+                )
+
+                size_options = get_export_price_sizes_by_product(product_name) or []
+                default_size = detail_row.get("size_name") if detail_row else (size_options[0] if size_options else "")
+
+                if size_options:
+                    if default_size not in size_options:
+                        default_size = size_options[0]
+
+                    size_name = st.selectbox(
+                        "사이즈",
+                        size_options,
+                        index=size_options.index(default_size) if default_size in size_options else 0,
+                        key=f"size_select_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}_{product_name}",
+                    )
+                else:
+                    st.warning("해당 상품의 사이즈 목록이 없습니다. 직접 입력을 사용해 주세요.")
+                    size_name = st.text_input(
+                        "사이즈",
+                        value=str(detail_row.get("size_name") or ""),
+                        key=f"size_text_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}_{product_name}",
+                    )
+
+                package_df = get_export_price_package_options(product_name, size_name)
+                package_labels = []
+                package_map = {}
+
+                if package_df is not None and not package_df.empty:
+                    for _, r in package_df.iterrows():
+                        label = f'{r["package_type"]} / {int(r["package_qty"])}개 / USD {float(r["export_price_usd"]):,.2f}'
+                        package_labels.append(label)
+                        package_map[label] = r.to_dict()
+
+                if package_labels:
+                    default_package_label = package_labels[0]
+
+                    # 수정모드에서 기존 저장값과 가장 유사한 포장유형을 기본 선택
+                    if detail_row:
+                        detail_export_usd = _n(detail_row.get("export_box_price_usd"), 0.0)
+                        detail_import_qty = _i(detail_row.get("import_unit_qty"), 0)
+
+                        for label, pkg in package_map.items():
+                            pkg_qty = _i(pkg.get("package_qty"), 0)
+                            pkg_export_usd = _n(pkg.get("export_price_usd"), 0.0)
+
+                            if pkg_qty == detail_import_qty and abs(pkg_export_usd - detail_export_usd) < 0.001:
+                                default_package_label = label
+                                break
+
+                    package_label = st.selectbox(
+                        "수출 포장유형 / 개수",
+                        package_labels,
+                        index=package_labels.index(default_package_label),
+                        key=f"package_select_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}_{product_name}_{size_name}",
+                    )
+                    pkg = package_map[package_label]
+                    export_box_price_usd = _n(pkg.get("export_price_usd"))
+                    package_qty = _i(pkg.get("package_qty"), 1)
+                else:
+                    st.warning("해당 상품/사이즈의 포장유형 데이터가 없습니다. 직접 입력을 사용하거나 수출가격을 수동 입력하세요.")
+                    package_qty = st.number_input(
+                        "포장 수량(개)",
+                        min_value=1,
+                        value=max(_i(detail_row.get("import_unit_qty"), 1), 1),
+                        step=1,
+                        key=f"package_qty_no_pkg_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}_{product_name}_{size_name}",
+                    )
+                    export_box_price_usd = st.number_input(
+                        "본사 수출가격(USD, 박스기준)",
+                        min_value=0.0,
+                        value=_n(detail_row.get("export_box_price_usd"), 0.0),
+                        step=0.01,
+                        key=f"export_usd_no_pkg_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}_{product_name}_{size_name}",
+                    )
+
+                product_info = get_product_mst_one(product_name, size_name) or {}
+
+    with selection_col2:
+        default_product_code = (
+            detail_row.get("product_code")
+            or product_info.get("product_code")
+            or ""
+        )
+
+        product_code = st.text_input(
+            "상품코드",
+            value=str(default_product_code),
+            disabled=False if manual_input else True,
+            key=f"product_code_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}_{product_name}_{size_name}",
+        )
+
+        st.metric("자동조회 본사 수출가격(USD)", f"{export_box_price_usd:,.2f}")
+        st.metric("자동조회 포장 수량", f"{package_qty:,}개")
+
+    with selection_col3:
+        product_weight = _n(product_info.get("unit_weight_g"), 0.0)
+        st.metric("상품마스터 개당 무게(g)", f"{product_weight:,.1f}")
+
+    st.divider()
+
+    with st.form(f"import_item_form_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}", clear_on_submit=False):
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            product_name = st.selectbox("상품명", product_names, index=product_names.index(default_product))
-
-            size_options = get_export_price_sizes_by_product(product_name)
-            default_size = detail_row.get("size_name") if detail_row else (size_options[0] if size_options else "")
-            if default_size not in size_options and size_options:
-                default_size = size_options[0]
-
-            size_name = st.selectbox(
-                "사이즈",
-                size_options,
-                index=size_options.index(default_size) if default_size in size_options else 0,
-            )
-
-            package_df = get_export_price_package_options(product_name, size_name)
-            package_labels = []
-            package_map = {}
-
-            for _, r in package_df.iterrows():
-                label = f'{r["package_type"]} / {int(r["package_qty"])}개 / USD {float(r["export_price_usd"]):,.2f}'
-                package_labels.append(label)
-                package_map[label] = r.to_dict()
-
-            if not package_labels:
-                st.error("해당 상품/사이즈의 포장유형 데이터가 없습니다.")
-                return
-
-            package_label = st.selectbox("수출 포장유형 / 개수", package_labels, index=0)
-            pkg = package_map[package_label]
-
-            export_box_price_usd = _n(pkg.get("export_price_usd"))
-            package_qty = _i(pkg.get("package_qty"), 1)
-
-        with col2:
-            product_info = get_product_mst_one(product_name, size_name)
-
-            product_code = st.text_input(
-                "상품코드",
-                value=product_info.get("product_code") or detail_row.get("product_code") or "",
-                disabled=True,
-            )
-
             import_unit_qty = st.number_input(
                 "총 수입 개수",
                 min_value=1,
-                value=_i(detail_row.get("import_unit_qty"), package_qty),
+                value=max(_i(detail_row.get("import_unit_qty"), package_qty), 1),
                 step=1,
             )
 
@@ -289,7 +435,7 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 step=1,
             )
 
-        with col3:
+        with col2:
             usd_to_krw_rate = _n(batch_row.get("usd_to_krw_rate"), USD_TO_KRW_DEFAULT)
             php_to_krw_rate = _n(batch_row.get("php_to_krw_rate"), PHP_TO_KRW_DEFAULT)
 
@@ -297,26 +443,55 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
             st.number_input("페소환율", value=php_to_krw_rate, disabled=True)
 
             local_box_price_php = st.number_input(
-                "현지가격(PHP, 박스기준)",
+                "현지 박스가격(PHP)",
                 min_value=0.0,
                 value=_n(detail_row.get("local_box_price_php"), 0.0),
                 step=0.01,
             )
 
-            use_php_price = st.checkbox(
-                "최종 수입가격을 현지가격(PHP) 기준으로 계산",
-                value=bool(_i(detail_row.get("use_php_price"), 0)),
+            local_unit_price_php = st.number_input(
+                "현지 유닛가격(PHP)",
+                min_value=0.0,
+                value=_n(detail_row.get("local_unit_price_php"), 0.0),
+                step=0.01,
             )
 
+            local_unit_price_krw_preview = local_unit_price_php * php_to_krw_rate
+            st.number_input(
+                "현지 유닛가격(원화)",
+                min_value=0.0,
+                value=float(local_unit_price_krw_preview),
+                step=1.0,
+                disabled=True,
+            )
+
+        with col3:
+            default_unit_weight = _n(
+                detail_row.get("unit_weight_g"),
+                _n(product_info.get("unit_weight_g"), 0.0)
+            )
             unit_weight_g = st.number_input(
                 "개당 무게(g)",
                 min_value=0.0,
-                value=_n(detail_row.get("unit_weight_g"), _n(product_info.get("unit_weight_g"), 0.0)),
+                value=default_unit_weight,
                 step=0.1,
             )
 
-            retail_price_krw = st.number_input("소비자가", min_value=0.0, value=_n(detail_row.get("retail_price_krw"), 0.0), step=100.0)
-            supply_price_krw = st.number_input("공급가", min_value=0.0, value=_n(detail_row.get("supply_price_krw"), 0.0), step=100.0)
+            retail_price_krw = st.number_input(
+                "소비자가",
+                min_value=0,
+                value=int(round(_n(detail_row.get("retail_price_krw"), 0.0))),
+                step=100,
+                format="%d",
+            )
+
+            supply_price_krw = st.number_input(
+                "공급가",
+                min_value=0,
+                value=int(round(_n(detail_row.get("supply_price_krw"), 0.0))),
+                step=100,
+                format="%d",
+            )
 
         if export_box_price_usd > 0:
             effective_discount_rate = (1 - (discounted_box_price_usd_manual / export_box_price_usd)) * 100
@@ -327,22 +502,36 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
             export_price_usd=export_box_price_usd,
             effective_discount_rate=effective_discount_rate,
             import_unit_qty=import_unit_qty,
+            package_qty=package_qty,
             unit_weight_g=unit_weight_g,
             usd_to_krw_rate=usd_to_krw_rate,
             tax_rule=tax_rule,
             local_box_price_php=local_box_price_php,
+            local_unit_price_php=local_unit_price_php,
             php_to_krw_rate=php_to_krw_rate,
-            use_php_price=use_php_price,
         )
 
         margin_krw = retail_price_krw - supply_price_krw if (retail_price_krw or supply_price_krw) else 0.0
+
+        st.info(
+            f"""
+세금 계산식
+- 개별소비세 = 총 무게 × 개별소비세비율 = {calc['individual_tax_krw']:,.0f}원
+- 담배소비세 = 총 무게 × 담배소비세비율 = {calc['tobacco_tax_krw']:,.0f}원
+- 지방교육세 = 담배소비세 × 지방교육세비율 = {calc['local_education_tax_krw']:,.0f}원
+- 국민건강증진금 = 총 무게 × 국민건강비율 = {calc['health_charge_krw']:,.0f}원
+- 부가세 = (수입원가KRW + 개별소비세) × 10% = {calc['import_vat_krw']:,.0f}원
+- 세금합계 = {calc['tax_total_krw']:,.0f}원
+- 한국원가 = 수입원가KRW + 세금합계 = {calc['korea_cost_krw']:,.0f}원
+            """
+        )
 
         st.markdown("### 자동 계산 결과")
         r1, r2, r3, r4 = st.columns(4)
         r1.metric("본사 수출가격(USD)", f"{export_box_price_usd:,.2f}")
         r2.metric("최종 수출가격(USD)", f"{calc['discounted_box_price_usd']:,.2f}")
-        r3.metric("현지가격(PHP)", f"₱{calc['local_box_price_php']:,.2f}")
-        r4.metric("현지가격 원화", f"₩{calc['import_total_cost_krw_php']:,.0f}")
+        r3.metric("현지 박스가격(PHP)", f"₱{calc['local_box_price_php']:,.2f}")
+        r4.metric("현지 유닛가격(원화)", f"₩{calc['local_unit_price_krw']:,.0f}")
 
         r5, r6, r7, r8 = st.columns(4)
         r5.metric("총 무게(g)", f"{calc['total_weight_g']:,.1f}")
@@ -368,6 +557,18 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
         delete_btn = c2.form_submit_button("삭제", use_container_width=True)
 
         if save_btn:
+            if not str(product_name).strip():
+                st.warning("상품명을 입력해 주세요.")
+                st.stop()
+
+            if not str(size_name).strip():
+                st.warning("사이즈를 입력해 주세요.")
+                st.stop()
+
+            if manual_input and not str(product_code).strip():
+                st.warning("직접 입력 모드에서는 상품코드를 입력해 주세요.")
+                st.stop()
+
             upsert_import_item_full(
                 item_id=selected_item_id,
                 batch_id=selected_batch_id,
@@ -394,9 +595,6 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 local_box_price_php=_none_if_zero_num(calc["local_box_price_php"]),
                 local_unit_price_php=_none_if_zero_num(calc["local_unit_price_php"]),
                 local_unit_price_krw=_none_if_zero_num(calc["local_unit_price_krw"]),
-                php_to_krw_rate=_none_if_zero_num(php_to_krw_rate),
-                use_php_price=1 if use_php_price else 0,
-                usd_to_krw_rate=_none_if_zero_num(usd_to_krw_rate),
                 retail_price_krw=_none_if_zero_num(retail_price_krw),
                 supply_price_krw=_none_if_zero_num(supply_price_krw),
                 margin_krw=_none_if_zero_num(margin_krw),
