@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
+import altair as alt
 from matplotlib.ticker import FuncFormatter
 from db import get_all_import_batch, get_price_analysis_view
 
@@ -31,35 +32,15 @@ def format_krw(value):
     return f"₩{value:,.0f}"
 
 
-def render_kpi_card(title: str, value: str):
-    st.markdown(
-        f"""
-        <div style="
-            background: transparent;
-            border: 1px solid rgba(128,128,128,0.35);
-            border-radius: 12px;
-            padding: 14px 16px;
-            min-height: 92px;
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-        ">
-            <div style="
-                color: inherit;
-                font-size: 0.95rem;
-                font-weight: 600;
-                margin-bottom: 6px;
-            ">{title}</div>
-            <div style="
-                color: inherit;
-                font-size: 1.5rem;
-                font-weight: 800;
-                line-height: 1.2;
-            ">{value}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+def format_krw(value):
+    if pd.isna(value):
+        return ""
+    return f"₩{value:,.0f}"
+
+
+def metric_with_caption(column, label: str, value: str, caption: str):
+    column.metric(label, value)
+    column.caption(caption)
 
 
 def render():
@@ -148,20 +129,38 @@ def render():
     )
 
     st.subheader("핵심 지표")
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        render_kpi_card("총 제품 수", f"{len(df):,}")
-    with k2:
-        total_cost = df["korea_cost_krw"].fillna(0).sum() if "korea_cost_krw" in df.columns else 0
-        render_kpi_card("총 한국원가", format_krw(total_cost))
-    with k3:
-        avg_wholesale = df["wholesale_margin_rate"].fillna(0).mean()
-        render_kpi_card("평균 도매 마진율", f"{avg_wholesale:.1f}%")
-    with k4:
-        avg_retail = df["retail_margin_rate"].fillna(0).mean()
-        render_kpi_card("평균 소매 마진율", f"{avg_retail:.1f}%")
 
-        st.subheader("가격 분석 테이블")
+    total_cost = df["korea_cost_krw"].fillna(0).sum() if "korea_cost_krw" in df.columns else 0
+    avg_wholesale = df["wholesale_margin_rate"].fillna(0).mean() if "wholesale_margin_rate" in df.columns else 0
+    avg_retail = df["retail_margin_rate"].fillna(0).mean() if "retail_margin_rate" in df.columns else 0
+
+    k1, k2, k3, k4 = st.columns(4)
+    metric_with_caption(
+        k1,
+        "총 제품 수",
+        f"{len(df):,}개",
+        f"조회 결과 기준",
+    )
+    metric_with_caption(
+        k2,
+        "총 한국원가",
+        format_krw(total_cost),
+        f"조회 제품 원가 합계",
+    )
+    metric_with_caption(
+        k3,
+        "평균 도매 마진율",
+        f"{avg_wholesale:.1f}%",
+        f"조회 제품 평균",
+    )
+    metric_with_caption(
+        k4,
+        "평균 소매 마진율",
+        f"{avg_retail:.1f}%",
+        f"조회 제품 평균",
+    )
+
+    st.subheader("가격 분석 테이블")
 
     table_df = df.copy()
 
@@ -272,12 +271,16 @@ def render():
 
     chart_df = df.copy()
 
-    if "product_code" in chart_df.columns:
-        chart_df["label"] = chart_df["product_code"].astype(str)
-    else:
-        product_name = chart_df["product_name"].astype(str) if "product_name" in chart_df.columns else ""
-        size_name = chart_df["size_name"].astype(str) if "size_name" in chart_df.columns else ""
-        chart_df["label"] = product_name + " / " + size_name
+    product_code = chart_df["product_code"].astype(str).fillna("") if "product_code" in chart_df.columns else ""
+    product_name = chart_df["product_name"].astype(str).fillna("") if "product_name" in chart_df.columns else ""
+    size_name = chart_df["size_name"].astype(str).fillna("") if "size_name" in chart_df.columns else ""
+
+    chart_df["label"] = product_code
+    empty_mask = chart_df["label"].str.strip().eq("")
+
+    chart_df.loc[empty_mask, "label"] = (
+        product_name[empty_mask].str.strip() + "\n" + size_name[empty_mask].str.strip()
+    )
 
     sort_map = {
         "소비자가": "retail_price_krw",
@@ -291,7 +294,8 @@ def render():
     if sort_col in chart_df.columns:
         chart_df = chart_df.sort_values(sort_col, ascending=False)
 
-    chart_df = chart_df.head(10 if top10_only else 12)
+    if top10_only:
+        chart_df = chart_df.head(10)
 
     if view_mode == "소매 기준":
         base_col = "korea_cost_krw"
@@ -306,29 +310,17 @@ def render():
         legend1, legend2 = "한국원가", "도매 마진"
         chart_title = "제품별 가격 구조 (도매 기준)"
 
-    fig_height = min(max(3.8, len(chart_df) * 0.18), 5.2)
-    fig, ax = plt.subplots(figsize=(9, fig_height))
+    # 차트용 컬럼 보정
+    for col in ["korea_cost_krw", "wholesale_margin_krw", "retail_extra_margin_krw"]:
+        if col not in chart_df.columns:
+            chart_df[col] = 0
+        chart_df[col] = pd.to_numeric(chart_df[col], errors="coerce").fillna(0)
 
-    base_vals = chart_df[base_col].fillna(0) if base_col in chart_df.columns else 0
-    mid_vals = chart_df[mid_col].fillna(0) if mid_col in chart_df.columns else 0
-
-    ax.barh(chart_df["label"], base_vals, label=legend1)
-    ax.barh(chart_df["label"], mid_vals, left=base_vals, label=legend2)
-
-    if top_col is not None and top_col in chart_df.columns:
-        top_vals = chart_df[top_col].fillna(0)
-        ax.barh(chart_df["label"], top_vals, left=base_vals + mid_vals, label=legend3)
-
-    ax.set_title(chart_title, fontsize=9, fontweight="bold")
-    ax.set_xlabel("금액(원)", fontsize=8)
-    ax.set_ylabel("제품", fontsize=8)
-    ax.legend(fontsize=7)
-    ax.xaxis.set_major_formatter(FuncFormatter(lambda x, p: f"₩{x:,.0f}"))
-    ax.tick_params(axis="x", labelsize=7)
-    ax.tick_params(axis="y", labelsize=7)
-
-    plt.tight_layout(pad=0.8)
-    st.pyplot(fig)
+    render_pretty_stacked_bar_chart(
+        chart_df=chart_df,
+        view_mode=view_mode,
+        chart_title=chart_title,
+    )
 
     s1, s2 = st.columns(2)
 
@@ -385,3 +377,113 @@ def highlight_columns(dataframe: pd.DataFrame):
             styles[col] = style
 
     return styles
+
+def render_pretty_stacked_bar_chart(
+    chart_df: pd.DataFrame,
+    view_mode: str,
+    chart_title: str,
+):
+    if chart_df.empty:
+        st.info("그래프 데이터가 없습니다.")
+        return
+
+    work = chart_df.copy()
+
+    if view_mode == "소매 기준":
+        part_defs = [
+            ("한국원가", "korea_cost_krw"),
+            ("도매 마진", "wholesale_margin_krw"),
+            ("추가 소매 마진", "retail_extra_margin_krw"),
+        ]
+    else:
+        part_defs = [
+            ("한국원가", "korea_cost_krw"),
+            ("도매 마진", "wholesale_margin_krw"),
+        ]
+
+    rows = []
+    for _, r in work.iterrows():
+        label = r["label"]
+        for part_name, col in part_defs:
+            val = pd.to_numeric(r.get(col, 0), errors="coerce")
+            rows.append({
+                "label": label,
+                "구성": part_name,
+                "금액": 0 if pd.isna(val) else float(val),
+            })
+
+    plot_df = pd.DataFrame(rows)
+
+    if plot_df.empty:
+        st.info("그래프 데이터가 없습니다.")
+        return
+
+    order_df = (
+        plot_df.groupby("label", as_index=False)["금액"]
+        .sum()
+        .sort_values("금액", ascending=False)
+    )
+    label_order = order_df["label"].tolist()
+
+    chart = (
+        alt.Chart(plot_df)
+        .mark_bar(cornerRadiusEnd=4)
+        .encode(
+            y=alt.Y(
+                "label:N",
+                sort=label_order,
+                title=None,
+                scale=alt.Scale(
+                    paddingInner=0.12,
+                    paddingOuter=0,
+                ),
+                axis=alt.Axis(
+                    labelLimit=1000,
+                    labelFontSize=13,
+                    labelPadding=10,
+                    labelOverlap=False,
+                ),
+            ),
+            x=alt.X(
+                "sum(금액):Q",
+                title="금액(원)",
+                axis=alt.Axis(format=",.0f", grid=True),
+            ),
+            color=alt.Color(
+                "구성:N",
+                title=None,
+                legend=alt.Legend(orient="top", direction="horizontal"),
+                scale=alt.Scale(
+                    domain=["한국원가", "도매 마진", "추가 소매 마진"],
+                    range=["#dbeafe", "#93c5fd", "#2563eb"],
+                ),
+            ),
+            tooltip=[
+                alt.Tooltip("label:N", title="제품"),
+                alt.Tooltip("구성:N", title="구성"),
+                alt.Tooltip("금액:Q", title="금액", format=",.0f"),
+            ],
+        )
+        .properties(
+            title=chart_title,
+            width=900,
+            height=max(320, min(1700, len(label_order) * 22)),
+        )
+        .configure_view(strokeWidth=0)
+        .configure_axis(
+            labelFontSize=12,
+            titleFontSize=12,
+            gridColor="#e5e7eb",
+        )
+        .configure_title(
+            fontSize=14,
+            anchor="start",
+            color="#111827",
+        )
+        .configure_legend(
+            labelFontSize=12,
+            symbolSize=140,
+        )
+    )
+
+    st.altair_chart(chart, use_container_width=True)

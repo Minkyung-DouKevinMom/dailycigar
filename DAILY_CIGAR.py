@@ -174,6 +174,10 @@ def render_db_download_section():
 # 매출 로딩
 # =========================
 def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
+    """
+    - 시가는 기존 로직 유지
+    - 시가 외 상품만 purchase_price 기준으로 원가/이익 재계산
+    """
     empty_cols = [
         "dt", "sales_amount", "margin_amount", "customer_name",
         "sales_type", "product_code", "product_name", "qty", "unit_price"
@@ -182,6 +186,81 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     purchase_price_map = get_non_cigar_purchase_price_map(conn)
     product_name_map = get_product_name_map(conn)
 
+    # 1) 우선 v_retail_sales_enriched 사용
+    if view_exists(conn, "v_retail_sales_enriched"):
+        vcols = get_table_columns(conn, "v_retail_sales_enriched")
+
+        sale_date_col = pick_col(vcols, ["sale_date", "sales_date", "dt"])
+        sales_col = pick_col(vcols, ["net_sales_amount", "sales_amount", "amount"])
+        cost_col = pick_col(vcols, ["total_korea_cost_krw", "total_cost_krw"])
+        gp_col = pick_col(vcols, ["retail_gross_profit_krw", "gross_profit_krw", "margin_amount"])
+        product_code_col = pick_col(vcols, ["product_code", "product_code_raw"])
+        product_name_col = pick_col(vcols, ["mst_product_name", "product_name", "product_code_raw"])
+        qty_col = pick_col(vcols, ["qty", "quantity"])
+        unit_price_col = pick_col(vcols, ["unit_price"])
+
+        name_col = pick_col(vcols, ["customer_name", "customer", "customer_nm", "buyer_name", "store_name"])
+
+        if sale_date_col and sales_col:
+            sql = f"""
+                SELECT
+                    {sale_date_col} AS sale_date,
+                    COALESCE({sales_col}, 0) AS sales_amount,
+                    {"COALESCE(" + cost_col + ", 0)" if cost_col else "0"} AS total_korea_cost_krw,
+                    {"COALESCE(" + gp_col + ", 0)" if gp_col else "0"} AS margin_amount,
+                    {"COALESCE(" + product_code_col + ", '')" if product_code_col else "''"} AS product_code,
+                    {"COALESCE(" + product_name_col + ", '')" if product_name_col else "''"} AS product_name,
+                    {"COALESCE(" + qty_col + ", 0)" if qty_col else "0"} AS qty,
+                    {"COALESCE(" + unit_price_col + ", 0)" if unit_price_col else "0"} AS unit_price,
+                    {"COALESCE(" + name_col + ", '')" if name_col else "''"} AS customer_name
+                FROM v_retail_sales_enriched
+                WHERE {sale_date_col} BETWEEN ? AND ?
+            """
+            try:
+                df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
+            except Exception:
+                df = pd.DataFrame()
+
+            if not df.empty:
+                df["dt"] = pd.to_datetime(df["sale_date"], errors="coerce")
+                for c in ["sales_amount", "total_korea_cost_krw", "margin_amount", "qty", "unit_price"]:
+                    df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+                df["customer_name"] = df["customer_name"].fillna("")
+                df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
+                df["product_name"] = df["product_name"].fillna("").astype(str).str.strip()
+
+                missing_name_mask = df["product_name"].eq("") & df["product_code"].ne("")
+                df.loc[missing_name_mask, "product_name"] = (
+                    df.loc[missing_name_mask, "product_code"].map(product_name_map).fillna("")
+                )
+
+                # 시가 외 항목만 재계산
+                non_cigar_mask = df["product_code"].isin(purchase_price_map.keys())
+
+                df.loc[non_cigar_mask, "_purchase_price"] = (
+                    df.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
+                )
+                df.loc[non_cigar_mask, "total_korea_cost_krw"] = (
+                    df.loc[non_cigar_mask, "_purchase_price"] * df.loc[non_cigar_mask, "qty"]
+                )
+                df.loc[non_cigar_mask, "margin_amount"] = (
+                    df.loc[non_cigar_mask, "sales_amount"] - df.loc[non_cigar_mask, "total_korea_cost_krw"]
+                )
+
+                if "_purchase_price" in df.columns:
+                    df = df.drop(columns=["_purchase_price"])
+
+                df["sales_type"] = "소매"
+                df = df.dropna(subset=["dt"])
+                df = df[df["sales_amount"] != 0].copy()
+
+                return df[
+                    ["dt", "sales_amount", "margin_amount", "customer_name",
+                     "sales_type", "product_code", "product_name", "qty", "unit_price"]
+                ]
+
+    # 2) 뷰가 없으면 retail_sales 직접 사용
     if not has_table(conn, "retail_sales"):
         return pd.DataFrame(columns=empty_cols)
 
@@ -190,34 +269,25 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
     sales_col = pick_col(cols, ["net_sales_amount", "sales_amount", "amount"])
     name_col = pick_col(cols, ["customer_name", "customer", "customer_nm", "buyer_name", "store_name"])
+    product_code_col = pick_col(cols, ["product_code", "product_code_raw"])
+    product_name_col = pick_col(cols, ["product_name"])
+    qty_col = pick_col(cols, ["qty", "quantity"])
+    unit_price_col = pick_col(cols, ["unit_price"])
+    gp_col = pick_col(cols, ["retail_gross_profit_krw", "gross_profit_krw", "margin_amount"])
 
     if not sale_date_col or not sales_col:
         return pd.DataFrame(columns=empty_cols)
-
-    name_expr = f"COALESCE({name_col}, '')" if name_col else "''"
-
-    product_code_expr = (
-        "COALESCE(product_code, product_code_raw, '')"
-        if "product_code" in cols and "product_code_raw" in cols
-        else "COALESCE(product_code, '')"
-        if "product_code" in cols
-        else "COALESCE(product_code_raw, '')"
-        if "product_code_raw" in cols
-        else "''"
-    )
-    product_name_expr = "COALESCE(product_name, '')" if "product_name" in cols else "''"
-    qty_expr = "COALESCE(qty, 0)" if "qty" in cols else "0"
-    unit_price_expr = "COALESCE(unit_price, 0)" if "unit_price" in cols else "0"
 
     sql = f"""
         SELECT
             {sale_date_col} AS sale_date,
             COALESCE({sales_col}, 0) AS sales_amount,
-            {name_expr} AS customer_name,
-            {product_code_expr} AS product_code,
-            {product_name_expr} AS product_name,
-            {qty_expr} AS qty,
-            {unit_price_expr} AS unit_price
+            {"COALESCE(" + gp_col + ", 0)" if gp_col else "0"} AS margin_amount,
+            {"COALESCE(" + name_col + ", '')" if name_col else "''"} AS customer_name,
+            {"COALESCE(" + product_code_col + ", '')" if product_code_col else "''"} AS product_code,
+            {"COALESCE(" + product_name_col + ", '')" if product_name_col else "''"} AS product_name,
+            {"COALESCE(" + qty_col + ", 0)" if qty_col else "0"} AS qty,
+            {"COALESCE(" + unit_price_col + ", 0)" if unit_price_col else "0"} AS unit_price
         FROM retail_sales
         WHERE {sale_date_col} BETWEEN ? AND ?
     """
@@ -228,6 +298,7 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
 
     df["dt"] = pd.to_datetime(df["sale_date"], errors="coerce")
     df["sales_amount"] = pd.to_numeric(df["sales_amount"], errors="coerce").fillna(0)
+    df["margin_amount"] = pd.to_numeric(df["margin_amount"], errors="coerce").fillna(0)
     df["customer_name"] = df["customer_name"].fillna("")
     df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
     df["product_name"] = df["product_name"].fillna("").astype(str).str.strip()
@@ -235,10 +306,23 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     df["unit_price"] = pd.to_numeric(df["unit_price"], errors="coerce").fillna(0)
 
     missing_name_mask = df["product_name"].eq("") & df["product_code"].ne("")
-    df.loc[missing_name_mask, "product_name"] = df.loc[missing_name_mask, "product_code"].map(product_name_map).fillna("")
+    df.loc[missing_name_mask, "product_name"] = (
+        df.loc[missing_name_mask, "product_code"].map(product_name_map).fillna("")
+    )
 
-    df["purchase_price"] = df["product_code"].map(purchase_price_map).fillna(0)
-    df["margin_amount"] = df["sales_amount"] - (df["purchase_price"] * df["qty"])
+    # 기본은 기존 마진 유지
+    # 시가 외 상품만 재계산
+    non_cigar_mask = df["product_code"].isin(purchase_price_map.keys())
+    df.loc[non_cigar_mask, "_purchase_price"] = (
+        df.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
+    )
+    df.loc[non_cigar_mask, "margin_amount"] = (
+        df.loc[non_cigar_mask, "sales_amount"]
+        - (df.loc[non_cigar_mask, "_purchase_price"] * df.loc[non_cigar_mask, "qty"])
+    )
+
+    if "_purchase_price" in df.columns:
+        df = df.drop(columns=["_purchase_price"])
 
     df["sales_type"] = "소매"
     df = df.dropna(subset=["dt"])
@@ -248,7 +332,6 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
         ["dt", "sales_amount", "margin_amount", "customer_name",
          "sales_type", "product_code", "product_name", "qty", "unit_price"]
     ]
-
 
 def get_wholesale_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     empty_cols = [

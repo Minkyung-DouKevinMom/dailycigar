@@ -9,10 +9,10 @@ import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.cell.cell import MergedCell
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", str(BASE_DIR / "cigar.db"))
-
 
 STATEMENT_COMPANY_NAME = "㈜ 데일리시가"
 STATEMENT_BANK_NAME = "신한은행"
@@ -23,7 +23,6 @@ STATEMENT_PAYMENT_DUE_DAYS = 3
 STATEMENT_TEMPLATE_DIR = BASE_DIR / "templates"
 STATEMENT_TEMPLATE_PATH = Path(os.getenv("DAILYCIGAR_STATEMENT_TEMPLATE_PATH", str(STATEMENT_TEMPLATE_DIR / "statement_template.xlsx")))
 STATEMENT_MAX_ITEM_ROWS = 20
-
 
 # -----------------------------
 # DB helpers
@@ -44,6 +43,17 @@ def table_exists(conn, table_name: str) -> bool:
     )
     return cur.fetchone() is not None
 
+def set_merged_cell_value(ws, cell_ref: str, value):
+    cell = ws[cell_ref]
+
+    # 병합된 읽기전용 셀이면, 해당 병합영역의 좌상단 셀에 기록
+    if isinstance(cell, MergedCell):
+        for merged_range in ws.merged_cells.ranges:
+            if cell_ref in merged_range:
+                ws[merged_range.start_cell.coordinate] = value
+                return
+
+    ws[cell_ref] = value
 
 def get_table_columns(conn, table_name: str) -> list[str]:
     if not table_exists(conn, table_name):
@@ -123,47 +133,7 @@ def ensure_statement_tables(conn):
 
 
 def issue_statement_document_no(conn, sale_date_str: str) -> str:
-    ensure_statement_tables(conn)
-
-    try:
-        doc_date = pd.to_datetime(sale_date_str).strftime("%Y%m%d")
-    except Exception:
-        doc_date = pd.Timestamp.now().strftime("%Y%m%d")
-
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT last_seq
-        FROM statement_doc_sequence
-        WHERE doc_type = ? AND doc_date = ?
-        """,
-        ("STATEMENT", doc_date),
-    )
-    row = cur.fetchone()
-
-    if row:
-        next_seq = _safe_int(row[0], 0) + 1
-        cur.execute(
-            """
-            UPDATE statement_doc_sequence
-            SET last_seq = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE doc_type = ? AND doc_date = ?
-            """,
-            (next_seq, "STATEMENT", doc_date),
-        )
-    else:
-        next_seq = 1
-        cur.execute(
-            """
-            INSERT INTO statement_doc_sequence (doc_type, doc_date, last_seq)
-            VALUES (?, ?, ?)
-            """,
-            ("STATEMENT", doc_date, next_seq),
-        )
-
-    conn.commit()
-    return f"{STATEMENT_DOC_PREFIX}-{doc_date}-{next_seq:03d}"
-
+    return issue_document_no(conn, "STATEMENT", STATEMENT_DOC_PREFIX, sale_date_str)
 
 def save_statement_history(
     conn,
@@ -514,7 +484,7 @@ def _validate_statement_rows(selected_df: pd.DataFrame) -> tuple[bool, str]:
     return True, ""
 
 
-def _build_statement_from_rows(selected_df: pd.DataFrame, document_no: str | None = None) -> tuple[dict, pd.DataFrame, dict]:
+def _build_statement_from_rows(conn, selected_df: pd.DataFrame, document_no: str | None = None) -> tuple[dict, pd.DataFrame, dict]:
     sale_date_raw = str(selected_df.iloc[0].get("sale_date", "") or "")
     try:
         sale_dt = pd.to_datetime(sale_date_raw).to_pydatetime()
@@ -524,9 +494,17 @@ def _build_statement_from_rows(selected_df: pd.DataFrame, document_no: str | Non
         sale_date_display = sale_date_raw
         due_date_display = sale_date_raw
 
-    contact_name = str(selected_df.iloc[0].get("contact_name", "") or "").strip()
-    owner_name = str(selected_df.iloc[0].get("owner_name", "") or "").strip()
-    partner_contact = contact_name or owner_name or "대표님"
+    partner_id = _safe_int(selected_df.iloc[0].get("partner_id", 0), 0)
+    partner_info = get_partner_detail_by_id(conn, partner_id)
+
+    partner_name = str(partner_info.get("partner_name", "") or selected_df.iloc[0].get("partner_name", "") or "").strip()
+    owner_name = str(partner_info.get("owner_name", "") or "").strip()
+    contact_name = str(partner_info.get("contact_name", "") or "").strip()
+    phone = str(partner_info.get("phone", "") or "").strip()
+    address = str(partner_info.get("address", "") or "").strip()
+    business_no = str(partner_info.get("business_no", "") or "").strip()
+
+    partner_contact = owner_name or contact_name or partner_name
 
     statement_df = selected_df[
         [
@@ -564,12 +542,12 @@ def _build_statement_from_rows(selected_df: pd.DataFrame, document_no: str | Non
     }
 
     header = {
-        "partner_id": _safe_int(selected_df.iloc[0].get("partner_id", 0), 0),
-        "partner_name": str(selected_df.iloc[0].get("partner_name", "") or ""),
+        "partner_id": partner_id,
+        "partner_name": partner_name,
         "partner_contact": partner_contact,
-        "partner_phone": str(selected_df.iloc[0].get("phone", "") or ""),
-        "partner_address": str(selected_df.iloc[0].get("address", "") or ""),
-        "business_no": str(selected_df.iloc[0].get("business_no", "") or ""),
+        "partner_phone": phone,
+        "partner_address": address,
+        "business_no": business_no,
         "sale_date": sale_date_display,
         "due_date": due_date_display,
         "document_no": document_no or "",
@@ -639,9 +617,19 @@ def _make_statement_excel_bytes(header: dict, statement_df: pd.DataFrame, totals
 
     # 헤더
     ws["I2"] = header.get("partner_name", "")
+
     ws["H3"] = header.get("partner_address", "")
-    ws["I4"] = header.get("partner_contact", "")
+    ws["H3"].alignment = Alignment(horizontal="right", vertical="center")
+
+    owner = str(header.get("partner_contact", "") or "").strip()
+    partner_name = str(header.get("partner_name", "") or "").strip()
+    display_owner = owner if owner else partner_name
+
+    ws["I4"] = f"{display_owner} 대표님"
+    ws["I4"].alignment = Alignment(horizontal="right", vertical="center")
+
     ws["I5"] = header.get("partner_phone", "")
+    ws["I5"].alignment = Alignment(horizontal="right", vertical="center")
 
     ws["C12"] = header.get("document_no", "")
     ws["C13"] = header.get("sale_date", "")
@@ -1350,7 +1338,7 @@ def render_wholesale_management(conn):
     if not selected_grid_df.empty:
         ok, msg = _validate_statement_rows(selected_grid_df)
         if ok:
-            preview_header, statement_df, totals = _build_statement_from_rows(selected_grid_df)
+            preview_header, statement_df, totals = _build_statement_from_rows(conn, selected_grid_df)
             _render_statement_preview(preview_header, statement_df, totals)
 
             safe_partner = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in preview_header["partner_name"]).strip("_") or "거래처"
@@ -1383,6 +1371,7 @@ def render_wholesale_management(conn):
                     f"템플릿 파일 경로: {STATEMENT_TEMPLATE_PATH} "
                     "(프로젝트 루트의 templates/statement_template.xlsx 권장)"
                 )
+
         else:
             st.warning(msg)
 
@@ -1579,3 +1568,67 @@ def render():
 
     finally:
         conn.close()
+
+def issue_document_no(conn, doc_type: str, prefix: str, sale_date_str: str) -> str:
+    ensure_statement_tables(conn)
+
+    try:
+        doc_date = pd.to_datetime(sale_date_str).strftime("%Y%m%d")
+    except Exception:
+        doc_date = pd.Timestamp.now().strftime("%Y%m%d")
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT last_seq
+        FROM statement_doc_sequence
+        WHERE doc_type = ? AND doc_date = ?
+        """,
+        (doc_type, doc_date),
+    )
+    row = cur.fetchone()
+
+    if row:
+        next_seq = _safe_int(row[0], 0) + 1
+        cur.execute(
+            """
+            UPDATE statement_doc_sequence
+            SET last_seq = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE doc_type = ? AND doc_date = ?
+            """,
+            (next_seq, doc_type, doc_date),
+        )
+    else:
+        next_seq = 1
+        cur.execute(
+            """
+            INSERT INTO statement_doc_sequence (doc_type, doc_date, last_seq)
+            VALUES (?, ?, ?)
+            """,
+            (doc_type, doc_date, next_seq),
+        )
+
+    conn.commit()
+    return f"{prefix}-{doc_date}-{next_seq:03d}"
+
+def get_partner_detail_by_id(conn, partner_id: int) -> dict:
+    if not partner_id:
+        return {}
+
+    df = pd.read_sql(
+        """
+        SELECT
+            id,
+            partner_name,
+            owner_name,
+            contact_name,
+            phone,
+            address,
+            business_no
+        FROM partner_mst
+        WHERE id = ?
+        """,
+        conn,
+        params=[partner_id],
+    )
+    return df.iloc[0].to_dict() if not df.empty else {}

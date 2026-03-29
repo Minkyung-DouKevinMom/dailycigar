@@ -54,7 +54,7 @@ def _none_if_zero_num(v):
 
 def _calc_values(
     export_price_usd: float,
-    effective_discount_rate: float,
+    discount_percent: float,
     import_unit_qty: int,
     package_qty: int,
     unit_weight_g: float,
@@ -63,34 +63,39 @@ def _calc_values(
     local_box_price_php: float = 0.0,
     local_unit_price_php: float = 0.0,
     php_to_krw_rate: float = 0.0,
+    retail_price_krw: float = 0.0,
+    supply_price_krw: float = 0.0,
+    store_retail_price_krw=None,
 ):
-    discounted_box_price_usd = export_price_usd * (1 - (effective_discount_rate / 100.0))
-
     box_qty = package_qty if package_qty and package_qty > 0 else 1
-    box_count = (import_unit_qty / box_qty) if import_unit_qty > 0 else 0.0
 
-    # 개당 수출단가
+    # 화면 입력값: 20 => 20% 할인, DB 저장값: 0.8
+    discount_factor = 1 - (discount_percent / 100.0)
+    if discount_factor < 0:
+        discount_factor = 0.0
+
+    # 박스/개당 가격
+    discounted_box_price_usd = export_price_usd * discount_factor
     export_unit_price_usd = discounted_box_price_usd / box_qty if box_qty > 0 else 0.0
 
-    # USD 기준 총수입금액
-    import_total_cost_krw_usd = discounted_box_price_usd * box_count * usd_to_krw_rate
+    # 개당 / 합계 수입원가
+    import_unit_cost_krw = export_unit_price_usd * usd_to_krw_rate
+    import_total_cost_krw = import_unit_cost_krw * import_unit_qty
 
-    # PHP 기준 입력값
+    # 현지가 계산
     local_unit_price_krw = local_unit_price_php * php_to_krw_rate * 1.12
-    
-    # 최종 수입원가는 기존처럼 USD 기준 사용
-    import_total_cost_krw = import_total_cost_krw_usd
 
-    # 개당 수입원가
-    import_unit_cost_krw = import_total_cost_krw / import_unit_qty if import_unit_qty > 0 else 0.0
+    # 무게: total만 합계
     total_weight_g = unit_weight_g * import_unit_qty
 
-    individual_tax_krw = total_weight_g * _n(tax_rule.get("individual_tax_per_g"))
-    tobacco_tax_krw = total_weight_g * _n(tax_rule.get("tobacco_tax_per_g"))
+    # 세금: 전부 개당 기준
+    individual_tax_krw = unit_weight_g * _n(tax_rule.get("individual_tax_per_g"))
+    tobacco_tax_krw = unit_weight_g * _n(tax_rule.get("tobacco_tax_per_g"))
     local_education_tax_krw = tobacco_tax_krw * _n(tax_rule.get("local_education_rate"))
-    health_charge_krw = total_weight_g * _n(tax_rule.get("health_charge_per_g"))
-    import_vat_krw = (import_total_cost_krw + individual_tax_krw) * _n(tax_rule.get("import_vat_rate"))
+    health_charge_krw = unit_weight_g * _n(tax_rule.get("health_charge_per_g"))
+    import_vat_krw = (import_unit_cost_krw + individual_tax_krw) * _n(tax_rule.get("import_vat_rate"))
 
+    # 개당 세금합계 / 합계 세금합계
     tax_total_krw = (
         individual_tax_krw
         + tobacco_tax_krw
@@ -98,15 +103,29 @@ def _calc_values(
         + health_charge_krw
         + import_vat_krw
     )
+    tax_total_all_krw = tax_total_krw * import_unit_qty
 
-    korea_cost_krw = import_total_cost_krw + tax_total_krw
+    # 한국원가: 개당
+    korea_cost_krw = import_unit_cost_krw + tax_total_krw
+
+    # 공급가 관련
+    supply_vat_krw = supply_price_krw * 0.1
+    supply_total_krw = supply_price_krw + supply_vat_krw
+
+    # 마진율: 개당 한국원가 기준
+    retail_margin_rate = ((retail_price_krw - korea_cost_krw) / retail_price_krw) if retail_price_krw else 0.0
+    wholesale_margin_rate = ((supply_price_krw - korea_cost_krw) / supply_price_krw) if supply_price_krw else 0.0
+
+    # 매장 소매가는 기본적으로 소비자가와 동일하게 시작
+    if store_retail_price_krw in (None, ""):
+        store_retail_price_krw = retail_price_krw
 
     return {
+        "discount_factor": discount_factor,
         "discounted_box_price_usd": discounted_box_price_usd,
         "export_unit_price_usd": export_unit_price_usd,
         "import_unit_cost_krw": import_unit_cost_krw,
         "import_total_cost_krw": import_total_cost_krw,
-        "import_total_cost_krw_usd": import_total_cost_krw_usd,
         "local_box_price_php": local_box_price_php,
         "local_unit_price_php": local_unit_price_php,
         "local_unit_price_krw": local_unit_price_krw,
@@ -117,8 +136,13 @@ def _calc_values(
         "health_charge_krw": health_charge_krw,
         "import_vat_krw": import_vat_krw,
         "tax_total_krw": tax_total_krw,
-        "tax_total_all_krw": tax_total_krw,
+        "tax_total_all_krw": tax_total_all_krw,
         "korea_cost_krw": korea_cost_krw,
+        "supply_vat_krw": supply_vat_krw,
+        "supply_total_krw": supply_total_krw,
+        "retail_margin_rate": retail_margin_rate,
+        "wholesale_margin_rate": wholesale_margin_rate,
+        "store_retail_price_krw": store_retail_price_krw,
     }
 
 
@@ -412,20 +436,23 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 step=1,
             )
 
+            saved_discount_factor = _n(detail_row.get("discount_rate"), 1.0)
+            default_discount_percent = (1 - saved_discount_factor) * 100 if detail_row else 0.0
+
             discount_rate = st.number_input(
                 "할인율(%)",
                 min_value=0.0,
                 max_value=100.0,
-                value=_n(detail_row.get("discount_rate"), 0.0),
+                value=default_discount_percent,
                 step=0.1,
             )
 
-            auto_discounted_usd = export_box_price_usd * (1 - discount_rate / 100.0)
             discounted_box_price_usd_manual = st.number_input(
                 "최종 수출가격(USD, 박스기준)",
                 min_value=0.0,
-                value=_n(detail_row.get("discounted_box_price_usd"), auto_discounted_usd),
+                value=export_box_price_usd * (1 - discount_rate / 100.0),
                 step=0.01,
+                disabled=True,
             )
 
             source_row_no = st.number_input(
@@ -493,14 +520,21 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 format="%d",
             )
 
-        if export_box_price_usd > 0:
-            effective_discount_rate = (1 - (discounted_box_price_usd_manual / export_box_price_usd)) * 100
-        else:
-            effective_discount_rate = 0.0
+            store_retail_default = _n(detail_row.get("store_retail_price_krw"), _n(detail_row.get("retail_price_krw"), 0.0))
+            if store_retail_default == 0 and retail_price_krw > 0:
+                store_retail_default = retail_price_krw
+
+            store_retail_price_krw = st.number_input(
+                "매장 소매가",
+                min_value=0,
+                value=int(round(store_retail_default)),
+                step=100,
+                format="%d",
+            )
 
         calc = _calc_values(
             export_price_usd=export_box_price_usd,
-            effective_discount_rate=effective_discount_rate,
+            discount_percent=discount_rate,
             import_unit_qty=import_unit_qty,
             package_qty=package_qty,
             unit_weight_g=unit_weight_g,
@@ -509,6 +543,9 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
             local_box_price_php=local_box_price_php,
             local_unit_price_php=local_unit_price_php,
             php_to_krw_rate=php_to_krw_rate,
+            retail_price_krw=retail_price_krw,
+            supply_price_krw=supply_price_krw,
+            store_retail_price_krw=store_retail_price_krw,
         )
 
         margin_krw = retail_price_krw - supply_price_krw if (retail_price_krw or supply_price_krw) else 0.0
@@ -516,38 +553,46 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
         st.info(
             f"""
 세금 계산식
-- 개별소비세 = 총 무게 × 개별소비세비율 = {calc['individual_tax_krw']:,.0f}원
-- 담배소비세 = 총 무게 × 담배소비세비율 = {calc['tobacco_tax_krw']:,.0f}원
-- 지방교육세 = 담배소비세 × 지방교육세비율 = {calc['local_education_tax_krw']:,.0f}원
-- 국민건강증진금 = 총 무게 × 국민건강비율 = {calc['health_charge_krw']:,.0f}원
-- 부가세 = (수입원가KRW + 개별소비세) × 10% = {calc['import_vat_krw']:,.0f}원
-- 세금합계 = {calc['tax_total_krw']:,.0f}원
-- 한국원가 = 수입원가KRW + 세금합계 = {calc['korea_cost_krw']:,.0f}원
+- 개별소비세(개당) = 개당무게 × 개별소비세비율 = {calc['individual_tax_krw']:,.0f}원
+- 담배소비세(개당) = 개당무게 × 담배소비세비율 = {calc['tobacco_tax_krw']:,.0f}원
+- 지방교육세(개당) = 담배소비세(개당) × 지방교육세비율 = {calc['local_education_tax_krw']:,.0f}원
+- 국민건강증진금(개당) = 개당무게 × 국민건강비율 = {calc['health_charge_krw']:,.0f}원
+- 수입부가세(개당) = (개당수입원가 + 개별소비세) × 부가세율 = {calc['import_vat_krw']:,.0f}원
+- 세금합계(개당) = {calc['tax_total_krw']:,.0f}원
+- 세금합계(총) = 개당세금합계 × 수입개수 = {calc['tax_total_all_krw']:,.0f}원
+- 한국원가(개당) = 개당수입원가 + 개당세금합계 = {calc['korea_cost_krw']:,.0f}원
             """
         )
 
         st.markdown("### 자동 계산 결과")
         r1, r2, r3, r4 = st.columns(4)
-        r1.metric("본사 수출가격(USD)", f"{export_box_price_usd:,.2f}")
-        r2.metric("최종 수출가격(USD)", f"{calc['discounted_box_price_usd']:,.2f}")
-        r3.metric("현지 박스가격(PHP)", f"₱{calc['local_box_price_php']:,.2f}")
-        r4.metric("현지 유닛가격(원화)", f"₩{calc['local_unit_price_krw']:,.0f}")
+        r1.metric("본사 박스가격(USD)", f"{export_box_price_usd:,.2f}")
+        r2.metric("할인적용 박스가격(USD)", f"{calc['discounted_box_price_usd']:,.2f}")
+        r3.metric("개당 수출단가(USD)", f"{calc['export_unit_price_usd']:,.2f}")
+        r4.metric("개당 수입원가(KRW)", f"₩{calc['import_unit_cost_krw']:,.0f}")
 
         r5, r6, r7, r8 = st.columns(4)
-        r5.metric("총 무게(g)", f"{calc['total_weight_g']:,.1f}")
-        r6.metric("최종 수입가격(원)", f"₩{calc['import_total_cost_krw']:,.0f}")
-        r7.metric("세금합계", f"₩{calc['tax_total_krw']:,.0f}")
-        r8.metric("한국원가", f"₩{calc['korea_cost_krw']:,.0f}")
+        r5.metric("총 수입금액(KRW)", f"₩{calc['import_total_cost_krw']:,.0f}")
+        r6.metric("총 무게(g)", f"{calc['total_weight_g']:,.1f}")
+        r7.metric("공급가 VAT", f"₩{calc['supply_vat_krw']:,.0f}")
+        r8.metric("공급가 합계", f"₩{calc['supply_total_krw']:,.0f}")
 
         r9, r10, r11, r12 = st.columns(4)
-        r9.metric("개별소비세", f"₩{calc['individual_tax_krw']:,.0f}")
-        r10.metric("담배소비세", f"₩{calc['tobacco_tax_krw']:,.0f}")
-        r11.metric("지방교육세", f"₩{calc['local_education_tax_krw']:,.0f}")
-        r12.metric("국민건강증진금", f"₩{calc['health_charge_krw']:,.0f}")
+        r9.metric("세금합계(개당)", f"₩{calc['tax_total_krw']:,.0f}")
+        r10.metric("한국원가(개당)", f"₩{calc['korea_cost_krw']:,.0f}")
+        r11.metric("소비자가 마진율", f"{calc['retail_margin_rate']*100:,.1f}%")
+        r12.metric("공급가 마진율", f"{calc['wholesale_margin_rate']*100:,.1f}%")
 
-        r13, r14 = st.columns(2)
-        r13.metric("수입부가세", f"₩{calc['import_vat_krw']:,.0f}")
-        r14.metric("마진", f"₩{margin_krw:,.0f}")
+        r13, r14, r15, r16 = st.columns(4)
+        r13.metric("개별소비세(개당)", f"₩{calc['individual_tax_krw']:,.0f}")
+        r14.metric("담배소비세(개당)", f"₩{calc['tobacco_tax_krw']:,.0f}")
+        r15.metric("지방교육세(개당)", f"₩{calc['local_education_tax_krw']:,.0f}")
+        r16.metric("국민건강증진금(개당)", f"₩{calc['health_charge_krw']:,.0f}")
+
+        r17, r18, r19 = st.columns(3)
+        r17.metric("수입부가세(개당)", f"₩{calc['import_vat_krw']:,.0f}")
+        r18.metric("매장 소매가", f"₩{calc['store_retail_price_krw']:,.0f}")
+        r19.metric("마진", f"₩{margin_krw:,.0f}")
 
         raw_row_json = detail_row.get("raw_row_json") or ""
         raw_formula_json = detail_row.get("raw_formula_json") or ""
@@ -577,7 +622,7 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 product_code=_none_if_blank_text(product_code),
                 export_box_price_usd=_none_if_zero_num(export_box_price_usd),
                 discounted_box_price_usd=_none_if_zero_num(calc["discounted_box_price_usd"]),
-                discount_rate=_none_if_zero_num(effective_discount_rate),
+                discount_rate=_none_if_zero_num(calc["discount_factor"]),
                 import_unit_qty=import_unit_qty,
                 export_unit_price_usd=_none_if_zero_num(calc["export_unit_price_usd"]),
                 import_unit_cost_krw=_none_if_zero_num(calc["import_unit_cost_krw"]),
@@ -597,6 +642,11 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 local_unit_price_krw=_none_if_zero_num(calc["local_unit_price_krw"]),
                 retail_price_krw=_none_if_zero_num(retail_price_krw),
                 supply_price_krw=_none_if_zero_num(supply_price_krw),
+                supply_vat_krw=_none_if_zero_num(calc["supply_vat_krw"]),
+                supply_total_krw=_none_if_zero_num(calc["supply_total_krw"]),
+                retail_margin_rate=_none_if_zero_num(calc["retail_margin_rate"]),
+                wholesale_margin_rate=_none_if_zero_num(calc["wholesale_margin_rate"]),
+                store_retail_price_krw=_none_if_zero_num(calc["store_retail_price_krw"]),
                 margin_krw=_none_if_zero_num(margin_krw),
                 source_row_no=None if source_row_no == 0 else source_row_no,
                 raw_row_json=raw_row_json,
