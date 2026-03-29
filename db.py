@@ -1373,3 +1373,151 @@ def upsert_import_item_full(
 
         if "refresh_import_batch_totals" in globals() and batch_id:
             refresh_import_batch_totals(batch_id)
+
+def refresh_import_batch_totals(batch_id):
+    """
+    import_item 기준으로 import_batch 집계 컬럼 갱신
+    import_batch 테이블에 실제 존재하는 컬럼만 UPDATE
+    """
+
+    item_df = run_query(
+        """
+        SELECT
+            COUNT(*) AS total_item_count,
+            COALESCE(SUM(import_unit_qty), 0) AS total_unit_qty,
+            COALESCE(SUM(total_weight_g), 0) AS total_weight_g,
+            COALESCE(SUM(discounted_box_price_usd), 0) AS total_amount_usd,
+            COALESCE(SUM(import_total_cost_krw), 0) AS total_amount_krw
+        FROM import_item
+        WHERE batch_id = ?
+        """,
+        [batch_id],
+    )
+
+    if item_df.empty:
+        total_item_count = 0
+        total_unit_qty = 0
+        total_weight_g = 0
+        total_amount_usd = 0
+        total_amount_krw = 0
+    else:
+        row = item_df.iloc[0]
+        total_item_count = int(row["total_item_count"] or 0)
+        total_unit_qty = float(row["total_unit_qty"] or 0)
+        total_weight_g = float(row["total_weight_g"] or 0)
+        total_amount_usd = float(row["total_amount_usd"] or 0)
+        total_amount_krw = float(row["total_amount_krw"] or 0)
+
+    cols_df = run_query("PRAGMA table_info(import_batch)")
+    existing_cols = set(cols_df["name"].tolist()) if not cols_df.empty else set()
+
+    update_parts = []
+    params = []
+
+    if "total_item_count" in existing_cols:
+        update_parts.append("total_item_count = ?")
+        params.append(total_item_count)
+
+    if "total_unit_qty" in existing_cols:
+        update_parts.append("total_unit_qty = ?")
+        params.append(total_unit_qty)
+
+    if "total_weight_g" in existing_cols:
+        update_parts.append("total_weight_g = ?")
+        params.append(total_weight_g)
+
+    if "total_amount_usd" in existing_cols:
+        update_parts.append("total_amount_usd = ?")
+        params.append(total_amount_usd)
+
+    if "total_amount_krw" in existing_cols:
+        update_parts.append("total_amount_krw = ?")
+        params.append(total_amount_krw)
+
+    if "updated_at" in existing_cols:
+        update_parts.append("updated_at = CURRENT_TIMESTAMP")
+
+    if not update_parts:
+        return
+
+    sql = f"""
+    UPDATE import_batch
+    SET
+        {", ".join(update_parts)}
+    WHERE id = ?
+    """
+    params.append(batch_id)
+
+    execute(sql, params)
+
+def get_all_partner_for_select():
+    sql = """
+    SELECT
+        id AS partner_id,
+        partner_name
+    FROM partner_mst
+    WHERE COALESCE(status, 'active') = 'active'
+    ORDER BY partner_name
+    """
+    return run_query(sql)
+
+
+def get_partner_detail_by_id(partner_id):
+    sql = """
+    SELECT
+        id AS partner_id,
+        partner_name,
+        owner_name,
+        contact_name,
+        phone,
+        email,
+        address,
+        status,
+        notes
+    FROM partner_mst
+    WHERE id = ?
+    """
+    df = run_query(sql, [partner_id])
+    return df.iloc[0].to_dict() if not df.empty else {}
+
+
+def get_estimate_cigar_items():
+    sql = """
+    SELECT
+        i.product_code,
+        i.product_name,
+        i.size_name,
+        COALESCE(i.retail_price_krw, 0) AS retail_price_krw,
+        COALESCE(i.supply_price_krw, 0) AS supply_price_krw
+    FROM import_item i
+    INNER JOIN (
+        SELECT
+            product_name,
+            size_name,
+            MAX(id) AS max_id
+        FROM import_item
+        GROUP BY product_name, size_name
+    ) x
+        ON i.id = x.max_id
+    LEFT JOIN product_mst p
+        ON i.product_name = p.product_name
+       AND COALESCE(i.size_name, '') = COALESCE(p.size_name, '')
+    WHERE COALESCE(p.use_yn, 'Y') = 'Y'
+    ORDER BY i.product_name, i.size_name
+    """
+    return run_query(sql)
+
+
+def get_estimate_non_cigar_items():
+    sql = """
+    SELECT
+        product_code,
+        product_name,
+        '' AS size_name,
+        COALESCE(retail_price, 0) AS retail_price_krw,
+        COALESCE(wholesale_price, 0) AS supply_price_krw
+    FROM non_cigar_product_mst
+    WHERE COALESCE(is_active, 1) = 1
+    ORDER BY product_name
+    """
+    return run_query(sql)

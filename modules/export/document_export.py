@@ -5,14 +5,22 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 from openpyxl import load_workbook
-from openpyxl.styles import Alignment
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 
-from db import get_product_intro_export_data
+from db import (
+    get_product_intro_export_data,
+    get_all_partner_for_select,
+    get_partner_detail_by_id,
+    get_estimate_cigar_items,
+    get_estimate_non_cigar_items,
+)
 
+TEMPLATE_PATH = "templates/견적서_template.xlsx"
+PRODUCT_INTRO_TEMPLATE_PATH = "templates/TAB시가소개 발송용.xlsx"
 
-TEMPLATE_PATH = "templates/TAB시가소개 발송용.xlsx"
-
-# 템플릿 헤더명 -> DataFrame 컬럼명
+# -----------------------------
+# 상품소개서 기존 설정
+# -----------------------------
 HEADER_MAPPING = {
     "상품명": "product_name",
     "사이즈": "size_name",
@@ -48,20 +56,19 @@ def _safe_value(value):
     return value
 
 
-def _load_template_workbook():
-    if not os.path.exists(TEMPLATE_PATH):
+# =========================================================
+# 상품소개서 기존 기능
+# =========================================================
+def _load_product_intro_template_workbook():
+    if not os.path.exists(PRODUCT_INTRO_TEMPLATE_PATH):
         raise FileNotFoundError(
-            f"템플릿 파일이 없습니다: {TEMPLATE_PATH}\n"
+            f"템플릿 파일이 없습니다: {PRODUCT_INTRO_TEMPLATE_PATH}\n"
             "프로젝트 폴더의 templates 아래에 파일을 넣어주세요."
         )
-    return load_workbook(TEMPLATE_PATH)
+    return load_workbook(PRODUCT_INTRO_TEMPLATE_PATH)
 
 
 def _get_header_map(ws, header_row=1):
-    """
-    엑셀의 실제 헤더명을 읽어 컬럼 위치를 찾습니다.
-    예: {'상품명': 1, '사이즈': 2, ...}
-    """
     header_map = {}
     for col_idx in range(1, ws.max_column + 1):
         value = ws.cell(row=header_row, column=col_idx).value
@@ -82,10 +89,6 @@ def _merge_cells(ws, col_idx, start_row, end_row):
 
 
 def _get_product_groups(ws, header_map, start_row, end_row):
-    """
-    상품명 기준 연속 구간 반환
-    예: [(2,4), (5,7), (8,8)]
-    """
     product_col = header_map.get("상품명")
     if not product_col or end_row < start_row:
         return []
@@ -106,9 +109,6 @@ def _get_product_groups(ws, header_map, start_row, end_row):
 
 
 def _merge_within_group_same_value(ws, header_map, header_name, group_start, group_end):
-    """
-    지정된 상품명 그룹 내부에서만 같은 값 병합
-    """
     col_idx = header_map.get(header_name)
     if not col_idx or group_end < group_start:
         return
@@ -128,14 +128,44 @@ def _merge_within_group_same_value(ws, header_map, header_name, group_start, gro
         _merge_cells(ws, col_idx, merge_start, group_end)
 
 
-def _apply_alignment(ws, start_row, end_row):
+def _apply_alignment(ws, start_row, end_row, header_map):
+    guide_col = header_map.get("Guide")
+
     for row in ws.iter_rows(min_row=start_row, max_row=end_row):
         for cell in row:
-            cell.alignment = Alignment(vertical="center")
+            if guide_col and cell.column == guide_col:
+                cell.alignment = Alignment(
+                    vertical="center",
+                    horizontal="left",
+                    wrap_text=True,
+                )
+            else:
+                cell.alignment = Alignment(
+                    vertical="center",
+                    horizontal="center",
+                    wrap_text=False,
+                )
+
+
+def _apply_body_style(ws, header_map, start_row, end_row):
+    thin = Side(style="thin", color="000000")
+    all_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    light_gray_fill = PatternFill(fill_type="solid", fgColor="D9D9D9")
+
+    product_col = header_map.get("상품명")
+
+    for row_idx in range(start_row, end_row + 1):
+        for col_idx in range(1, ws.max_column + 1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            cell.font = Font(name=cell.font.name, size=7)
+            cell.border = all_border
+
+            if col_idx == product_col and cell.value not in (None, ""):
+                cell.fill = light_gray_fill
 
 
 def build_product_intro_from_template(df: pd.DataFrame) -> io.BytesIO:
-    wb = _load_template_workbook()
+    wb = _load_product_intro_template_workbook()
     ws = wb[wb.sheetnames[0]]
 
     header_row = 1
@@ -143,7 +173,6 @@ def build_product_intro_from_template(df: pd.DataFrame) -> io.BytesIO:
 
     header_map = _get_header_map(ws, header_row=header_row)
 
-    # 기존 데이터 지우기 (2행부터 끝까지)
     if ws.max_row >= start_row:
         ws.delete_rows(start_row, ws.max_row - start_row + 1)
 
@@ -154,7 +183,7 @@ def build_product_intro_from_template(df: pd.DataFrame) -> io.BytesIO:
         for excel_header, df_col in HEADER_MAPPING.items():
             col_idx = header_map.get(excel_header)
             if not col_idx:
-                continue  # 템플릿에 해당 헤더가 없으면 무시
+                continue
 
             value = _safe_value(record.get(df_col, ""))
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
@@ -169,18 +198,15 @@ def build_product_intro_from_template(df: pd.DataFrame) -> io.BytesIO:
     end_row = start_row + len(records) - 1
     if records:
         product_groups = _get_product_groups(ws, header_map, start_row, end_row)
-
         product_col = header_map.get("상품명")
 
         for group_start, group_end in product_groups:
-            # 1) 상품명 자체 병합
             _merge_cells(ws, product_col, group_start, group_end)
-
-            # 2) 상품명 구간 안에서만 Flavor / Guide 병합
             _merge_within_group_same_value(ws, header_map, "Flavor", group_start, group_end)
             _merge_within_group_same_value(ws, header_map, "Guide", group_start, group_end)
 
-        _apply_alignment(ws, start_row, end_row)
+        _apply_alignment(ws, start_row, end_row, header_map)
+        _apply_body_style(ws, header_map, start_row, end_row)
 
     output = io.BytesIO()
     wb.save(output)
@@ -233,17 +259,8 @@ def render_product_intro_export():
     preview_df = export_df.rename(columns=DISPLAY_RENAME).copy()
 
     desired_order = [
-        "상품명",
-        "사이즈",
-        "Flavor",
-        "Strength",
-        "Length",
-        "RG",
-        "Time",
-        "Guide",
-        "소비자가(KRW)",
-        "공급가(KRW)",
-        "공급가합계(KRW)",
+        "상품명", "사이즈", "Flavor", "Strength", "Length", "RG", "Time",
+        "Guide", "소비자가(KRW)", "공급가(KRW)", "공급가합계(KRW)"
     ]
     preview_df = preview_df[[c for c in desired_order if c in preview_df.columns]]
 
@@ -274,12 +291,260 @@ def render_product_intro_export():
     )
 
 
+# =========================================================
+# 견적서 기능
+# =========================================================
+def _load_estimate_template_workbook():
+    if not os.path.exists(TEMPLATE_PATH):
+        raise FileNotFoundError(
+            f"템플릿 파일이 없습니다: {TEMPLATE_PATH}\n"
+            "프로젝트 폴더의 templates 아래에 파일을 넣어주세요."
+        )
+    return load_workbook(TEMPLATE_PATH)
+
+
+def _fill_estimate_header(ws, partner_info: dict):
+    today_str = datetime.now().strftime("%Y.%m.%d")
+    ws["A3"] = today_str
+
+    partner_name = str(partner_info.get("partner_name", "") or "").strip()
+    address = str(partner_info.get("address", "") or "").strip()
+    owner_name = str(partner_info.get("owner_name", "") or "").strip()
+    contact_name = str(partner_info.get("contact_name", "") or "").strip()
+    phone = str(partner_info.get("phone", "") or "").strip()
+
+    ws["G3"] = partner_name
+    ws["G5"] = address
+
+    if owner_name:
+        ws["G6"] = f"{owner_name} 대표님"
+    elif contact_name:
+        ws["G6"] = contact_name
+    else:
+        ws["G6"] = f"{partner_name} 담당자"
+
+    ws["G7"] = phone
+
+
+def _clear_estimate_detail_rows(ws, start_row=10, end_row=64):
+    for row_idx in range(start_row, end_row + 1):
+        # 병합셀의 좌상단 셀만 초기화
+        ws[f"B{row_idx}"] = None   # B:D 병합영역 대표셀
+        ws[f"E{row_idx}"] = None
+        ws[f"F{row_idx}"] = None
+        ws[f"G{row_idx}"] = None
+        ws[f"H{row_idx}"] = None
+        ws[f"I{row_idx}"] = None
+
+
+def _apply_estimate_row_style(ws, row_idx):
+    targets = [f"B{row_idx}", f"E{row_idx}", f"F{row_idx}", f"G{row_idx}", f"H{row_idx}", f"I{row_idx}"]
+
+    for addr in targets:
+        cell = ws[addr]
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.font = Font(name="맑은 고딕", size=10)
+
+    ws[f"B{row_idx}"].alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+
+
+def _write_estimate_rows(ws, df: pd.DataFrame, start_row=10, end_row=64):
+    records = df.to_dict("records")
+    max_count = end_row - start_row + 1
+
+    if len(records) > max_count:
+        records = records[:max_count]
+
+    for row_idx, row in enumerate(records, start=start_row):
+        product_name = _safe_value(row.get("product_name", ""))
+        size_name = _safe_value(row.get("size_name", ""))
+        qty = row.get("qty", 1) or 1
+        retail_price = row.get("retail_price_krw", 0) or 0
+        supply_price = row.get("supply_price_krw", 0) or 0
+
+        display_name = f"{product_name} / {size_name}" if str(size_name).strip() else str(product_name)
+
+        ws[f"B{row_idx}"] = display_name
+        ws[f"E{row_idx}"] = qty
+        ws[f"F{row_idx}"] = retail_price
+        ws[f"G{row_idx}"] = supply_price
+        ws[f"H{row_idx}"] = f"=ROUND(E{row_idx}*G{row_idx}*0.1,0)"
+        ws[f"I{row_idx}"] = f"=E{row_idx}*G{row_idx}+H{row_idx}"
+
+        for col in ["F", "G", "H", "I"]:
+            ws[f"{col}{row_idx}"].number_format = '₩#,##0'
+
+        _apply_estimate_row_style(ws, row_idx)
+
+
+def _set_estimate_total_formulas(ws, start_row=10, end_row=64, total_row=65):
+    ws[f"G{total_row}"] = f"=SUMPRODUCT(E{start_row}:E{end_row},G{start_row}:G{end_row})"
+    ws[f"H{total_row}"] = f"=SUM(H{start_row}:H{end_row})"
+    ws[f"I{total_row}"] = f"=SUM(I{start_row}:I{end_row})"
+
+    ws[f"G{total_row}"].number_format = '₩#,##0'
+    ws[f"H{total_row}"].number_format = '₩#,##0'
+    ws[f"I{total_row}"].number_format = '₩#,##0'
+
+
+def _update_estimate_amount_text(ws, df: pd.DataFrame):
+    total_supply = 0
+    if not df.empty:
+        total_supply = int((df["qty"].fillna(0) * df["supply_price_krw"].fillna(0)).sum())
+
+    ws["A8"] = f" 금 액 (견적금액) : {total_supply:,.0f} 원 (V.A.T. 제외)"
+
+
+def build_estimate_workbook(cigar_df: pd.DataFrame, non_cigar_df: pd.DataFrame, partner_info: dict) -> io.BytesIO:
+    wb = _load_estimate_template_workbook()
+
+    ws_cigar = wb["견적서_기본"]
+
+    if "시가 외" in wb.sheetnames:
+        ws_non_cigar = wb["시가 외"]
+    else:
+        ws_non_cigar = wb.copy_worksheet(ws_cigar)
+        ws_non_cigar.title = "시가 외"
+
+    # 좌측 카테고리 문구 변경 원하면 아래 사용
+    ws_cigar["A10"] = "CIGAR"
+    ws_non_cigar["A10"] = "NON CIGAR"
+
+    for ws, df in [(ws_cigar, cigar_df), (ws_non_cigar, non_cigar_df)]:
+        _fill_estimate_header(ws, partner_info)
+        _clear_estimate_detail_rows(ws, start_row=10, end_row=64)
+        _write_estimate_rows(ws, df, start_row=10, end_row=64)
+        _set_estimate_total_formulas(ws, start_row=10, end_row=64, total_row=65)
+        _update_estimate_amount_text(ws, df)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
+
+
+def _build_sample_estimate_data():
+    cigar_df = pd.DataFrame([
+        {
+            "product_name": "TABACALERA",
+            "size_name": "Robusto",
+            "qty": 3,
+            "retail_price_krw": 18000,
+            "supply_price_krw": 12000,
+        },
+        {
+            "product_name": "1881 Perique",
+            "size_name": "Corona",
+            "qty": 2,
+            "retail_price_krw": 22000,
+            "supply_price_krw": 15000,
+        },
+    ])
+
+    non_cigar_df = pd.DataFrame([
+        {
+            "product_name": "시가 커터",
+            "size_name": "",
+            "qty": 2,
+            "retail_price_krw": 25000,
+            "supply_price_krw": 18000,
+        },
+        {
+            "product_name": "애쉬트레이",
+            "size_name": "",
+            "qty": 1,
+            "retail_price_krw": 45000,
+            "supply_price_krw": 32000,
+        },
+    ])
+
+    partner_info = {
+        "partner_name": "데일리시가 파트너 샘플",
+        "address": "경기도 수원시 영통구 예시로 123",
+        "owner_name": "홍길동",
+        "phone": "010-1234-5678",
+    }
+    return cigar_df, non_cigar_df, partner_info
+
+
+def render_estimate_export():
+    st.subheader("견적서 엑셀 다운로드")
+    st.caption("견적서 템플릿에 시가 / 시가 외 품목을 나누어 채워 다운로드합니다.")
+
+    partner_df = get_all_partner_for_select()
+    if partner_df.empty:
+        st.warning("등록된 거래처가 없습니다.")
+        return
+
+    partner_options = {
+        f"{row['partner_name']}": row["partner_id"]
+        for _, row in partner_df.iterrows()
+    }
+
+    selected_partner_name = st.selectbox("거래처 선택", list(partner_options.keys()))
+    selected_partner_id = partner_options[selected_partner_name]
+
+    partner_info = get_partner_detail_by_id(selected_partner_id)
+
+    cigar_master_df = get_estimate_cigar_items()
+    non_cigar_master_df = get_estimate_non_cigar_items()
+
+    st.markdown("### 시가")
+    if cigar_master_df.empty:
+        st.info("조회 가능한 시가 품목이 없습니다.")
+        cigar_df = pd.DataFrame(columns=["product_code", "product_name", "size_name", "qty", "retail_price_krw", "supply_price_krw"])
+    else:
+        cigar_edit_df = cigar_master_df.copy()
+        cigar_edit_df["qty"] = 0
+
+        edited_cigar_df = st.data_editor(
+            cigar_edit_df,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed"
+        )
+        cigar_df = edited_cigar_df[edited_cigar_df["qty"] > 0].copy()
+
+    st.markdown("### 시가 외")
+    if non_cigar_master_df.empty:
+        st.info("조회 가능한 시가 외 품목이 없습니다.")
+        non_cigar_df = pd.DataFrame(columns=["product_code", "product_name", "size_name", "qty", "retail_price_krw", "supply_price_krw"])
+    else:
+        non_cigar_edit_df = non_cigar_master_df.copy()
+        non_cigar_edit_df["qty"] = 0
+
+        edited_non_cigar_df = st.data_editor(
+            non_cigar_edit_df,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="fixed"
+        )
+        non_cigar_df = edited_non_cigar_df[edited_non_cigar_df["qty"] > 0].copy()
+
+    if cigar_df.empty and non_cigar_df.empty:
+        st.info("수량을 입력한 품목이 없습니다.")
+        return
+
+    excel_bytes = build_estimate_workbook(cigar_df, non_cigar_df, partner_info)
+
+    today = datetime.now().strftime("%Y%m%d")
+    st.download_button(
+        "견적서 다운로드",
+        data=excel_bytes,
+        file_name=f"견적서_{today}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+
 def render():
     st.title("문서출력")
-    tab1, tab2 = st.tabs(["상품소개서", "준비중"])
+    tab1, tab2, tab3 = st.tabs(["상품소개서", "견적서", "기타"])
 
     with tab1:
         render_product_intro_export()
 
     with tab2:
+        render_estimate_export()
+
+    with tab3:
         st.info("향후 거래명세서 / 가격표 / 파트너 제안서 등을 추가할 수 있습니다.")

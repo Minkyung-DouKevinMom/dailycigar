@@ -55,6 +55,18 @@ def set_merged_cell_value(ws, cell_ref: str, value):
 
     ws[cell_ref] = value
 
+def _apply_alignment_safe(ws, cell_ref: str, alignment):
+    """병합 셀 여부와 관계없이 실제 쓰기 가능한 셀에 alignment를 적용합니다."""
+    cell = ws[cell_ref]
+    if isinstance(cell, MergedCell):
+        for merged_range in ws.merged_cells.ranges:
+            if cell_ref in merged_range:
+                ws[merged_range.start_cell.coordinate].alignment = alignment
+                return
+    else:
+        cell.alignment = alignment
+
+
 def get_table_columns(conn, table_name: str) -> list[str]:
     if not table_exists(conn, table_name):
         return []
@@ -497,12 +509,35 @@ def _build_statement_from_rows(conn, selected_df: pd.DataFrame, document_no: str
     partner_id = _safe_int(selected_df.iloc[0].get("partner_id", 0), 0)
     partner_info = get_partner_detail_by_id(conn, partner_id)
 
-    partner_name = str(partner_info.get("partner_name", "") or selected_df.iloc[0].get("partner_name", "") or "").strip()
-    owner_name = str(partner_info.get("owner_name", "") or "").strip()
-    contact_name = str(partner_info.get("contact_name", "") or "").strip()
-    phone = str(partner_info.get("phone", "") or "").strip()
-    address = str(partner_info.get("address", "") or "").strip()
-    business_no = str(partner_info.get("business_no", "") or "").strip()
+    st.write("DEBUG partner_id:", partner_id)
+    st.write("DEBUG selected row:", selected_df.iloc[0].to_dict())
+    st.write("DEBUG partner_info:", partner_info)
+
+    row0 = selected_df.iloc[0]
+
+    partner_name = str(
+        partner_info.get("partner_name", "") or row0.get("partner_name", "") or ""
+    ).strip()
+
+    owner_name = str(
+        partner_info.get("owner_name", "") or row0.get("owner_name", "") or ""
+    ).strip()
+
+    contact_name = str(
+        partner_info.get("contact_name", "") or row0.get("contact_name", "") or ""
+    ).strip()
+
+    phone = str(
+        partner_info.get("phone", "") or row0.get("phone", "") or ""
+    ).strip()
+
+    address = str(
+        partner_info.get("address", "") or row0.get("address", "") or ""
+    ).strip()
+
+    business_no = str(
+        partner_info.get("business_no", "") or row0.get("business_no", "") or ""
+    ).strip()
 
     partner_contact = owner_name or contact_name or partner_name
 
@@ -616,20 +651,22 @@ def _make_statement_excel_bytes(header: dict, statement_df: pd.DataFrame, totals
     ws = wb["거래명세서"]
 
     # 헤더
-    ws["I2"] = header.get("partner_name", "")
+    set_merged_cell_value(ws, "I2", header.get("partner_name", ""))
 
-    ws["H3"] = header.get("partner_address", "")
-    ws["H3"].alignment = Alignment(horizontal="right", vertical="center")
+    address_val = header.get("partner_address", "")
+    set_merged_cell_value(ws, "J3", address_val)
+    # 실제 쓰여진 셀(병합 시 좌상단)에 alignment 적용
+    _apply_alignment_safe(ws, "J3", Alignment(horizontal="right", vertical="center", wrap_text=True))
 
     owner = str(header.get("partner_contact", "") or "").strip()
     partner_name = str(header.get("partner_name", "") or "").strip()
     display_owner = owner if owner else partner_name
 
-    ws["I4"] = f"{display_owner} 대표님"
-    ws["I4"].alignment = Alignment(horizontal="right", vertical="center")
+    set_merged_cell_value(ws, "J4", f"{display_owner} 대표님")
+    _apply_alignment_safe(ws, "J4", Alignment(horizontal="right", vertical="center"))
 
-    ws["I5"] = header.get("partner_phone", "")
-    ws["I5"].alignment = Alignment(horizontal="right", vertical="center")
+    set_merged_cell_value(ws, "J5", header.get("partner_phone", ""))
+    _apply_alignment_safe(ws, "J5", Alignment(horizontal="right", vertical="center"))
 
     ws["C12"] = header.get("document_no", "")
     ws["C13"] = header.get("sale_date", "")
@@ -1333,7 +1370,11 @@ def render_wholesale_management(conn):
     if isinstance(selected_rows, pd.DataFrame):
         selected_rows = selected_rows.to_dict("records")
 
-    selected_grid_df = pd.DataFrame(selected_rows) if selected_rows else pd.DataFrame()
+    if selected_rows:
+        selected_ids = [r.get("id") for r in selected_rows if r.get("id") is not None]
+        selected_grid_df = filtered[filtered["id"].isin(selected_ids)].copy()
+    else:
+        selected_grid_df = pd.DataFrame()
 
     if not selected_grid_df.empty:
         ok, msg = _validate_statement_rows(selected_grid_df)
