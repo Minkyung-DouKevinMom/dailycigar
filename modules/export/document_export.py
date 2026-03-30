@@ -314,6 +314,7 @@ def _fill_estimate_header(ws, partner_info: dict):
     phone = str(partner_info.get("phone", "") or "").strip()
 
     ws["G3"] = partner_name
+    ws["G4"] = partner_name
     ws["G5"] = address
 
     if owner_name:
@@ -348,7 +349,7 @@ def _apply_estimate_row_style(ws, row_idx):
     ws[f"B{row_idx}"].alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
 
 
-def _write_estimate_rows(ws, df: pd.DataFrame, start_row=10, end_row=64):
+def _write_estimate_rows(ws, df: pd.DataFrame, start_row=10, end_row=64, use_proposal_retail_price=False):
     records = df.to_dict("records")
     max_count = end_row - start_row + 1
 
@@ -360,6 +361,10 @@ def _write_estimate_rows(ws, df: pd.DataFrame, start_row=10, end_row=64):
         size_name = _safe_value(row.get("size_name", ""))
         qty = row.get("qty", 1) or 1
         retail_price = row.get("retail_price_krw", 0) or 0
+        if use_proposal_retail_price:
+            proposal_price = row.get("proposal_retail_price_krw", None)
+            if proposal_price not in (None, "", 0):
+                retail_price = proposal_price
         supply_price = row.get("supply_price_krw", 0) or 0
 
         display_name = f"{product_name} / {size_name}" if str(size_name).strip() else str(product_name)
@@ -395,7 +400,12 @@ def _update_estimate_amount_text(ws, df: pd.DataFrame):
     ws["A8"] = f" 금 액 (견적금액) : {total_supply:,.0f} 원 (V.A.T. 제외)"
 
 
-def build_estimate_workbook(cigar_df: pd.DataFrame, non_cigar_df: pd.DataFrame, partner_info: dict) -> io.BytesIO:
+def build_estimate_workbook(
+    cigar_df: pd.DataFrame,
+    non_cigar_df: pd.DataFrame,
+    partner_info: dict,
+    use_proposal_retail_price: bool = False,
+) -> io.BytesIO:
     wb = _load_estimate_template_workbook()
 
     ws_cigar = wb["견적서_기본"]
@@ -413,7 +423,7 @@ def build_estimate_workbook(cigar_df: pd.DataFrame, non_cigar_df: pd.DataFrame, 
     for ws, df in [(ws_cigar, cigar_df), (ws_non_cigar, non_cigar_df)]:
         _fill_estimate_header(ws, partner_info)
         _clear_estimate_detail_rows(ws, start_row=10, end_row=64)
-        _write_estimate_rows(ws, df, start_row=10, end_row=64)
+        _write_estimate_rows(ws, df, start_row=10, end_row=64, use_proposal_retail_price=use_proposal_retail_price)
         _set_estimate_total_formulas(ws, start_row=10, end_row=64, total_row=65)
         _update_estimate_amount_text(ws, df)
 
@@ -486,6 +496,12 @@ def render_estimate_export():
 
     partner_info = get_partner_detail_by_id(selected_partner_id)
 
+    use_proposal_retail_price = st.checkbox(
+        "견적서 소비자가를 제안소비자가로 대체",
+        value=False,
+        help="체크 시 견적서의 소비자가(F열)에 기본 소비자가 대신 제안소비자가를 표시합니다."
+    )
+
     cigar_master_df = get_estimate_cigar_items()
     non_cigar_master_df = get_estimate_non_cigar_items()
 
@@ -525,7 +541,28 @@ def render_estimate_export():
         st.info("수량을 입력한 품목이 없습니다.")
         return
 
-    excel_bytes = build_estimate_workbook(cigar_df, non_cigar_df, partner_info)
+    download_cigar_df = cigar_df.copy()
+    download_non_cigar_df = non_cigar_df.copy()
+
+    if use_proposal_retail_price:
+        if "proposal_retail_price_krw" in download_cigar_df.columns:
+            download_cigar_df["retail_price_krw"] = (
+                pd.to_numeric(download_cigar_df["proposal_retail_price_krw"], errors="coerce")
+                .fillna(pd.to_numeric(download_cigar_df["retail_price_krw"], errors="coerce"))
+            )
+
+        if "proposal_retail_price_krw" in download_non_cigar_df.columns:
+            download_non_cigar_df["retail_price_krw"] = (
+                pd.to_numeric(download_non_cigar_df["proposal_retail_price_krw"], errors="coerce")
+                .fillna(pd.to_numeric(download_non_cigar_df["retail_price_krw"], errors="coerce"))
+            )
+
+    excel_bytes = build_estimate_workbook(
+        cigar_df,
+        non_cigar_df,
+        partner_info,
+        use_proposal_retail_price=use_proposal_retail_price,
+    )
 
     today = datetime.now().strftime("%Y%m%d")
     st.download_button(

@@ -269,13 +269,18 @@ def render():
                     "매입가(₩)",
                     "도매가(₩)",
                     "소매가(₩)",
-                    "매장운영가(₩),
+                    "매장운영가(₩)",
                     "사용",
                     "수정일시",
                 ]
-
+                
+                styled_df = display_df[display_cols].style.set_properties(
+                    subset=["매입가(₩)", "도매가(₩)", "소매가(₩)", "매장운영가(₩)"],
+                    **{"text-align": "right"}
+                )
+                
                 st.dataframe(
-                    display_df[display_cols],
+                    styled_df,
                     use_container_width=True,
                     height=520,
                     hide_index=True,
@@ -358,41 +363,41 @@ def render():
 
                 p1, p2, p3, p4 = st.columns(4)
 
-with p1:
-    purchase_price = st.number_input(
-        "₩ 매입가",
-        min_value=0,
-        value=int(selected.get("purchase_price", 0) or 0) if selected else 0,
-        step=100,
-        format="%d",
-    )
+                with p1:
+                    purchase_price = st.number_input(
+                        "₩ 매입가",
+                        min_value=0,
+                        value=int(selected.get("purchase_price", 0) or 0) if selected else 0,
+                        step=100,
+                        format="%d",
+                    )
 
-with p2:
-    wholesale_price = st.number_input(
-        "₩ 도매가",
-        min_value=0,
-        value=int(selected.get("wholesale_price", 0) or 0) if selected else 0,
-        step=100,
-        format="%d",
-    )
+                with p2:
+                    wholesale_price = st.number_input(
+                        "₩ 도매가",
+                        min_value=0,
+                        value=int(selected.get("wholesale_price", 0) or 0) if selected else 0,
+                        step=100,
+                        format="%d",
+                    )
 
-with p3:
-    retail_price = st.number_input(
-        "₩ 소매가",
-        min_value=0,
-        value=int(selected.get("retail_price", 0) or 0) if selected else 0,
-        step=100,
-        format="%d",
-    )
+                with p3:
+                    retail_price = st.number_input(
+                        "₩ 소매가",
+                        min_value=0,
+                        value=int(selected.get("retail_price", 0) or 0) if selected else 0,
+                        step=100,
+                        format="%d",
+                    )
 
-with p4:
-    store_retail_price = st.number_input(
-        "₩ 매장운영가",
-        min_value=0,
-        value=int(selected.get("store_retail_price", 0) or 0) if selected else 0,
-        step=100,
-        format="%d",
-    )
+                with p4:
+                    store_retail_price = st.number_input(
+                        "₩ 매장운영가",
+                        min_value=0,
+                        value=int(selected.get("store_retail_price", 0) or 0) if selected else 0,
+                        step=100,
+                        format="%d",
+                    )
 
                 notes = st.text_area(
                     "비고",
@@ -401,19 +406,19 @@ with p4:
                 )
 
                 payload = {
-    "product_code": product_code.strip(),
-    "product_name": product_name.strip(),
-    "product_category": product_category.strip(),
-    "brand_name": brand_name.strip(),
-    "unit_type": unit_type.strip(),
-    "spec": spec.strip(),
-    "purchase_price": safe_int(purchase_price),
-    "wholesale_price": safe_int(wholesale_price),
-    "retail_price": safe_int(retail_price),
-    "store_retail_price": safe_int(store_retail_price),
-    "is_active": int(is_active),
-    "notes": notes.strip(),
-}
+                    "product_code": product_code.strip(),
+                    "product_name": product_name.strip(),
+                    "product_category": product_category.strip(),
+                    "brand_name": brand_name.strip(),
+                    "unit_type": unit_type.strip(),
+                    "spec": spec.strip(),
+                    "purchase_price": safe_int(purchase_price),
+                    "wholesale_price": safe_int(wholesale_price),
+                    "retail_price": safe_int(retail_price),
+                    "store_retail_price": safe_int(store_retail_price),
+                    "is_active": int(is_active),
+                    "notes": notes.strip(),
+                }
 
                 save_col, reset_col, delete_col = st.columns(3)
                 save_clicked = save_col.form_submit_button("저장", use_container_width=True)

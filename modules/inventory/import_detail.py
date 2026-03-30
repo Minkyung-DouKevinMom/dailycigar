@@ -191,12 +191,13 @@ def render():
             "import_total_cost_krw": "총수입금액",
             "total_weight_g": "총무게(g)",
             "retail_price_krw": "소비자가",
+            "proposal_retail_price_krw": "제안소비자가",
             "supply_price_krw": "공급가",
             "margin_krw": "마진",
             "source_row_no": "원본행번호",
         }).copy()
 
-        for col in ["총수입금액", "소비자가", "공급가", "마진"]:
+        for col in ["총수입금액", "소비자가", "제안소비자가", "공급가", "마진"]:
             if col in show_df.columns:
                 show_df[col] = show_df[col].apply(
                     lambda x: f"₩{x:,.0f}" if pd.notna(x) else ""
@@ -512,6 +513,13 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 format="%d",
             )
 
+            proposal_retail_default = _n(
+                detail_row.get("proposal_retail_price_krw"),
+                _n(detail_row.get("retail_price_krw"), 0.0)
+            )
+            if proposal_retail_default == 0 and retail_price_krw > 0:
+                proposal_retail_default = retail_price_krw
+
             supply_price_krw = st.number_input(
                 "공급가",
                 min_value=0,
@@ -520,7 +528,10 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 format="%d",
             )
 
-            store_retail_default = _n(detail_row.get("store_retail_price_krw"), _n(detail_row.get("retail_price_krw"), 0.0))
+            store_retail_default = _n(
+                detail_row.get("store_retail_price_krw"),
+                _n(detail_row.get("retail_price_krw"), 0.0)
+            )
             if store_retail_default == 0 and retail_price_krw > 0:
                 store_retail_default = retail_price_krw
 
@@ -528,6 +539,14 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 "매장 소매가",
                 min_value=0,
                 value=int(round(store_retail_default)),
+                step=100,
+                format="%d",
+            )
+
+            proposal_retail_price_krw = st.number_input(
+                "제안소비자가",
+                min_value=0,
+                value=int(round(proposal_retail_default)),
                 step=100,
                 format="%d",
             )
@@ -641,6 +660,7 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 local_unit_price_php=_none_if_zero_num(calc["local_unit_price_php"]),
                 local_unit_price_krw=_none_if_zero_num(calc["local_unit_price_krw"]),
                 retail_price_krw=_none_if_zero_num(retail_price_krw),
+                proposal_retail_price_krw=_none_if_zero_num(proposal_retail_price_krw),
                 supply_price_krw=_none_if_zero_num(supply_price_krw),
                 supply_vat_krw=_none_if_zero_num(calc["supply_vat_krw"]),
                 supply_total_krw=_none_if_zero_num(calc["supply_total_krw"]),

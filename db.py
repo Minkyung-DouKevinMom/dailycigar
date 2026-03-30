@@ -324,6 +324,7 @@ def get_import_item_detail(item_id):
         supply_total_krw,
         retail_margin_rate,
         wholesale_margin_rate,
+        proposal_retail_price_krw,
         store_retail_price_krw,
         margin_krw,
         source_row_no,
@@ -391,6 +392,7 @@ def get_import_item_list_filtered(batch_id, keyword=""):
         import_total_cost_krw,
         total_weight_g,
         retail_price_krw,
+        proposal_retail_price_krw,
         supply_price_krw,
         margin_krw,
         source_row_no
@@ -702,12 +704,13 @@ def get_price_analysis_view(batch_id=None, keyword=None):
         i.margin_krw,
         i.retail_margin_rate,
         i.wholesale_margin_rate,
+        i.proposal_retail_price_krw,
         i.store_retail_price_krw
 
     FROM import_item i
     JOIN import_batch b ON i.batch_id = b.id
     {where_sql}
-    ORDER BY b.id DESC, i.product_name, i.size_name
+    ORDER BY i.source_row_no, b.id DESC, i.product_name, i.size_name
     """
     return run_query(sql, params)
 
@@ -962,7 +965,7 @@ def get_product_intro_export_data(brand_keyword="", use_yn="전체"):
         sql += " AND COALESCE(C.use_yn, 'Y') = ? "
         params.append(use_yn)
 
-    sql += " ORDER BY C.id "
+    sql += " ORDER BY A.source_row_no, C.id "
 
     return run_query(sql, params)
 
@@ -1243,6 +1246,7 @@ def get_import_item_detail(item_id):
         local_unit_price_php,
         local_unit_price_krw,
         retail_price_krw,
+        proposal_retail_price_krw,
         supply_price_krw,
         margin_krw,
         source_row_no,
@@ -1286,6 +1290,7 @@ def upsert_import_item_full(
     supply_total_krw=None,
     retail_margin_rate=None,
     wholesale_margin_rate=None,
+    proposal_retail_price_krw=None,
     store_retail_price_krw=None,
     margin_krw=None,
     source_row_no=None,
@@ -1326,6 +1331,7 @@ def upsert_import_item_full(
         "supply_total_krw": supply_total_krw,
         "retail_margin_rate": retail_margin_rate,
         "wholesale_margin_rate": wholesale_margin_rate,
+        "proposal_retail_price_krw": proposal_retail_price_krw,
         "store_retail_price_krw": store_retail_price_krw,
         "margin_krw": margin_krw,
         "source_row_no": source_row_no,
@@ -1488,6 +1494,7 @@ def get_estimate_cigar_items():
         i.product_name,
         i.size_name,
         COALESCE(i.retail_price_krw, 0) AS retail_price_krw,
+        COALESCE(i.proposal_retail_price_krw, retail_price_krw) AS proposal_retail_price_krw,
         COALESCE(i.supply_price_krw, 0) AS supply_price_krw
     FROM import_item i
     INNER JOIN (
@@ -1503,7 +1510,7 @@ def get_estimate_cigar_items():
         ON i.product_name = p.product_name
        AND COALESCE(i.size_name, '') = COALESCE(p.size_name, '')
     WHERE COALESCE(p.use_yn, 'Y') = 'Y'
-    ORDER BY i.product_name, i.size_name
+    ORDER BY i.source_row_no, i.product_name, i.size_name
     """
     return run_query(sql)
 
