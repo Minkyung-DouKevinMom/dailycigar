@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -5,11 +6,57 @@ import matplotlib.font_manager as fm
 import altair as alt
 import io
 from pathlib import Path
-from copy import copy
 from openpyxl import load_workbook
+from openpyxl.styles import Font, Border, Side, Alignment
+from openpyxl.cell.cell import MergedCell
+from copy import copy
+from openpyxl.styles import Alignment
 from matplotlib.ticker import FuncFormatter
 from db import get_all_import_batch, get_price_analysis_view
 
+def align_product_name_center(ws, start_row: int, end_row: int, product_col: int = 1):
+    for row in range(start_row, end_row + 1):
+        cell = ws.cell(row=row, column=product_col)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+def merge_same_product_name(ws, start_row: int, end_row: int, product_col: int = 1):
+    """
+    product_col=1 -> A열
+    연속된 행에서 같은 제품명이면 세로 병합
+    """
+    if end_row < start_row:
+        return
+
+    merge_start = start_row
+    prev_value = ws.cell(row=start_row, column=product_col).value
+
+    for row in range(start_row + 1, end_row + 1):
+        current_value = ws.cell(row=row, column=product_col).value
+
+        if current_value != prev_value:
+            if prev_value not in (None, "") and row - 1 > merge_start:
+                ws.merge_cells(
+                    start_row=merge_start,
+                    start_column=product_col,
+                    end_row=row - 1,
+                    end_column=product_col,
+                )
+                top_cell = ws.cell(row=merge_start, column=product_col)
+                top_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+            merge_start = row
+            prev_value = current_value
+
+    # 마지막 구간 처리
+    if prev_value not in (None, "") and end_row > merge_start:
+        ws.merge_cells(
+            start_row=merge_start,
+            start_column=product_col,
+            end_row=end_row,
+            end_column=product_col,
+        )
+        top_cell = ws.cell(row=merge_start, column=product_col)
+        top_cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
 def setup_korean_font():
     candidates = [
@@ -36,17 +83,9 @@ def format_krw(value):
     return f"₩{value:,.0f}"
 
 
-def format_krw(value):
-    if pd.isna(value):
-        return ""
-    return f"₩{value:,.0f}"
-
-
 def metric_with_caption(column, label: str, value: str, caption: str):
     column.metric(label, value)
     column.caption(caption)
-
-
 
 
 def _safe_num(v, default=0):
@@ -58,53 +97,83 @@ def _safe_num(v, default=0):
         return default
 
 
+def _set_basic_border_and_font(ws, start_row: int, end_row: int, start_col: int = 1, end_col: int = 24):
+    thin = Side(style="thin", color="000000")
+    basic_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    for row in range(start_row, end_row + 1):
+        for col in range(start_col, end_col + 1):
+            cell = ws.cell(row=row, column=col)
+
+            if isinstance(cell, MergedCell):
+                continue
+
+            cell.font = copy(cell.font)
+            cell.font = Font(
+                name=cell.font.name or "맑은 고딕",
+                size=10,
+                bold=cell.font.bold,
+                italic=cell.font.italic,
+                underline=cell.font.underline,
+                strike=cell.font.strike,
+                color=cell.font.color
+            )
+            cell.border = basic_border
+
+
+def _apply_number_formats(ws, row_idx: int):
+    krw_cols = ["D", "F", "G", "H", "I", "J", "K", "L", "O", "P", "Q", "R", "S", "T", "U", "V"]
+    php_cols = ["M", "N"]
+    pct_cols = ["W", "X"]
+    usd_cols = ["C"]
+
+    for col in krw_cols:
+        ws[f"{col}{row_idx}"].number_format = '₩#,##0'
+    for col in php_cols:
+        ws[f"{col}{row_idx}"].number_format = '₱#,##0'
+    for col in pct_cols:
+        ws[f"{col}{row_idx}"].number_format = '0.0%'
+    for col in usd_cols:
+        ws[f"{col}{row_idx}"].number_format = '$#,##0.00'
+
+    ws[f"E{row_idx}"].number_format = '#,##0.00'
+
+
 def build_price_analysis_excel(df: pd.DataFrame) -> io.BytesIO:
-    template_path = Path("templates/templates_가격분석.xlsx")
-    if not template_path.exists():
-        alt_template = Path("templates/price_analysis.xlsx")
-        if alt_template.exists():
-            template_path = alt_template
+    template_path = Path("templates/가격분석_template.xlsx")
 
     if not template_path.exists():
-        raise FileNotFoundError("templates 폴더에 가격분석 템플릿 파일이 없습니다. (예: templates/가격분석.xlsx)")
+        raise FileNotFoundError("templates 폴더에 가격분석 템플릿 파일이 없습니다. (예: templates/가격분석_template.xlsx)")
 
     wb = load_workbook(template_path)
     ws = wb["가격분석"]
 
     start_row = 3
-    end_col = 29  # A:AC
-    template_row = start_row
-
+    end_col = 24  # A:X
     export_df = df.copy()
 
     numeric_cols = [
-        "export_box_price_usd",
-        "discounted_box_price_usd",
-        "discount_rate",
-        "import_unit_qty",
         "export_unit_price_usd",
         "import_unit_cost_krw",
         "unit_weight_g",
-        "total_weight_g",
         "individual_tax_krw",
         "tobacco_tax_krw",
         "local_education_tax_krw",
         "health_charge_krw",
         "import_vat_krw",
         "tax_total_krw",
-        "tax_total_all_krw",
         "korea_cost_krw",
         "local_box_price_php",
         "local_unit_price_php",
         "local_unit_price_krw",
         "proposal_retail_price_krw",
         "retail_price_krw",
+        "store_retail_price_krw",
         "supply_price_krw",
         "supply_vat_krw",
         "margin_krw",
         "retail_margin_rate",
         "wholesale_margin_rate",
-        "usd_to_krw_rate",
     ]
     for col in numeric_cols:
         if col in export_df.columns:
@@ -114,75 +183,69 @@ def build_price_analysis_excel(df: pd.DataFrame) -> io.BytesIO:
     if ws.max_row >= start_row:
         for row in ws.iter_rows(min_row=start_row, max_row=ws.max_row, min_col=1, max_col=end_col):
             for cell in row:
+                if isinstance(cell, MergedCell):
+                    continue
                 cell.value = None
+                cell.border = Border()
+                cell.number_format = "General"
 
-    # 스타일 복사
-    if len(export_df) > 1:
-        for insert_idx in range(len(export_df) - 1):
-            target_row = start_row + 1 + insert_idx
-            ws.insert_rows(target_row)
-            for col_idx in range(1, end_col + 1):
-                src_cell = ws.cell(row=template_row, column=col_idx)
-                dst_cell = ws.cell(row=target_row, column=col_idx)
-                if src_cell.has_style:
-                    dst_cell._style = copy(src_cell._style)
-                dst_cell.font = copy(src_cell.font)
-                dst_cell.fill = copy(src_cell.fill)
-                dst_cell.border = copy(src_cell.border)
-                dst_cell.alignment = copy(src_cell.alignment)
-                dst_cell.protection = copy(src_cell.protection)
-                dst_cell.number_format = src_cell.number_format
-
+    # 데이터 입력
     for row_idx, (_, row) in enumerate(export_df.iterrows(), start=start_row):
-        usd_to_krw_rate = _safe_num(row.get("usd_to_krw_rate"), 0)
-        export_unit_price_usd = _safe_num(row.get("export_unit_price_usd"), 0)
-        import_unit_qty = _safe_num(row.get("import_unit_qty"), 0)
-
         ws[f"A{row_idx}"] = row.get("product_name", "")
         ws[f"B{row_idx}"] = row.get("size_name", "")
-        ws[f"C{row_idx}"] = row.get("export_box_price_usd", "")
-        ws[f"D{row_idx}"] = row.get("discounted_box_price_usd", "")
-        ws[f"E{row_idx}"] = row.get("import_unit_qty", "")
-        ws[f"F{row_idx}"] = row.get("export_unit_price_usd", "")
+        ws[f"C{row_idx}"] = row.get("export_unit_price_usd", "")
+        ws[f"D{row_idx}"] = row.get("import_unit_cost_krw", "")
+        ws[f"E{row_idx}"] = row.get("unit_weight_g", "")
 
-        # 수출가격(KRW) : 값이 있으면 값 사용, 없으면 수식
-        if usd_to_krw_rate and export_unit_price_usd:
-            ws[f"G{row_idx}"] = export_unit_price_usd * usd_to_krw_rate
-        else:
-            ws[f"G{row_idx}"] = f'=IFERROR(F{row_idx}*IF($AD$1<>"",$AD$1,1),0)'
+        ws[f"F{row_idx}"] = row.get("individual_tax_krw", "")
+        ws[f"G{row_idx}"] = row.get("tobacco_tax_krw", "")
+        ws[f"H{row_idx}"] = row.get("local_education_tax_krw", "")
+        ws[f"I{row_idx}"] = row.get("health_charge_krw", "")
+        ws[f"J{row_idx}"] = row.get("import_vat_krw", "")
+        ws[f"K{row_idx}"] = row.get("tax_total_krw", "")
+        ws[f"L{row_idx}"] = row.get("korea_cost_krw", "")
 
-        ws[f"H{row_idx}"] = f'=IFERROR(G{row_idx}*E{row_idx},0)'
-        ws[f"I{row_idx}"] = row.get("unit_weight_g", "")
-        ws[f"J{row_idx}"] = row.get("total_weight_g", "")
-        ws[f"K{row_idx}"] = row.get("individual_tax_krw", "")
-        ws[f"L{row_idx}"] = row.get("tobacco_tax_krw", "")
-        ws[f"M{row_idx}"] = row.get("local_education_tax_krw", "")
-        ws[f"N{row_idx}"] = row.get("health_charge_krw", "")
-        ws[f"O{row_idx}"] = row.get("import_vat_krw", "")
-        ws[f"P{row_idx}"] = row.get("tax_total_krw", "")
-        ws[f"Q{row_idx}"] = row.get("tax_total_all_krw", "")
-        ws[f"R{row_idx}"] = row.get("korea_cost_krw", "")
-        ws[f"S{row_idx}"] = row.get("local_box_price_php", "")
-        ws[f"T{row_idx}"] = row.get("local_unit_price_php", "")
-        ws[f"U{row_idx}"] = row.get("local_unit_price_krw", "")
-        ws[f"V{row_idx}"] = row.get("proposal_retail_price_krw", "")
-        ws[f"W{row_idx}"] = row.get("retail_price_krw", "")
-        ws[f"X{row_idx}"] = row.get("supply_price_krw", "")
-        ws[f"Y{row_idx}"] = row.get("supply_vat_krw", "")
-        ws[f"Z{row_idx}"] = f'=IFERROR(X{row_idx}+Y{row_idx},0)'
-        ws[f"AA{row_idx}"] = row.get("margin_krw", "")
-        ws[f"AB{row_idx}"] = f'=IFERROR((W{row_idx}-R{row_idx})/W{row_idx},0)'
-        ws[f"AC{row_idx}"] = f'=IFERROR((X{row_idx}-R{row_idx})/X{row_idx},0)'
+        ws[f"M{row_idx}"] = row.get("local_box_price_php", "")
+        ws[f"N{row_idx}"] = row.get("local_unit_price_php", "")
+        ws[f"O{row_idx}"] = row.get("local_unit_price_krw", "")
 
-    # 템플릿에 환율을 넣고 싶을 때 사용할 여유 셀
-    # 숨겨진 영역이 아니라면 필요 시 삭제 가능
-    if "usd_to_krw_rate" in export_df.columns and not export_df["usd_to_krw_rate"].dropna().empty:
-        ws["AD1"] = float(export_df["usd_to_krw_rate"].dropna().iloc[0])
+        ws[f"P{row_idx}"] = row.get("proposal_retail_price_krw", "")
+        ws[f"Q{row_idx}"] = row.get("retail_price_krw", "")
+        ws[f"R{row_idx}"] = row.get("store_retail_price_krw", "")
+        ws[f"S{row_idx}"] = row.get("supply_price_krw", "")
+        ws[f"T{row_idx}"] = row.get("supply_vat_krw", "")
+        ws[f"U{row_idx}"] = f'=IFERROR(S{row_idx}+T{row_idx},0)'
+        ws[f"V{row_idx}"] = row.get("margin_krw", "")
+        ws[f"W{row_idx}"] = f'=IFERROR((Q{row_idx}-L{row_idx})/Q{row_idx},0)'
+        ws[f"X{row_idx}"] = f'=IFERROR((S{row_idx}-L{row_idx})/S{row_idx},0)'
+
+        # 정렬/표시
+        for col in range(1, end_col + 1):
+            cell = ws.cell(row=row_idx, column=col)
+            if col in [1, 2]:
+                cell.alignment = Alignment(horizontal="left", vertical="center")
+            else:
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+
+        _apply_number_formats(ws, row_idx)
+
+    final_row = max(start_row, start_row + len(export_df) - 1)
+
+    # 헤더 포함 폰트 10 / 기본 테두리
+    if len(export_df) > 0:
+        _set_basic_border_and_font(ws, start_row=start_row, end_row=final_row, start_col=1, end_col=end_col)
+
+    final_row = start_row + len(export_df) - 1
+
+    if len(export_df) > 0:
+        align_product_name_center(ws, start_row=start_row, end_row=final_row, product_col=1)
+        merge_same_product_name(ws, start_row=start_row, end_row=final_row, product_col=1)
 
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
     return output
+
 
 def render():
     st.set_page_config(page_title="가격분석 통합조회", layout="wide")
@@ -276,30 +339,10 @@ def render():
     avg_retail = df["retail_margin_rate"].fillna(0).mean() if "retail_margin_rate" in df.columns else 0
 
     k1, k2, k3, k4 = st.columns(4)
-    metric_with_caption(
-        k1,
-        "총 제품 수",
-        f"{len(df):,}개",
-        f"조회 결과 기준",
-    )
-    metric_with_caption(
-        k2,
-        "총 한국원가",
-        format_krw(total_cost),
-        f"조회 제품 원가 합계",
-    )
-    metric_with_caption(
-        k3,
-        "평균 도매 마진율",
-        f"{avg_wholesale:.1f}%",
-        f"조회 제품 평균",
-    )
-    metric_with_caption(
-        k4,
-        "평균 소매 마진율",
-        f"{avg_retail:.1f}%",
-        f"조회 제품 평균",
-    )
+    metric_with_caption(k1, "총 제품 수", f"{len(df):,}개", "조회 결과 기준")
+    metric_with_caption(k2, "총 한국원가", format_krw(total_cost), "조회 제품 원가 합계")
+    metric_with_caption(k3, "평균 도매 마진율", f"{avg_wholesale:.1f}%", "조회 제품 평균")
+    metric_with_caption(k4, "평균 소매 마진율", f"{avg_retail:.1f}%", "조회 제품 평균")
 
     d1, d2 = st.columns([1.2, 6])
     with d1:
@@ -318,41 +361,37 @@ def render():
     st.subheader("가격 분석 테이블")
 
     table_df = df.copy()
-
-    # 마진율 숫자 컬럼 유지
     table_df["소매마진율"] = table_df["retail_margin_rate"].fillna(0)
     table_df["도매마진율"] = table_df["wholesale_margin_rate"].fillna(0)
 
-    # 요청 컬럼 우선순위
     preferred_order = [
-        "version_name",            # 버전
-        "product_code",            # 코드
-        "product_name",            # 상품명
-        "size_name",               # 사이즈
-        "discount_rate",           # 할인율
-        "export_unit_price_usd",   # 수출가격(USD)
-        "import_unit_cost_krw",    # 수입가격(KRW)
-        "unit_weight_g",           # 무게(g)
-        "individual_tax_krw",      # 개별소비세
-        "tobacco_tax_krw",         # 담배세 (요청 철자 기준)
-        "local_education_tax_krw", # 지방교육세
-        "health_charge_krw",       # 건강부담금
-        "import_vat_krw",          # 부가세
-        "tax_total_krw",           # 세금합계
-        "korea_cost_krw",          # 한국원가
-        "local_box_price_php",     # 현지박스가격(PHP)
-        "local_unit_price_php",    # 현지가격(PHP)
-        "local_unit_price_krw",    # 현지가격(KRW)
-        "retail_price_krw",        # 소매가
-        "supply_price_krw",        # 공급가
-        "supply_vat_krw",          # 공급가(VAT)
-        "margin_krw",              # 파트너마진
-        "retail_margin_rate",      # 소매마진율
-        "wholesale_margin_rate",   # 도매마진율
-        "store_retail_price_krw",  # 매장운영가격
+        "version_name",
+        "product_code",
+        "product_name",
+        "size_name",
+        "discount_rate",
+        "export_unit_price_usd",
+        "import_unit_cost_krw",
+        "unit_weight_g",
+        "individual_tax_krw",
+        "tobacco_tax_krw",
+        "local_education_tax_krw",
+        "health_charge_krw",
+        "import_vat_krw",
+        "tax_total_krw",
+        "korea_cost_krw",
+        "local_box_price_php",
+        "local_unit_price_php",
+        "local_unit_price_krw",
+        "retail_price_krw",
+        "supply_price_krw",
+        "supply_vat_krw",
+        "margin_krw",
+        "retail_margin_rate",
+        "wholesale_margin_rate",
+        "store_retail_price_krw",
     ]
 
-    # 실제 조회 결과에 있는 컬럼만 사용
     existing_preferred = [c for c in preferred_order if c in table_df.columns]
     remaining_cols = [c for c in table_df.columns if c not in existing_preferred]
     table_df = table_df[existing_preferred + remaining_cols]
@@ -368,12 +407,10 @@ def render():
             "product_code": "코드",
             "product_name": "상품명",
             "size_name": "사이즈",
-
             "discount_rate": st.column_config.NumberColumn("할인율", format="%.1f%%"),
             "export_unit_price_usd": st.column_config.NumberColumn("수출가격(USD)", format="$%.2f"),
             "import_unit_cost_krw": st.column_config.NumberColumn("수입가격(KRW)", format="₩%.0f"),
             "unit_weight_g": st.column_config.NumberColumn("무게(g)", format="%.2f"),
-
             "individual_tax_krw": st.column_config.NumberColumn("개별소비세", format="₩%.0f"),
             "tobacco_tax_krw": st.column_config.NumberColumn("담배세", format="₩%.0f"),
             "local_education_tax_krw": st.column_config.NumberColumn("지방교육세", format="₩%.0f"),
@@ -381,22 +418,17 @@ def render():
             "import_vat_krw": st.column_config.NumberColumn("부가세", format="₩%.0f"),
             "tax_total_krw": st.column_config.NumberColumn("세금합계", format="₩%.0f"),
             "korea_cost_krw": st.column_config.NumberColumn("한국원가", format="₩%.0f"),
-
             "local_box_price_php": st.column_config.NumberColumn("현지박스가격(PHP)", format="₱%.0f"),
             "local_unit_price_php": st.column_config.NumberColumn("현지가격(PHP)", format="₱%.0f"),
             "local_unit_price_krw": st.column_config.NumberColumn("현지가격(KRW)", format="₩%.0f"),
-
-            "retail_price_krw": st.column_config.NumberColumn("소매가", format="₩%.0f"),
+            "retail_price_krw": st.column_config.NumberColumn("소비자가격", format="₩%.0f"),
             "supply_price_krw": st.column_config.NumberColumn("공급가", format="₩%.0f"),
             "supply_vat_krw": st.column_config.NumberColumn("공급가(VAT)", format="₩%.0f"),
             "margin_krw": st.column_config.NumberColumn("파트너마진", format="₩%.0f"),
-
             "retail_margin_rate": st.column_config.NumberColumn("소매마진율", format="%.1f%%"),
             "wholesale_margin_rate": st.column_config.NumberColumn("도매마진율", format="%.1f%%"),
-
             "store_retail_price_krw": st.column_config.NumberColumn("매장운영가격", format="₩%.0f"),
-
-            # 숨김
+            "proposal_retail_price_krw": st.column_config.NumberColumn("제안소비자가", format="₩%.0f"),
             "소매마진율": None,
             "도매마진율": None,
             "retail_extra_margin_krw": None,
@@ -419,10 +451,7 @@ def render():
         top10_only = st.toggle("Top 10만 보기", value=False)
 
     with o3:
-        sort_by = st.selectbox(
-            "정렬 기준",
-            ["소비자가", "공급가", "한국원가", "도매마진", "소매마진"],
-        )
+        sort_by = st.selectbox("정렬 기준", ["소비자가", "공급가", "한국원가", "도매마진", "소매마진"])
 
     chart_df = df.copy()
 
@@ -453,40 +482,24 @@ def render():
         chart_df = chart_df.head(10)
 
     if view_mode == "소매 기준":
-        base_col = "korea_cost_krw"
-        mid_col = "wholesale_margin_krw"
-        top_col = "retail_extra_margin_krw"
-        legend1, legend2, legend3 = "한국원가", "도매 마진", "추가 소매 마진"
         chart_title = "제품별 가격 구조 (소매 기준)"
     else:
-        base_col = "korea_cost_krw"
-        mid_col = "wholesale_margin_krw"
-        top_col = None
-        legend1, legend2 = "한국원가", "도매 마진"
         chart_title = "제품별 가격 구조 (도매 기준)"
 
-    # 차트용 컬럼 보정
     for col in ["korea_cost_krw", "wholesale_margin_krw", "retail_extra_margin_krw"]:
         if col not in chart_df.columns:
             chart_df[col] = 0
         chart_df[col] = pd.to_numeric(chart_df[col], errors="coerce").fillna(0)
 
-    render_pretty_stacked_bar_chart(
-        chart_df=chart_df,
-        view_mode=view_mode,
-        chart_title=chart_title,
-    )
+    render_pretty_stacked_bar_chart(chart_df=chart_df, view_mode=view_mode, chart_title=chart_title)
 
     s1, s2 = st.columns(2)
 
     with s1:
         if "wholesale_margin_krw" in chart_df.columns:
             top_wholesale = chart_df.nlargest(
-                min(5, len(chart_df)),
-                "wholesale_margin_krw",
-            )[
-                ["product_name", "size_name", "wholesale_margin_krw", "wholesale_margin_rate"]
-            ].copy()
+                min(5, len(chart_df)), "wholesale_margin_krw"
+            )[["product_name", "size_name", "wholesale_margin_krw", "wholesale_margin_rate"]].copy()
 
             top_wholesale["도매마진"] = top_wholesale["wholesale_margin_krw"].apply(format_krw)
             top_wholesale["도매마진율"] = top_wholesale["wholesale_margin_rate"].fillna(0).map(lambda x: f"{x:.1f}%")
@@ -498,11 +511,8 @@ def render():
     with s2:
         if "retail_margin_krw" in chart_df.columns:
             top_retail = chart_df.nlargest(
-                min(5, len(chart_df)),
-                "retail_margin_krw",
-            )[
-                ["product_name", "size_name", "retail_margin_krw", "retail_margin_rate"]
-            ].copy()
+                min(5, len(chart_df)), "retail_margin_krw"
+            )[["product_name", "size_name", "retail_margin_krw", "retail_margin_rate"]].copy()
 
             top_retail["소매마진"] = top_retail["retail_margin_krw"].apply(format_krw)
             top_retail["소매마진율"] = top_retail["retail_margin_rate"].fillna(0).map(lambda x: f"{x:.1f}%")
@@ -510,6 +520,7 @@ def render():
 
             st.caption("소매 마진 상위 제품")
             st.table(top_retail)
+
 
 def highlight_columns(dataframe: pd.DataFrame):
     styles = pd.DataFrame("", index=dataframe.index, columns=dataframe.columns)
@@ -533,11 +544,8 @@ def highlight_columns(dataframe: pd.DataFrame):
 
     return styles
 
-def render_pretty_stacked_bar_chart(
-    chart_df: pd.DataFrame,
-    view_mode: str,
-    chart_title: str,
-):
+
+def render_pretty_stacked_bar_chart(chart_df: pd.DataFrame, view_mode: str, chart_title: str):
     if chart_df.empty:
         st.info("그래프 데이터가 없습니다.")
         return
@@ -561,11 +569,7 @@ def render_pretty_stacked_bar_chart(
         label = r["label"]
         for part_name, col in part_defs:
             val = pd.to_numeric(r.get(col, 0), errors="coerce")
-            rows.append({
-                "label": label,
-                "구성": part_name,
-                "금액": 0 if pd.isna(val) else float(val),
-            })
+            rows.append({"label": label, "구성": part_name, "금액": 0 if pd.isna(val) else float(val)})
 
     plot_df = pd.DataFrame(rows)
 
@@ -573,11 +577,7 @@ def render_pretty_stacked_bar_chart(
         st.info("그래프 데이터가 없습니다.")
         return
 
-    order_df = (
-        plot_df.groupby("label", as_index=False)["금액"]
-        .sum()
-        .sort_values("금액", ascending=False)
-    )
+    order_df = plot_df.groupby("label", as_index=False)["금액"].sum().sort_values("금액", ascending=False)
     label_order = order_df["label"].tolist()
 
     chart = (
@@ -588,22 +588,10 @@ def render_pretty_stacked_bar_chart(
                 "label:N",
                 sort=label_order,
                 title=None,
-                scale=alt.Scale(
-                    paddingInner=0.12,
-                    paddingOuter=0,
-                ),
-                axis=alt.Axis(
-                    labelLimit=1000,
-                    labelFontSize=13,
-                    labelPadding=10,
-                    labelOverlap=False,
-                ),
+                scale=alt.Scale(paddingInner=0.12, paddingOuter=0),
+                axis=alt.Axis(labelLimit=1000, labelFontSize=13, labelPadding=10, labelOverlap=False),
             ),
-            x=alt.X(
-                "sum(금액):Q",
-                title="금액(원)",
-                axis=alt.Axis(format=",.0f", grid=True),
-            ),
+            x=alt.X("sum(금액):Q", title="금액(원)", axis=alt.Axis(format=",.0f", grid=True)),
             color=alt.Color(
                 "구성:N",
                 title=None,
@@ -619,26 +607,11 @@ def render_pretty_stacked_bar_chart(
                 alt.Tooltip("금액:Q", title="금액", format=",.0f"),
             ],
         )
-        .properties(
-            title=chart_title,
-            width=900,
-            height=max(320, min(1700, len(label_order) * 22)),
-        )
+        .properties(title=chart_title, width=900, height=max(320, min(1700, len(label_order) * 22)))
         .configure_view(strokeWidth=0)
-        .configure_axis(
-            labelFontSize=12,
-            titleFontSize=12,
-            gridColor="#e5e7eb",
-        )
-        .configure_title(
-            fontSize=14,
-            anchor="start",
-            color="#111827",
-        )
-        .configure_legend(
-            labelFontSize=12,
-            symbolSize=140,
-        )
+        .configure_axis(labelFontSize=12, titleFontSize=12, gridColor="#e5e7eb")
+        .configure_title(fontSize=14, anchor="start", color="#111827")
+        .configure_legend(labelFontSize=12, symbolSize=140)
     )
 
     st.altair_chart(chart, use_container_width=True)

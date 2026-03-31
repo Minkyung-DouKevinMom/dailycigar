@@ -16,7 +16,7 @@ from db import (
 )
 
 TEMPLATE_PATH = "templates/견적서_template.xlsx"
-PRODUCT_INTRO_TEMPLATE_PATH = "templates/TAB시가소개 발송용.xlsx"
+PRODUCT_INTRO_TEMPLATE_PATH = "templates/상품소개서_template.xlsx"
 
 # -----------------------------
 # 상품소개서 기존 설정
@@ -477,6 +477,49 @@ def _build_sample_estimate_data():
     return cigar_df, non_cigar_df, partner_info
 
 
+
+def _sort_estimate_editor_df(df: pd.DataFrame, is_non_cigar: bool = False) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    work = df.copy()
+
+    sort_cols = []
+    ascending = []
+
+    if is_non_cigar and "source_row_no" in work.columns:
+        work["source_row_no"] = pd.to_numeric(work["source_row_no"], errors="coerce")
+        sort_cols.append("source_row_no")
+        ascending.append(True)
+
+    for col in ["product_name", "size_name", "product_code"]:
+        if col in work.columns:
+            sort_cols.append(col)
+            ascending.append(True)
+
+    if sort_cols:
+        work = work.sort_values(
+            by=sort_cols,
+            ascending=ascending,
+            kind="stable",
+            na_position="last",
+        )
+
+    return work
+
+
+def _get_estimate_editor_column_config():
+    return {
+        "product_code": st.column_config.TextColumn("상품코드", disabled=True),
+        "product_name": st.column_config.TextColumn("상품명", disabled=True),
+        "size_name": st.column_config.TextColumn("사이즈", disabled=True),
+        "retail_price_krw": st.column_config.NumberColumn("소비자가", format="₩%.0f", disabled=True),
+        "proposal_retail_price_krw": st.column_config.NumberColumn("제안소비자가", format="₩%.0f", disabled=True),
+        "supply_price_krw": st.column_config.NumberColumn("공급가", format="₩%.0f", disabled=True),
+        "qty": st.column_config.NumberColumn("수량", min_value=0, step=1),
+    }
+
+
 def render_estimate_export():
     st.subheader("견적서 엑셀 다운로드")
     st.caption("견적서 템플릿에 시가 / 시가 외 품목을 나누어 채워 다운로드합니다.")
@@ -511,13 +554,29 @@ def render_estimate_export():
         cigar_df = pd.DataFrame(columns=["product_code", "product_name", "size_name", "qty", "retail_price_krw", "supply_price_krw"])
     else:
         cigar_edit_df = cigar_master_df.copy()
+        cigar_edit_df = _sort_estimate_editor_df(cigar_edit_df, is_non_cigar=False)
         cigar_edit_df["qty"] = 0
+
+        cigar_column_order = [
+            c for c in [
+                "product_code",
+                "product_name",
+                "size_name",
+                "retail_price_krw",
+                "proposal_retail_price_krw",
+                "supply_price_krw",
+                "qty",
+            ]
+            if c in cigar_edit_df.columns
+        ]
 
         edited_cigar_df = st.data_editor(
             cigar_edit_df,
             use_container_width=True,
             hide_index=True,
-            num_rows="fixed"
+            num_rows="fixed",
+            column_config=_get_estimate_editor_column_config(),
+            column_order=cigar_column_order,
         )
         cigar_df = edited_cigar_df[edited_cigar_df["qty"] > 0].copy()
 
@@ -527,13 +586,29 @@ def render_estimate_export():
         non_cigar_df = pd.DataFrame(columns=["product_code", "product_name", "size_name", "qty", "retail_price_krw", "supply_price_krw"])
     else:
         non_cigar_edit_df = non_cigar_master_df.copy()
+        non_cigar_edit_df = _sort_estimate_editor_df(non_cigar_edit_df, is_non_cigar=True)
         non_cigar_edit_df["qty"] = 0
+
+        non_cigar_column_order = [
+            c for c in [
+                "product_code",
+                "product_name",
+                "size_name",
+                "retail_price_krw",
+                "proposal_retail_price_krw",
+                "supply_price_krw",
+                "qty",
+            ]
+            if c in non_cigar_edit_df.columns
+        ]
 
         edited_non_cigar_df = st.data_editor(
             non_cigar_edit_df,
             use_container_width=True,
             hide_index=True,
-            num_rows="fixed"
+            num_rows="fixed",
+            column_config=_get_estimate_editor_column_config(),
+            column_order=non_cigar_column_order,
         )
         non_cigar_df = edited_non_cigar_df[edited_non_cigar_df["qty"] > 0].copy()
 

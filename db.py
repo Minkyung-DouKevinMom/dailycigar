@@ -1525,6 +1525,6 @@ def get_estimate_non_cigar_items():
         COALESCE(wholesale_price, 0) AS supply_price_krw
     FROM non_cigar_product_mst
     WHERE COALESCE(is_active, 1) = 1
-    ORDER BY product_name
+    ORDER BY COALESCE(source_row_no, 999999), product_name, id
     """
     return run_query(sql)
