@@ -59,7 +59,7 @@ def _safe_num(v, default=0):
 
 
 def build_price_analysis_excel(df: pd.DataFrame) -> io.BytesIO:
-    template_path = Path("templates/가격분석.xlsx")
+    template_path = Path("templates/templates_가격분석.xlsx")
     if not template_path.exists():
         alt_template = Path("templates/price_analysis.xlsx")
         if alt_template.exists():
