@@ -3,6 +3,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import altair as alt
+import io
+from pathlib import Path
+from copy import copy
+from openpyxl import load_workbook
 from matplotlib.ticker import FuncFormatter
 from db import get_all_import_batch, get_price_analysis_view
 
@@ -42,6 +46,143 @@ def metric_with_caption(column, label: str, value: str, caption: str):
     column.metric(label, value)
     column.caption(caption)
 
+
+
+
+def _safe_num(v, default=0):
+    try:
+        if pd.isna(v):
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+
+def build_price_analysis_excel(df: pd.DataFrame) -> io.BytesIO:
+    template_path = Path("templates/가격분석.xlsx")
+    if not template_path.exists():
+        alt_template = Path("templates/price_analysis.xlsx")
+        if alt_template.exists():
+            template_path = alt_template
+
+    if not template_path.exists():
+        raise FileNotFoundError("templates 폴더에 가격분석 템플릿 파일이 없습니다. (예: templates/가격분석.xlsx)")
+
+    wb = load_workbook(template_path)
+    ws = wb["가격분석"]
+
+    start_row = 3
+    end_col = 29  # A:AC
+    template_row = start_row
+
+    export_df = df.copy()
+
+    numeric_cols = [
+        "export_box_price_usd",
+        "discounted_box_price_usd",
+        "discount_rate",
+        "import_unit_qty",
+        "export_unit_price_usd",
+        "import_unit_cost_krw",
+        "unit_weight_g",
+        "total_weight_g",
+        "individual_tax_krw",
+        "tobacco_tax_krw",
+        "local_education_tax_krw",
+        "health_charge_krw",
+        "import_vat_krw",
+        "tax_total_krw",
+        "tax_total_all_krw",
+        "korea_cost_krw",
+        "local_box_price_php",
+        "local_unit_price_php",
+        "local_unit_price_krw",
+        "proposal_retail_price_krw",
+        "retail_price_krw",
+        "supply_price_krw",
+        "supply_vat_krw",
+        "margin_krw",
+        "retail_margin_rate",
+        "wholesale_margin_rate",
+        "usd_to_krw_rate",
+    ]
+    for col in numeric_cols:
+        if col in export_df.columns:
+            export_df[col] = pd.to_numeric(export_df[col], errors="coerce")
+
+    # 기존 데이터 영역 삭제
+    if ws.max_row >= start_row:
+        for row in ws.iter_rows(min_row=start_row, max_row=ws.max_row, min_col=1, max_col=end_col):
+            for cell in row:
+                cell.value = None
+
+    # 스타일 복사
+    if len(export_df) > 1:
+        for insert_idx in range(len(export_df) - 1):
+            target_row = start_row + 1 + insert_idx
+            ws.insert_rows(target_row)
+            for col_idx in range(1, end_col + 1):
+                src_cell = ws.cell(row=template_row, column=col_idx)
+                dst_cell = ws.cell(row=target_row, column=col_idx)
+                if src_cell.has_style:
+                    dst_cell._style = copy(src_cell._style)
+                dst_cell.font = copy(src_cell.font)
+                dst_cell.fill = copy(src_cell.fill)
+                dst_cell.border = copy(src_cell.border)
+                dst_cell.alignment = copy(src_cell.alignment)
+                dst_cell.protection = copy(src_cell.protection)
+                dst_cell.number_format = src_cell.number_format
+
+    for row_idx, (_, row) in enumerate(export_df.iterrows(), start=start_row):
+        usd_to_krw_rate = _safe_num(row.get("usd_to_krw_rate"), 0)
+        export_unit_price_usd = _safe_num(row.get("export_unit_price_usd"), 0)
+        import_unit_qty = _safe_num(row.get("import_unit_qty"), 0)
+
+        ws[f"A{row_idx}"] = row.get("product_name", "")
+        ws[f"B{row_idx}"] = row.get("size_name", "")
+        ws[f"C{row_idx}"] = row.get("export_box_price_usd", "")
+        ws[f"D{row_idx}"] = row.get("discounted_box_price_usd", "")
+        ws[f"E{row_idx}"] = row.get("import_unit_qty", "")
+        ws[f"F{row_idx}"] = row.get("export_unit_price_usd", "")
+
+        # 수출가격(KRW) : 값이 있으면 값 사용, 없으면 수식
+        if usd_to_krw_rate and export_unit_price_usd:
+            ws[f"G{row_idx}"] = export_unit_price_usd * usd_to_krw_rate
+        else:
+            ws[f"G{row_idx}"] = f'=IFERROR(F{row_idx}*IF($AD$1<>"",$AD$1,1),0)'
+
+        ws[f"H{row_idx}"] = f'=IFERROR(G{row_idx}*E{row_idx},0)'
+        ws[f"I{row_idx}"] = row.get("unit_weight_g", "")
+        ws[f"J{row_idx}"] = row.get("total_weight_g", "")
+        ws[f"K{row_idx}"] = row.get("individual_tax_krw", "")
+        ws[f"L{row_idx}"] = row.get("tobacco_tax_krw", "")
+        ws[f"M{row_idx}"] = row.get("local_education_tax_krw", "")
+        ws[f"N{row_idx}"] = row.get("health_charge_krw", "")
+        ws[f"O{row_idx}"] = row.get("import_vat_krw", "")
+        ws[f"P{row_idx}"] = row.get("tax_total_krw", "")
+        ws[f"Q{row_idx}"] = row.get("tax_total_all_krw", "")
+        ws[f"R{row_idx}"] = row.get("korea_cost_krw", "")
+        ws[f"S{row_idx}"] = row.get("local_box_price_php", "")
+        ws[f"T{row_idx}"] = row.get("local_unit_price_php", "")
+        ws[f"U{row_idx}"] = row.get("local_unit_price_krw", "")
+        ws[f"V{row_idx}"] = row.get("proposal_retail_price_krw", "")
+        ws[f"W{row_idx}"] = row.get("retail_price_krw", "")
+        ws[f"X{row_idx}"] = row.get("supply_price_krw", "")
+        ws[f"Y{row_idx}"] = row.get("supply_vat_krw", "")
+        ws[f"Z{row_idx}"] = f'=IFERROR(X{row_idx}+Y{row_idx},0)'
+        ws[f"AA{row_idx}"] = row.get("margin_krw", "")
+        ws[f"AB{row_idx}"] = f'=IFERROR((W{row_idx}-R{row_idx})/W{row_idx},0)'
+        ws[f"AC{row_idx}"] = f'=IFERROR((X{row_idx}-R{row_idx})/X{row_idx},0)'
+
+    # 템플릿에 환율을 넣고 싶을 때 사용할 여유 셀
+    # 숨겨진 영역이 아니라면 필요 시 삭제 가능
+    if "usd_to_krw_rate" in export_df.columns and not export_df["usd_to_krw_rate"].dropna().empty:
+        ws["AD1"] = float(export_df["usd_to_krw_rate"].dropna().iloc[0])
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
 
 def render():
     st.set_page_config(page_title="가격분석 통합조회", layout="wide")
@@ -159,6 +300,20 @@ def render():
         f"{avg_retail:.1f}%",
         f"조회 제품 평균",
     )
+
+    d1, d2 = st.columns([1.2, 6])
+    with d1:
+        try:
+            excel_data = build_price_analysis_excel(df)
+            st.download_button(
+                label="엑셀 다운로드",
+                data=excel_data,
+                file_name="price_analysis.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        except Exception as e:
+            st.error(f"엑셀 다운로드 생성 오류: {e}")
 
     st.subheader("가격 분석 테이블")
 
