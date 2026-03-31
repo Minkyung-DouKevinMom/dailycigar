@@ -484,27 +484,25 @@ def _sort_estimate_editor_df(df: pd.DataFrame, is_non_cigar: bool = False) -> pd
 
     work = df.copy()
 
-    sort_cols = []
-    ascending = []
+    if is_non_cigar:
+        if "source_row_no" in work.columns:
+            work["source_row_no"] = pd.to_numeric(work["source_row_no"], errors="coerce")
+            work = work.sort_values(
+                by=["source_row_no"],
+                ascending=[True],
+                kind="stable",
+                na_position="last",
+            )
+        return work
 
-    if is_non_cigar and "source_row_no" in work.columns:
-        work["source_row_no"] = pd.to_numeric(work["source_row_no"], errors="coerce")
-        sort_cols.append("source_row_no")
-        ascending.append(True)
-
-    for col in ["product_name", "size_name", "product_code"]:
-        if col in work.columns:
-            sort_cols.append(col)
-            ascending.append(True)
-
+    sort_cols = [c for c in ["product_name", "size_name", "product_code"] if c in work.columns]
     if sort_cols:
         work = work.sort_values(
             by=sort_cols,
-            ascending=ascending,
+            ascending=[True] * len(sort_cols),
             kind="stable",
             na_position="last",
         )
-
     return work
 
 
@@ -633,8 +631,8 @@ def render_estimate_export():
             )
 
     excel_bytes = build_estimate_workbook(
-        cigar_df,
-        non_cigar_df,
+        download_cigar_df,
+        download_non_cigar_df,
         partner_info,
         use_proposal_retail_price=use_proposal_retail_price,
     )
