@@ -1528,3 +1528,54 @@ def get_estimate_non_cigar_items():
     ORDER BY COALESCE(source_row_no, 999999), product_name, id
     """
     return run_query(sql)
+
+def get_store_menu_view(batch_id=None, keyword=""):
+    sql = """
+    SELECT
+        ib.version_name,
+        ii.batch_id,
+        ii.product_code,
+        ii.product_name,
+        ii.size_name,
+        COALESCE(ii.store_retail_price_krw, 0) AS store_retail_price_krw,
+        COALESCE(bp.flavor, '') AS flavor,
+        COALESCE(bp.strength, '') AS strength,
+        COALESCE(bp.guide, '') AS guide,
+        COALESCE(ii.source_row_no, 999999) AS source_row_no
+    FROM import_item ii
+    LEFT JOIN import_batch ib
+        ON ii.batch_id = ib.id
+    LEFT JOIN blend_profile_mst bp
+        ON TRIM(ii.product_name) = TRIM(bp.product_name)
+    WHERE 1=1
+    """
+
+    params = []
+
+    if batch_id:
+        sql += " AND ii.batch_id = ? "
+        params.append(batch_id)
+
+    if keyword:
+        sql += """
+        AND (
+            ii.product_code LIKE ?
+            OR ii.product_name LIKE ?
+            OR ii.size_name LIKE ?
+            OR bp.flavor LIKE ?
+            OR bp.strength LIKE ?
+            OR bp.guide LIKE ?
+        )
+        """
+        kw = f"%{keyword}%"
+        params.extend([kw, kw, kw, kw, kw, kw])
+
+    sql += """
+    ORDER BY
+        ii.product_name,
+        ii.size_name,
+        source_row_no,
+        ii.id
+    """
+
+    return run_query(sql, params)
