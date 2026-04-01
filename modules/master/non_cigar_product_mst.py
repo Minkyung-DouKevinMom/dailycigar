@@ -37,36 +37,37 @@ def init_session_state():
 
 def load_data(conn: sqlite3.Connection, keyword: str = "", active_filter: str = "전체") -> pd.DataFrame:
     sql = f"""
-        SELECT
-            id,
-            product_code,
-            product_name,
-            product_category,
-            brand_name,
-            unit_type,
-            spec,
-            purchase_price,
-            wholesale_price,
-            retail_price,
-            COALESCE(store_retail_price, 0) AS store_retail_price,
-            is_active,
-            notes,
-            created_at,
-            updated_at
-        FROM {TABLE_NAME}
-        WHERE 1=1
+    SELECT
+        id,
+        product_code,
+        product_name,
+        product_category,
+        brand_name,
+        unit_type,
+        spec,
+        purchase_price,
+        wholesale_price,
+        retail_price,
+        COALESCE(store_retail_price, 0) AS store_retail_price,
+        COALESCE(source_row_no, 999999) AS source_row_no,
+        is_active,
+        notes,
+        created_at,
+        updated_at
+    FROM {TABLE_NAME}
+    WHERE 1=1
     """
     params = []
 
     if keyword.strip():
         sql += """
-            AND (
-                COALESCE(product_code, '') LIKE ?
-                OR COALESCE(product_name, '') LIKE ?
-                OR COALESCE(product_category, '') LIKE ?
-                OR COALESCE(brand_name, '') LIKE ?
-                OR COALESCE(spec, '') LIKE ?
-            )
+        AND (
+            COALESCE(product_code, '') LIKE ?
+            OR COALESCE(product_name, '') LIKE ?
+            OR COALESCE(product_category, '') LIKE ?
+            OR COALESCE(brand_name, '') LIKE ?
+            OR COALESCE(spec, '') LIKE ?
+        )
         """
         kw = f"%{keyword.strip()}%"
         params.extend([kw, kw, kw, kw, kw])
@@ -76,7 +77,14 @@ def load_data(conn: sqlite3.Connection, keyword: str = "", active_filter: str = 
     elif active_filter == "미사용":
         sql += " AND COALESCE(is_active, 1) = 0 "
 
-    sql += " ORDER BY product_category, product_name, id DESC "
+    sql += """
+    ORDER BY
+        COALESCE(source_row_no, 999999),
+        product_category,
+        product_name,
+        id DESC
+    """
+
     return pd.read_sql_query(sql, conn, params=params)
 
 
@@ -123,22 +131,23 @@ def upsert_row(conn: sqlite3.Connection, row_id: Optional[int], payload: dict):
 
     if row_id is None:
         sql = f"""
-            INSERT INTO {TABLE_NAME} (
-                product_code,
-                product_name,
-                product_category,
-                brand_name,
-                unit_type,
-                spec,
-                purchase_price,
-                wholesale_price,
-                retail_price,
-                store_retail_price,
-                is_active,
-                notes,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        INSERT INTO {TABLE_NAME} (
+            product_code,
+            product_name,
+            product_category,
+            brand_name,
+            unit_type,
+            spec,
+            purchase_price,
+            wholesale_price,
+            retail_price,
+            store_retail_price,
+            source_row_no,
+            is_active,
+            notes,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """
         cur.execute(
             sql,
@@ -153,28 +162,30 @@ def upsert_row(conn: sqlite3.Connection, row_id: Optional[int], payload: dict):
                 payload["wholesale_price"],
                 payload["retail_price"],
                 payload["store_retail_price"],
+                payload["source_row_no"],
                 payload["is_active"],
                 payload["notes"],
             ),
         )
     else:
         sql = f"""
-            UPDATE {TABLE_NAME}
-            SET
-                product_code = ?,
-                product_name = ?,
-                product_category = ?,
-                brand_name = ?,
-                unit_type = ?,
-                spec = ?,
-                purchase_price = ?,
-                wholesale_price = ?,
-                retail_price = ?,
-                store_retail_price = ?,
-                is_active = ?,
-                notes = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
+        UPDATE {TABLE_NAME}
+        SET
+            product_code = ?,
+            product_name = ?,
+            product_category = ?,
+            brand_name = ?,
+            unit_type = ?,
+            spec = ?,
+            purchase_price = ?,
+            wholesale_price = ?,
+            retail_price = ?,
+            store_retail_price = ?,
+            source_row_no = ?,
+            is_active = ?,
+            notes = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
         """
         cur.execute(
             sql,
@@ -189,6 +200,7 @@ def upsert_row(conn: sqlite3.Connection, row_id: Optional[int], payload: dict):
                 payload["wholesale_price"],
                 payload["retail_price"],
                 payload["store_retail_price"],
+                payload["source_row_no"],
                 payload["is_active"],
                 payload["notes"],
                 row_id,
@@ -238,11 +250,9 @@ def render():
                 display_df = df.copy()
                 display_df["사용"] = display_df["is_active"].apply(lambda x: "Y" if int(x or 0) == 1 else "N")
 
-                # 금액 컬럼 정수/콤마 처리
                 for col in ["purchase_price", "wholesale_price", "retail_price", "store_retail_price"]:
                     display_df[col] = display_df[col].apply(format_krw)
 
-                # 한글 헤더명 변경
                 display_df = display_df.rename(
                     columns={
                         "id": "ID",
@@ -273,12 +283,12 @@ def render():
                     "사용",
                     "수정일시",
                 ]
-                
+
                 styled_df = display_df[display_cols].style.set_properties(
                     subset=["매입가(₩)", "도매가(₩)", "소매가(₩)", "매장운영가(₩)"],
                     **{"text-align": "right"}
                 )
-                
+
                 st.dataframe(
                     styled_df,
                     use_container_width=True,
@@ -361,8 +371,16 @@ def render():
                     placeholder="예: 블랙 / 3구 / 메탈 / 22x15x8cm",
                 )
 
-                p1, p2, p3, p4 = st.columns(4)
+                source_row_no = st.number_input(
+                    "원본 행 번호",
+                    min_value=0,
+                    value=int(selected.get("source_row_no", 0) or 0) if selected else 0,
+                    step=1,
+                    format="%d",
+                    help="목록 기본 정렬에 사용하는 원본 행 번호입니다.",
+                )
 
+                p1, p2, p3, p4 = st.columns(4)
                 with p1:
                     purchase_price = st.number_input(
                         "₩ 매입가",
@@ -371,7 +389,6 @@ def render():
                         step=100,
                         format="%d",
                     )
-
                 with p2:
                     wholesale_price = st.number_input(
                         "₩ 도매가",
@@ -380,7 +397,6 @@ def render():
                         step=100,
                         format="%d",
                     )
-
                 with p3:
                     retail_price = st.number_input(
                         "₩ 소매가",
@@ -389,7 +405,6 @@ def render():
                         step=100,
                         format="%d",
                     )
-
                 with p4:
                     store_retail_price = st.number_input(
                         "₩ 매장운영가",
@@ -416,6 +431,7 @@ def render():
                     "wholesale_price": safe_int(wholesale_price),
                     "retail_price": safe_int(retail_price),
                     "store_retail_price": safe_int(store_retail_price),
+                    "source_row_no": safe_int(source_row_no),
                     "is_active": int(is_active),
                     "notes": notes.strip(),
                 }
