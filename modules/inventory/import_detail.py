@@ -1,5 +1,10 @@
 import streamlit as st
 import pandas as pd
+import os
+from io import BytesIO
+from pathlib import Path
+from openpyxl import load_workbook
+from openpyxl.styles import Font, Border, Side
 
 from db import (
     get_all_import_batch,
@@ -145,6 +150,214 @@ def _calc_values(
         "store_retail_price_krw": store_retail_price_krw,
     }
 
+def _excel_num(v, default=0):
+    try:
+        if v is None or v == "":
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+
+def _excel_int(v, default=0):
+    try:
+        if v is None or v == "":
+            return default
+        return int(float(v))
+    except Exception:
+        return default
+
+
+def _find_header_row(ws, max_scan_row=20):
+    """
+    템플릿에서 데이터 헤더 행 자동 탐색
+    """
+    target_candidates = {"상품코드", "상품명", "사이즈", "수입개수"}
+    for r in range(1, min(ws.max_row, max_scan_row) + 1):
+        values = {
+            str(ws.cell(r, c).value).strip()
+            for c in range(1, ws.max_column + 1)
+            if ws.cell(r, c).value is not None
+        }
+        if len(target_candidates & values) >= 2:
+            return r
+    return 2
+
+
+def _build_header_map(ws, header_row):
+    header_map = {}
+    for c in range(1, ws.max_column + 1):
+        v = ws.cell(header_row, c).value
+        if v is not None:
+            header_map[str(v).strip()] = c
+    return header_map
+
+
+def _set_value_next_to_label(ws, label_text, value, max_scan_row=10, max_scan_col=10):
+    """
+    예: '버전명' 셀을 찾고 오른쪽 칸에 값 입력
+    """
+    for r in range(1, min(ws.max_row, max_scan_row) + 1):
+        for c in range(1, min(ws.max_column, max_scan_col) + 1):
+            cell_val = ws.cell(r, c).value
+            if cell_val is not None and str(cell_val).strip() == label_text:
+                ws.cell(r, c + 1).value = value
+                return True
+    return False
+
+
+def _collect_import_price_rows(df: pd.DataFrame):
+    """
+    목록 df의 id 기준으로 상세 재조회 후
+    수입가격분석_template.xlsx 전용 데이터 구성
+    """
+    rows = []
+    if df is None or df.empty:
+        return rows
+
+    for _, row in df.iterrows():
+        item_id = row.get("id")
+        if pd.isna(item_id):
+            continue
+
+        detail_df = get_import_item_detail(int(item_id))
+        if detail_df is None or detail_df.empty:
+            continue
+
+        d = detail_df.iloc[0].to_dict()
+
+        qty = _excel_int(d.get("import_unit_qty"), 0)
+        proposal_retail = _excel_num(d.get("proposal_retail_price_krw"), 0)
+        retail_price = _excel_num(d.get("retail_price_krw"), 0)
+        store_retail = _excel_num(d.get("store_retail_price_krw"), 0)
+        supply_price = _excel_num(d.get("supply_price_krw"), 0)
+        margin = _excel_num(d.get("margin_krw"), 0)
+
+        item = {
+            "원본행번호": _excel_int(d.get("source_row_no"), 0),
+
+            "제품명": d.get("product_name", ""),
+            "사이즈": d.get("size_name", ""),
+            "박스수출원가($)": _excel_num(d.get("export_box_price_usd"), 0),
+            "할인가($)": _excel_num(d.get("discounted_box_price_usd"), 0),
+            "수입개수": qty,
+            "수출가격($/unit)": _excel_num(d.get("export_unit_price_usd"), 0),
+            "수입원가(KRW)": _excel_num(d.get("import_unit_cost_krw"), 0),
+            "수입가격합계": _excel_num(d.get("import_total_cost_krw"), 0),
+
+            "무게": _excel_num(d.get("unit_weight_g"), 0),
+            "전체무게": _excel_num(d.get("total_weight_g"), 0),
+
+            "개별소비세": _excel_num(d.get("individual_tax_krw"), 0),
+            "담배소비세": _excel_num(d.get("tobacco_tax_krw"), 0),
+            "지방교육세": _excel_num(d.get("local_education_tax_krw"), 0),
+            "국민건강": _excel_num(d.get("health_charge_krw"), 0),
+            "부가세": _excel_num(d.get("import_vat_krw"), 0),
+
+            "세금합계": _excel_num(d.get("tax_total_krw"), 0),
+            "세금합계(총합계)": _excel_num(d.get("tax_total_all_krw"), 0),
+            "한국 원가(KRW)": _excel_num(d.get("korea_cost_krw"), 0),
+
+            "Box(페소)": _excel_num(d.get("local_box_price_php"), 0),
+            "Unit(페소)": _excel_num(d.get("local_unit_price_php"), 0),
+            "Unit(KRW)": _excel_num(d.get("local_unit_price_krw"), 0),
+
+            "제안소비자가": proposal_retail,
+            "소비자가격": retail_price,
+            "매장운영가격": store_retail,
+
+            "공급가": supply_price,
+            "공급가(VAT)": round(supply_price * 1.1, 2) if supply_price else 0,
+            "공급가(합계)": round(supply_price * qty, 2) if supply_price and qty else 0,
+
+            "마진": margin,
+            "소매이익률": round((margin / proposal_retail) * 100, 2) if proposal_retail else 0,
+            "도매이익률": round((margin / supply_price) * 100, 2) if supply_price else 0,
+        }
+        rows.append(item)
+
+    rows.sort(key=lambda x: (x.get("원본행번호", 0), x.get("제품명", ""), x.get("사이즈", "")))
+    return rows
+
+
+def _make_import_price_analysis_excel(batch_row: dict, export_df: pd.DataFrame) -> bytes:
+    template_path = Path("templates") / "수입가격분석_template.xlsx"
+    if not template_path.exists():
+        raise FileNotFoundError(f"템플릿 파일이 없습니다: {template_path}")
+
+    wb = load_workbook(template_path)
+    ws = wb[wb.sheetnames[0]]
+
+    export_rows = _collect_import_price_rows(export_df)
+
+    # 상단 기본 정보 자동 입력
+    _set_value_next_to_label(ws, "버전명", batch_row.get("version_name", ""))
+    _set_value_next_to_label(ws, "USD 환율", _n(batch_row.get("usd_to_krw_rate"), USD_TO_KRW_DEFAULT))
+    _set_value_next_to_label(ws, "PHP 환율", _n(batch_row.get("php_to_krw_rate"), PHP_TO_KRW_DEFAULT))
+    _set_value_next_to_label(ws, "수입일", batch_row.get("import_date", ""))
+
+    # 현재 템플릿 기준: 2행 헤더, 3행부터 데이터
+    start_row = 3
+
+    # 기존 데이터 삭제 (3행부터 AD열 정도까지)
+    for r in range(start_row, max(ws.max_row, start_row) + 1):
+        for c in range(1, 31):  # A~AD
+            ws.cell(r, c).value = None
+
+    for row_idx, item in enumerate(export_rows, start=start_row):
+        ws[f"A{row_idx}"] = item.get("제품명", "")
+        ws[f"B{row_idx}"] = item.get("사이즈", "")
+        ws[f"C{row_idx}"] = item.get("박스수출원가($)", 0)
+        ws[f"D{row_idx}"] = item.get("할인가($)", 0)
+        ws[f"E{row_idx}"] = item.get("수입개수", 0)
+        ws[f"F{row_idx}"] = item.get("수출가격($/unit)", 0)
+        ws[f"G{row_idx}"] = item.get("수입원가(KRW)", 0)
+        ws[f"H{row_idx}"] = item.get("수입가격합계", 0)
+        ws[f"I{row_idx}"] = item.get("무게", 0)
+        ws[f"J{row_idx}"] = item.get("전체무게", 0)
+        ws[f"K{row_idx}"] = item.get("개별소비세", 0)
+        ws[f"L{row_idx}"] = item.get("담배소비세", 0)
+        ws[f"M{row_idx}"] = item.get("지방교육세", 0)
+        ws[f"N{row_idx}"] = item.get("국민건강", 0)
+        ws[f"O{row_idx}"] = item.get("부가세", 0)
+        ws[f"P{row_idx}"] = item.get("세금합계", 0)
+        ws[f"Q{row_idx}"] = item.get("세금합계(총합계)", 0)
+        ws[f"R{row_idx}"] = item.get("한국 원가(KRW)", 0)
+        ws[f"S{row_idx}"] = item.get("Box(페소)", 0)
+        ws[f"T{row_idx}"] = item.get("Unit(페소)", 0)
+        ws[f"U{row_idx}"] = item.get("Unit(KRW)", 0)
+        ws[f"V{row_idx}"] = item.get("제안소비자가", 0)
+        ws[f"W{row_idx}"] = item.get("소비자가격", 0)
+        ws[f"X{row_idx}"] = item.get("매장운영가격", 0)
+        ws[f"Y{row_idx}"] = item.get("공급가", 0)
+        ws[f"Z{row_idx}"] = item.get("공급가(VAT)", 0)
+        ws[f"AA{row_idx}"] = item.get("공급가(합계)", 0)
+        ws[f"AB{row_idx}"] = item.get("마진", 0)
+        ws[f"AC{row_idx}"] = item.get("소매이익률", 0)
+        ws[f"AD{row_idx}"] = item.get("도매이익률", 0)
+
+        # 데이터 영역 스타일 적용 (타이틀 제외)
+    thin = Side(style="thin", color="000000")
+    data_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    last_row = start_row + len(export_rows) - 1
+    if last_row >= start_row:
+        for r in range(start_row, last_row + 1):
+            for c in range(1, 31):  # A~AD
+                cell = ws.cell(r, c)
+                cell.font = Font(
+                    name=cell.font.name if cell.font and cell.font.name else "Calibri",
+                    size=10,
+                    bold=cell.font.bold if cell.font else False,
+                    italic=cell.font.italic if cell.font else False,
+                    color=cell.font.color if cell.font and cell.font.color else None,
+                )
+                cell.border = data_border
+                
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
 
 def render():
     st.subheader("수입제품 관리")
@@ -172,12 +385,35 @@ def render():
     batch_row = get_import_batch_one(selected_batch_id)
     tax_rule = get_import_batch_tax_rule(selected_batch_id)
 
-    info1, info2, info3 = st.columns(3)
+    info1, info2, info3, info4 = st.columns(4)
+
     info1.metric("USD 환율", f'{_n(batch_row.get("usd_to_krw_rate"), USD_TO_KRW_DEFAULT):,.2f}')
     info2.metric("PHP 환율", f'{_n(batch_row.get("php_to_krw_rate"), PHP_TO_KRW_DEFAULT):,.2f}')
     info3.metric("세금 규칙", tax_rule.get("rule_name", "최신 규칙"))
 
     df = get_import_item_list_filtered(selected_batch_id, keyword)
+
+    # 다운로드는 검색조건과 무관하게 선택한 수입버전 전체 기준
+    export_df = get_import_item_list_filtered(selected_batch_id, "")
+
+    with info4:
+        st.write("")
+        st.write("")
+        if export_df is None or export_df.empty:
+            st.button("수입가격 다운로드", disabled=True, use_container_width=True)
+        else:
+            try:
+                excel_bytes = _make_import_price_analysis_excel(batch_row, export_df)
+                version_name = str(batch_row.get("version_name", f"batch_{selected_batch_id}"))
+                st.download_button(
+                    label="수입가격 다운로드",
+                    data=excel_bytes,
+                    file_name=f"수입가격분석_{version_name}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(f"엑셀 생성 오류: {e}")
 
     st.markdown("### 조회 결과")
     if not df.empty:

@@ -544,7 +544,7 @@ def _build_statement_from_rows(conn, selected_df: pd.DataFrame, document_no: str
     statement_df = selected_df[
         [
             "product_name",
-            "unit_price",
+            "supply_price",
             "qty",
             "supply_amount",
             "vat_amount",
@@ -555,7 +555,7 @@ def _build_statement_from_rows(conn, selected_df: pd.DataFrame, document_no: str
     statement_df = statement_df.rename(
         columns={
             "product_name": "품목",
-            "unit_price": "단가",
+            "supply_price": "단가",
             "qty": "수량",
             "supply_amount": "공급가액",
             "vat_amount": "세액",
