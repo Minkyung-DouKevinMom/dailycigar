@@ -21,174 +21,6 @@ def safe_text(value, default="-"):
     return text if text else default
 
 
-def inject_css():
-    st.markdown(
-        """
-        <style>
-        .menu-card {
-            border: 1px solid #E5E7EB;
-            border-radius: 22px;
-            padding: 20px 20px 18px 20px;
-            background: linear-gradient(180deg, #FFFFFF 0%, #FCFBF8 100%);
-            box-shadow: 0 2px 12px rgba(0,0,0,0.05);
-            margin-bottom: 16px;
-            min-height: 420px;
-        }
-
-        .menu-title {
-            font-size: 1.9rem;
-            font-weight: 800;
-            color: #231F1A;
-            line-height: 1.2;
-            margin-bottom: 10px;
-            word-break: keep-all;
-        }
-
-        .menu-label {
-            font-size: 0.82rem;
-            font-weight: 700;
-            color: #8B7355;
-            margin-top: 10px;
-            margin-bottom: 4px;
-        }
-
-        .menu-body {
-            font-size: 0.95rem;
-            line-height: 1.65;
-            color: #374151;
-            white-space: pre-wrap;
-            word-break: keep-all;
-        }
-
-        .menu-empty {
-            color: #9CA3AF;
-            font-style: italic;
-        }
-
-        .size-table-wrap {
-            margin-top: 8px;
-            border: 1px solid #EEE7DD;
-            border-radius: 14px;
-            overflow: hidden;
-            background: #FFFDFC;
-        }
-
-        .size-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
-        .size-table thead th {
-            background: #F7F2EC;
-            color: #7C6A58;
-            font-size: 0.82rem;
-            font-weight: 700;
-            text-align: left;
-            padding: 10px 12px;
-            border-bottom: 1px solid #E8DED2;
-        }
-
-        .size-table thead th.col-center {
-            text-align: center;
-        }
-
-        .size-table thead th.col-right {
-            text-align: right;
-        }
-
-        .size-table tbody td {
-            padding: 10px 12px;
-            border-bottom: 1px solid #F1ECE6;
-            font-size: 0.93rem;
-            color: #374151;
-            vertical-align: middle;
-        }
-
-        .size-table tbody tr:last-child td {
-            border-bottom: none;
-        }
-
-        .size-name {
-            font-weight: 700;
-            color: #2D2A26;
-        }
-
-        .strength-badge {
-            display: inline-block;
-            padding: 4px 10px;
-            border-radius: 999px;
-            font-size: 0.78rem;
-            font-weight: 700;
-            text-align: center;
-            min-width: 72px;
-        }
-
-        .price-text {
-            font-weight: 800;
-            color: #4E342E;
-            text-align: right;
-            white-space: nowrap;
-        }
-
-        @media (max-width: 768px) {
-            .menu-card {
-                min-height: auto;
-                padding: 16px;
-            }
-            .menu-title {
-                font-size: 1.45rem;
-            }
-            .menu-body {
-                font-size: 0.92rem;
-            }
-            .size-table thead th,
-            .size-table tbody td {
-                padding: 8px 8px;
-                font-size: 0.84rem;
-            }
-            .strength-badge {
-                min-width: 60px;
-                font-size: 0.72rem;
-                padding: 3px 8px;
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def get_strength_badge_html(strength: str) -> str:
-    s = safe_text(strength, "").lower()
-
-    if not s:
-        label = "-"
-        bg = "#F3F4F6"
-        color = "#6B7280"
-    elif "mild" in s or "약" in s:
-        label = safe_text(strength)
-        bg = "#E8F5E9"
-        color = "#1B5E20"
-    elif "medium" in s or "중" in s:
-        label = safe_text(strength)
-        bg = "#FFF8E1"
-        color = "#8D6E63"
-    elif "full" in s or "강" in s:
-        label = safe_text(strength)
-        bg = "#FBE9E7"
-        color = "#BF360C"
-    else:
-        label = safe_text(strength)
-        bg = "#ECEFF1"
-        color = "#37474F"
-
-    return (
-        f'<span class="strength-badge" style="background:{bg}; color:{color};">'
-        f'{label}'
-        f'</span>'
-    )
-
-
 def get_size_sort_key(size_name: str) -> int:
     name = safe_text(size_name, "").strip().lower()
 
@@ -207,7 +39,12 @@ def get_size_sort_key(size_name: str) -> int:
     return order_map.get(name, 999)
 
 
-def build_size_table_html(group_df: pd.DataFrame) -> str:
+def normalize_strength(strength: str) -> str:
+    s = safe_text(strength, "")
+    return s if s else "-"
+
+
+def build_size_table_df(group_df: pd.DataFrame) -> pd.DataFrame:
     temp_df = group_df.copy()
 
     temp_df["__size_sort"] = temp_df["size_name"].apply(get_size_sort_key)
@@ -224,81 +61,51 @@ def build_size_table_html(group_df: pd.DataFrame) -> str:
 
     temp_df = temp_df.sort_values(by=sort_cols, ascending=asc)
 
-    body_rows = []
-    for _, row in temp_df.iterrows():
-        size_name = safe_text(row.get("size_name"))
-        strength = safe_text(row.get("strength"), "")
-        price = format_krw(row.get("store_retail_price_krw"))
-        badge_html = get_strength_badge_html(strength)
+    out_df = pd.DataFrame({
+        "사이즈": temp_df["size_name"].apply(lambda x: safe_text(x)),
+        "강도": temp_df["strength"].apply(normalize_strength),
+        "가격": temp_df["store_retail_price_krw"],
+    })
 
-        body_rows.append(
-            f"""
-            <tr>
-                <td class="size-name">{size_name}</td>
-                <td style="text-align:center;">{badge_html}</td>
-                <td class="price-text">{price}</td>
-            </tr>
-            """
-        )
-
-    rows_html = "".join(body_rows)
-
-    return f"""
-    <div class="size-table-wrap">
-        <table class="size-table">
-            <thead>
-                <tr>
-                    <th>사이즈</th>
-                    <th class="col-center">강도</th>
-                    <th class="col-right">가격</th>
-                </tr>
-            </thead>
-            <tbody>
-                {rows_html}
-            </tbody>
-        </table>
-    </div>
-    """
+    return out_df
 
 
-def draw_grouped_menu_card(group_df: pd.DataFrame):
+def draw_grouped_menu_card(group_df: pd.DataFrame, card_no: int):
     first_row = group_df.iloc[0].to_dict()
 
     product_name = safe_text(first_row.get("product_name"))
     flavor = safe_text(first_row.get("flavor"), "")
     guide = safe_text(first_row.get("guide"), "")
 
-    flavor_html = (
-        flavor if flavor else '<span class="menu-empty">등록된 특징 정보가 없습니다.</span>'
-    )
-    guide_html = (
-        guide if guide else '<span class="menu-empty">등록된 가이드 정보가 없습니다.</span>'
-    )
+    if not flavor:
+        flavor = "등록된 특징 정보가 없습니다."
+    if not guide:
+        guide = "등록된 가이드 정보가 없습니다."
 
-    size_table_html = build_size_table_html(group_df)
+    size_df = build_size_table_df(group_df)
 
-    st.markdown(
-        f"""
-        <div class="menu-card">
-            <div class="menu-title">{product_name}</div>
+    with st.container(border=True):
+        st.subheader(product_name)
 
-            <div class="menu-label">특징</div>
-            <div class="menu-body">{flavor_html}</div>
+        st.caption("특징")
+        st.write(flavor)
 
-            <div class="menu-label">가이드</div>
-            <div class="menu-body">{guide_html}</div>
+        st.caption("가이드")
+        st.write(guide)
 
-            <div class="menu-label" style="margin-top:14px;">사이즈별 정보</div>
-            {size_table_html}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        st.caption("사이즈별 정보")
+        st.dataframe(
+            size_df,
+            use_container_width=True,
+            hide_index=True,
+            key=f"menu_size_df_{card_no}",
+            column_config={
+                "가격": st.column_config.NumberColumn("가격", format="₩ %d")
+            }
+        )
 
 
 def render():
-    inject_css()
-
     st.subheader("매장 메뉴판")
 
     batch_df = get_all_import_batch()
@@ -362,7 +169,9 @@ def render():
             ascending=[True, True, True]
         )
 
-    st.caption(f"{len(df['product_name'].dropna().unique())}개 제품 / {len(df)}개 사이즈가 조회되었습니다.")
+    product_count = len(df["product_name"].dropna().unique())
+    size_count = len(df)
+    st.caption(f"{product_count}개 제품 / {size_count}개 사이즈가 조회되었습니다.")
 
     with st.expander("목록형으로 보기", expanded=False):
         list_df = df[
@@ -401,6 +210,7 @@ def render():
     card_per_row = 2
     total_rows = math.ceil(len(grouped) / card_per_row)
 
+    card_no = 0
     for r in range(total_rows):
         cols = st.columns(card_per_row)
         for c in range(card_per_row):
@@ -408,4 +218,5 @@ def render():
             if idx >= len(grouped):
                 continue
             with cols[c]:
-                draw_grouped_menu_card(grouped[idx])
+                draw_grouped_menu_card(grouped[idx], card_no)
+                card_no += 1
