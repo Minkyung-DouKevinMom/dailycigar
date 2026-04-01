@@ -52,8 +52,11 @@ def build_size_table_df(group_df: pd.DataFrame) -> pd.DataFrame:
         temp_df["store_retail_price_krw"], errors="coerce"
     ).fillna(0)
 
-    sort_cols = ["__size_sort", "size_name"]
-    asc = [True, True]
+    if "profile_id" not in temp_df.columns:
+        temp_df["profile_id"] = 999999
+
+    sort_cols = ["profile_id", "__size_sort", "size_name"]
+    asc = [True, True, True]
 
     if "source_row_no" in temp_df.columns:
         sort_cols.append("source_row_no")
@@ -150,22 +153,25 @@ def render():
     if "source_row_no" not in df.columns:
         df["source_row_no"] = 999999
 
+    if "profile_id" not in df.columns:
+        df["profile_id"] = 999999
+
     df["__min_price"] = df.groupby("product_name")["store_retail_price_krw"].transform("min")
     df["__max_price"] = df.groupby("product_name")["store_retail_price_krw"].transform("max")
 
     if sort_by == "가격 낮은순":
         df = df.sort_values(
-            by=["__min_price", "product_name", "source_row_no", "size_name"],
+            by=["__min_price", "profile_id", "source_row_no", "size_name"],
             ascending=[True, True, True, True]
         )
     elif sort_by == "가격 높은순":
         df = df.sort_values(
-            by=["__max_price", "product_name", "source_row_no", "size_name"],
+            by=["__max_price", "profile_id", "source_row_no", "size_name"],
             ascending=[False, True, True, True]
         )
     else:
         df = df.sort_values(
-            by=["product_name", "source_row_no", "size_name"],
+            by=["profile_id", "source_row_no", "size_name"],
             ascending=[True, True, True]
         )
 
@@ -182,6 +188,8 @@ def render():
                 "store_retail_price_krw",
                 "flavor",
                 "guide",
+                "profile_id",
+                "source_row_no",
             ]
         ].copy()
 
@@ -193,6 +201,8 @@ def render():
                 "store_retail_price_krw": "매장운영가",
                 "flavor": "특징",
                 "guide": "가이드",
+                "profile_id": "프로파일ID",
+                "source_row_no": "원본행순서",
             }
         )
 
