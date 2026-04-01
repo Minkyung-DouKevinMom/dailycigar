@@ -1541,6 +1541,7 @@ def get_store_menu_view(batch_id=None, keyword=""):
         COALESCE(bp.flavor, '') AS flavor,
         COALESCE(bp.strength, '') AS strength,
         COALESCE(bp.guide, '') AS guide,
+        COALESCE(bp.id, 999999) AS profile_id,
         COALESCE(ii.source_row_no, 999999) AS source_row_no
     FROM import_item ii
     LEFT JOIN import_batch ib
@@ -1572,10 +1573,9 @@ def get_store_menu_view(batch_id=None, keyword=""):
 
     sql += """
     ORDER BY
-        bp.id,
-        ii.product_name,
-        ii.size_name,
+        profile_id,
         source_row_no,
+        ii.size_name,
         ii.id
     """
 
