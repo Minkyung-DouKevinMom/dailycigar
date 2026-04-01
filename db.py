@@ -1572,6 +1572,7 @@ def get_store_menu_view(batch_id=None, keyword=""):
 
     sql += """
     ORDER BY
+        bp.id,
         ii.product_name,
         ii.size_name,
         source_row_no,
