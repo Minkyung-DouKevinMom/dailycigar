@@ -21,39 +21,128 @@ def safe_text(value, default="-"):
     return text if text else default
 
 
-def strength_badge(strength: str) -> str:
+def get_strength_meta(strength: str):
     s = safe_text(strength, "").lower()
 
     if not s:
-        return ""
+        return {"label": "", "bg": "#F3F4F6", "color": "#6B7280"}
 
     if "mild" in s or "약" in s:
-        bg = "#E8F5E9"
-        fg = "#1B5E20"
-    elif "medium" in s or "중" in s:
-        bg = "#FFF8E1"
-        fg = "#8D6E63"
-    elif "full" in s or "강" in s:
-        bg = "#FBE9E7"
-        fg = "#BF360C"
-    else:
-        bg = "#ECEFF1"
-        fg = "#37474F"
+        return {"label": safe_text(strength), "bg": "#E8F5E9", "color": "#1B5E20"}
 
-    return f"""
-        <span style="
-            display:inline-block;
-            padding:4px 10px;
-            border-radius:999px;
-            font-size:12px;
-            font-weight:600;
-            background:{bg};
-            color:{fg};
-            margin-top:6px;
-        ">
-            {safe_text(strength)}
-        </span>
-    """
+    if "medium" in s or "중" in s:
+        return {"label": safe_text(strength), "bg": "#FFF8E1", "color": "#8D6E63"}
+
+    if "full" in s or "강" in s:
+        return {"label": safe_text(strength), "bg": "#FBE9E7", "color": "#BF360C"}
+
+    return {"label": safe_text(strength), "bg": "#ECEFF1", "color": "#37474F"}
+
+
+def inject_css():
+    st.markdown(
+        """
+        <style>
+        .menu-card {
+            border: 1px solid #E5E7EB;
+            border-radius: 22px;
+            padding: 18px 18px 16px 18px;
+            background: linear-gradient(180deg, #FFFFFF 0%, #FCFBF8 100%);
+            box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+            margin-bottom: 14px;
+            min-height: 360px;
+        }
+
+        .menu-title {
+            font-size: 1.8rem;
+            font-weight: 800;
+            color: #231F1A;
+            line-height: 1.2;
+            margin-bottom: 6px;
+        }
+
+        .menu-sub {
+            font-size: 0.95rem;
+            color: #6B7280;
+            margin-bottom: 2px;
+        }
+
+        .menu-code {
+            font-size: 0.8rem;
+            color: #9CA3AF;
+            margin-bottom: 10px;
+        }
+
+        .menu-price {
+            font-size: 2rem;
+            font-weight: 800;
+            color: #4E342E;
+            margin-top: 12px;
+            margin-bottom: 12px;
+        }
+
+        .menu-label {
+            font-size: 0.82rem;
+            font-weight: 700;
+            color: #8B7355;
+            margin-top: 10px;
+            margin-bottom: 4px;
+        }
+
+        .menu-body {
+            font-size: 0.95rem;
+            line-height: 1.65;
+            color: #374151;
+            white-space: pre-wrap;
+            word-break: keep-all;
+        }
+
+        .menu-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            margin-top: 2px;
+            margin-bottom: 4px;
+        }
+
+        .menu-empty {
+            color: #9CA3AF;
+            font-style: italic;
+        }
+
+        @media (max-width: 768px) {
+            .menu-card {
+                min-height: auto;
+                padding: 16px;
+            }
+            .menu-title {
+                font-size: 1.5rem;
+            }
+            .menu-price {
+                font-size: 1.7rem;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_badge(strength: str):
+    meta = get_strength_meta(strength)
+    if not meta["label"]:
+        return
+
+    st.markdown(
+        f"""
+        <div class="menu-badge" style="background:{meta['bg']}; color:{meta['color']};">
+            {meta['label']}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def draw_menu_card(row):
@@ -61,112 +150,44 @@ def draw_menu_card(row):
     size_name = safe_text(row.get("size_name"))
     product_code = safe_text(row.get("product_code"))
     price = format_krw(row.get("store_retail_price_krw"))
-    flavor = safe_text(row.get("flavor"))
+    flavor = safe_text(row.get("flavor"), "")
     strength = safe_text(row.get("strength"), "")
-    guide = safe_text(row.get("guide"))
+    guide = safe_text(row.get("guide"), "")
 
-    badge_html = strength_badge(strength)
+    flavor_html = flavor if flavor else '<span class="menu-empty">등록된 특징 정보가 없습니다.</span>'
+    guide_html = guide if guide else '<span class="menu-empty">등록된 가이드 정보가 없습니다.</span>'
 
-    st.markdown(
-        f"""
-        <div style="
-            border:1px solid #E5E7EB;
-            border-radius:20px;
-            padding:20px 18px;
-            min-height:280px;
-            background:#FFFFFF;
-            box-shadow:0 2px 10px rgba(0,0,0,0.04);
-            margin-bottom:14px;
-        ">
-            <div style="
-                font-size:22px;
-                font-weight:800;
-                color:#2D2A26;
-                line-height:1.3;
-                margin-bottom:6px;
-            ">
-                {product_name}
-            </div>
+    st.markdown('<div class="menu-card">', unsafe_allow_html=True)
+    st.markdown(f'<div class="menu-title">{product_name}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="menu-sub">{size_name}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="menu-code">{product_code}</div>', unsafe_allow_html=True)
 
-            <div style="
-                font-size:14px;
-                color:#6B7280;
-                margin-bottom:2px;
-            ">
-                {size_name}
-            </div>
+    render_badge(strength)
 
-            <div style="
-                font-size:12px;
-                color:#9CA3AF;
-                margin-bottom:10px;
-            ">
-                {product_code}
-            </div>
+    st.markdown(f'<div class="menu-price">{price}</div>', unsafe_allow_html=True)
 
-            {badge_html}
+    st.markdown('<div class="menu-label">특징</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="menu-body">{flavor_html}</div>', unsafe_allow_html=True)
 
-            <div style="
-                font-size:28px;
-                font-weight:800;
-                color:#4E342E;
-                margin-top:18px;
-                margin-bottom:14px;
-            ">
-                {price}
-            </div>
+    st.markdown('<div class="menu-label">가이드</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="menu-body">{guide_html}</div>', unsafe_allow_html=True)
 
-            <div style="
-                font-size:13px;
-                color:#6B7280;
-                font-weight:700;
-                margin-bottom:4px;
-            ">
-                특징
-            </div>
-            <div style="
-                font-size:14px;
-                color:#374151;
-                line-height:1.6;
-                margin-bottom:12px;
-                min-height:48px;
-            ">
-                {flavor}
-            </div>
-
-            <div style="
-                font-size:13px;
-                color:#6B7280;
-                font-weight:700;
-                margin-bottom:4px;
-            ">
-                가이드
-            </div>
-            <div style="
-                font-size:14px;
-                color:#374151;
-                line-height:1.6;
-                white-space:pre-wrap;
-            ">
-                {guide}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 def render():
+    inject_css()
+
     st.subheader("매장 메뉴판")
 
     batch_df = get_all_import_batch()
     batch_options = {"전체": None}
 
-    if not batch_df.empty:
+    if batch_df is not None and not batch_df.empty:
         for _, row in batch_df.iterrows():
             batch_options[f'{row["id"]} | {row["version_name"]}'] = row["id"]
 
-    c1, c2, c3 = st.columns([2, 3, 2])
+    c1, c2, c3, c4 = st.columns([2, 3, 2, 2])
 
     with c1:
         selected_batch_label = st.selectbox("버전 선택", list(batch_options.keys()))
@@ -176,20 +197,27 @@ def render():
         keyword = st.text_input("검색", placeholder="상품명 / 사이즈 / 코드 / 특징")
 
     with c3:
-        sort_by = st.selectbox(
-            "정렬",
-            ["상품명순", "가격 낮은순", "가격 높은순"]
-        )
+        sort_by = st.selectbox("정렬", ["상품명순", "가격 낮은순", "가격 높은순"])
+
+    with c4:
+        hide_zero_price = st.checkbox("가격 미등록 제외", value=True)
 
     df = get_store_menu_view(batch_id=batch_id, keyword=keyword)
 
-    if df.empty:
+    if df is None or df.empty:
         st.info("조회된 메뉴 데이터가 없습니다.")
         return
 
     df["store_retail_price_krw"] = pd.to_numeric(
         df["store_retail_price_krw"], errors="coerce"
     ).fillna(0)
+
+    if hide_zero_price:
+        df = df[df["store_retail_price_krw"] > 0].copy()
+
+    if df.empty:
+        st.info("조건에 맞는 메뉴 데이터가 없습니다.")
+        return
 
     if sort_by == "가격 낮은순":
         df = df.sort_values(
@@ -202,15 +230,18 @@ def render():
             ascending=[False, True, True]
         )
     else:
-        df = df.sort_values(
-            by=["product_name", "size_name", "source_row_no"],
-            ascending=[True, True, True]
-        )
+        sort_cols = ["product_name", "size_name"]
+        asc = [True, True]
 
-    total_count = len(df)
-    st.caption(f"{total_count}건의 메뉴가 조회되었습니다.")
+        if "source_row_no" in df.columns:
+            sort_cols.append("source_row_no")
+            asc.append(True)
 
-    with st.expander("목록형으로 같이 보기", expanded=False):
+        df = df.sort_values(by=sort_cols, ascending=asc)
+
+    st.caption(f"{len(df)}건의 메뉴가 조회되었습니다.")
+
+    with st.expander("목록형으로 보기", expanded=False):
         list_df = df[
             [
                 "product_code",
@@ -245,9 +276,9 @@ def render():
         )
 
     card_per_row = 3
-    rows = math.ceil(len(df) / card_per_row)
+    total_rows = math.ceil(len(df) / card_per_row)
 
-    for r in range(rows):
+    for r in range(total_rows):
         cols = st.columns(card_per_row)
         for c in range(card_per_row):
             idx = r * card_per_row + c
