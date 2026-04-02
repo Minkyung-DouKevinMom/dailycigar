@@ -1,6 +1,5 @@
 import os
 import sqlite3
-from datetime import timedelta
 
 import pandas as pd
 import streamlit as st
@@ -35,34 +34,6 @@ def _find_date_column(df: pd.DataFrame):
         if col in df.columns:
             return col
     return None
-
-
-def _build_partner_daily_series(line_df: pd.DataFrame, partner_name: str) -> pd.DataFrame:
-    partner_df = line_df[line_df["partner_name"] == partner_name].copy()
-
-    if partner_df.empty:
-        return pd.DataFrame(columns=["date", "sales", "sales_ma7"])
-
-    daily_df = (
-        partner_df.groupby("date", dropna=False)["sales"]
-        .sum()
-        .reset_index()
-        .sort_values("date")
-    )
-
-    min_date = daily_df["date"].min()
-    max_date = daily_df["date"].max()
-
-    all_dates = pd.date_range(start=min_date, end=max_date, freq="D")
-    base_df = pd.DataFrame({"date": all_dates})
-
-    daily_df["date"] = pd.to_datetime(daily_df["date"])
-    merged = base_df.merge(daily_df, on="date", how="left")
-    merged["sales"] = pd.to_numeric(merged["sales"], errors="coerce").fillna(0)
-
-    # 7일 이동평균
-    merged["sales_ma7"] = merged["sales"].rolling(window=7, min_periods=1).mean()
-    return merged
 
 
 def _build_partner_cycle_summary(line_df: pd.DataFrame) -> pd.DataFrame:
@@ -116,7 +87,9 @@ def _build_partner_cycle_summary(line_df: pd.DataFrame) -> pd.DataFrame:
     if summary_df.empty:
         return summary_df
 
-    summary_df = summary_df.sort_values(["누적 매출", "거래처"], ascending=[False, True]).reset_index(drop=True)
+    summary_df = summary_df.sort_values(
+        ["누적 매출", "거래처"], ascending=[False, True]
+    ).reset_index(drop=True)
     return summary_df
 
 
@@ -198,7 +171,7 @@ def render():
         chart_df = top_df.set_index("partner_name")[[metric]]
         st.bar_chart(chart_df)
 
-        st.markdown("### 거래처별 상세 추이")
+        st.markdown("### 일자별 거래처 구매금액 비교")
 
         date_col = _find_date_column(df)
         if not date_col:
@@ -210,32 +183,36 @@ def render():
         line_df = line_df.dropna(subset=["date"]).copy()
 
         if line_df.empty:
-            st.info("일자 데이터가 없어 상세 그래프를 표시할 수 없습니다.")
+            st.info("일자 데이터가 없어 비교 그래프를 표시할 수 없습니다.")
             return
 
         line_df["date"] = line_df["date"].dt.normalize()
 
-        partner_list = sorted(line_df["partner_name"].dropna().unique().tolist())
-        default_partner = partner_list[0] if partner_list else None
-
-        selected_partner = st.selectbox(
-            "상세 분석 거래처 선택",
-            options=partner_list,
-            index=0 if default_partner else None,
+        daily_df = (
+            line_df.groupby(["date", "partner_name"], dropna=False)["sales"]
+            .sum()
+            .reset_index()
         )
 
-        partner_daily = _build_partner_daily_series(line_df, selected_partner)
+        if daily_df.empty:
+            st.info("일자별 집계 데이터가 없습니다.")
+            return
 
-        if partner_daily.empty:
-            st.info("선택한 거래처의 일자별 데이터가 없습니다.")
-        else:
-            st.caption("막대는 일자별 구매금액, 선은 7일 이동평균입니다. 구매가 없는 날짜는 0으로 표시합니다.")
+        min_date = pd.to_datetime(daily_df["date"]).min()
+        max_date = pd.to_datetime(daily_df["date"]).max()
+        all_dates = pd.date_range(start=min_date, end=max_date, freq="D")
 
-            bar_df = partner_daily.set_index("date")[["sales"]]
-            st.bar_chart(bar_df, use_container_width=True)
+        pivot_df = (
+            daily_df.pivot(index="date", columns="partner_name", values="sales")
+            .sort_index()
+        )
 
-            line_ma_df = partner_daily.set_index("date")[["sales_ma7"]]
-            st.line_chart(line_ma_df, use_container_width=True)
+        pivot_df.index = pd.to_datetime(pivot_df.index)
+        pivot_df = pivot_df.reindex(all_dates).fillna(0)
+        pivot_df.index.name = "date"
+
+        st.caption("거래가 없는 날짜는 0으로 표시하여 거래처별 구매 주기를 비교합니다.")
+        st.line_chart(pivot_df, use_container_width=True)
 
         st.markdown("### 거래처별 구매주기 요약")
 
