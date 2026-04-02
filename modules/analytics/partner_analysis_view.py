@@ -157,6 +157,7 @@ def render():
             .sum()
             .sort_values(ascending=False)
         )
+
         default_partners = partner_sales_rank.head(5).index.tolist()
 
         selected_partners = st.multiselect(
@@ -178,10 +179,10 @@ def render():
 
         pivot_df = (
             daily_df.pivot(index="date", columns="partner_name", values="sales")
-            .fillna(0)
             .sort_index()
         )
 
+        st.caption("매출이 발생한 날짜만 표시하며, 거래가 없는 날짜는 0으로 채우지 않습니다.")
         st.line_chart(pivot_df)
 
     finally:
