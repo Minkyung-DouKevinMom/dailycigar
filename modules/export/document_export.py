@@ -164,12 +164,34 @@ def _apply_body_style(ws, header_map, start_row, end_row):
                 cell.fill = light_gray_fill
 
 
-def build_product_intro_from_template(df: pd.DataFrame) -> io.BytesIO:
+def build_product_intro_from_template(
+    df: pd.DataFrame,
+    include_retail_price: bool = True,
+    include_supply_price: bool = True,
+) -> io.BytesIO:
     wb = _load_product_intro_template_workbook()
     ws = wb[wb.sheetnames[0]]
 
     header_row = 1
     start_row = 2
+
+    removable_headers = []
+    if not include_retail_price:
+        removable_headers.append("소비자가(KRW)")
+    if not include_supply_price:
+        removable_headers.extend(["공급가(KRW)", "공급가합계(KRW)"])
+
+    if removable_headers:
+        current_header_map = _get_header_map(ws, header_row=header_row)
+        delete_cols = []
+
+        for header in removable_headers:
+            col_idx = current_header_map.get(header)
+            if col_idx:
+                delete_cols.append(col_idx)
+
+        for col_idx in sorted(delete_cols, reverse=True):
+            ws.delete_cols(col_idx, 1)
 
     header_map = _get_header_map(ws, header_row=header_row)
 
@@ -206,7 +228,7 @@ def build_product_intro_from_template(df: pd.DataFrame) -> io.BytesIO:
             _merge_within_group_same_value(ws, header_map, "Guide", group_start, group_end)
 
         _apply_alignment(ws, start_row, end_row, header_map)
-        _apply_body_style(ws, header_map, start_row, end_row)
+        _apply_body_style(ws, start_row, end_row)
 
     output = io.BytesIO()
     wb.save(output)
@@ -247,14 +269,19 @@ def render_product_intro_export():
 
     export_df = df.copy()
 
+    drop_cols = []
+
     if not include_retail_price and "retail_price_krw" in export_df.columns:
-        export_df["retail_price_krw"] = ""
+        drop_cols.append("retail_price_krw")
 
     if not include_supply_price:
         if "supply_price_krw" in export_df.columns:
-            export_df["supply_price_krw"] = ""
+            drop_cols.append("supply_price_krw")
         if "supply_total_krw" in export_df.columns:
-            export_df["supply_total_krw"] = ""
+            drop_cols.append("supply_total_krw")
+
+    if drop_cols:
+        export_df = export_df.drop(columns=drop_cols, errors="ignore")
 
     preview_df = export_df.rename(columns=DISPLAY_RENAME).copy()
 
@@ -274,7 +301,11 @@ def render_product_intro_export():
     st.dataframe(preview_df, use_container_width=True, hide_index=True)
 
     try:
-        excel_bytes = build_product_intro_from_template(export_df)
+        excel_bytes = build_product_intro_from_template(
+            export_df,
+            include_retail_price=include_retail_price,
+            include_supply_price=include_supply_price,
+        )
     except Exception as e:
         st.error(f"엑셀 생성 중 오류 발생: {e}")
         return
