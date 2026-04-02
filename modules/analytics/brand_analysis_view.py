@@ -250,51 +250,44 @@ def render():
         # 시가상품(product_mst 등록 상품)만 필터
         cigar_codes = get_cigar_product_codes(conn)
 
-        cigar_df = df.copy()
-        if cigar_codes:
-            cigar_df = cigar_df[cigar_df["product_code"].isin(cigar_codes)].copy()
-        else:
-            cigar_df = pd.DataFrame(columns=df.columns)
+        def filter_cigar(src: pd.DataFrame) -> pd.DataFrame:
+            if src.empty:
+                return pd.DataFrame(columns=src.columns)
+            if cigar_codes:
+                return src[src["product_code"].isin(cigar_codes)].copy()
+            return pd.DataFrame(columns=src.columns)
 
-        # 상품 집계 (시가상품만)
-        if cigar_df.empty:
-            product_grouped = pd.DataFrame(
-                columns=[
-                    "product_code",
-                    "product_name",
-                    "판매량",
-                    "매출",
-                    "이익",
-                    "상품코드",
-                    "마진율(%)",
-                    "개당마진금액",
-                ]
-            )
-        else:
-            product_grouped = (
-                cigar_df.groupby(["product_code", "product_name"], dropna=False)
-                .agg(
-                    판매량=("qty", "sum"),
-                    매출=("sales", "sum"),
-                    이익=("profit", "sum"),
+        retail_cigar_df    = filter_cigar(retail_df)
+        wholesale_cigar_df = filter_cigar(wholesale_df)
+        cigar_df           = filter_cigar(df)
+
+        def build_product_grouped(src: pd.DataFrame) -> pd.DataFrame:
+            if src.empty:
+                return pd.DataFrame(
+                    columns=[
+                        "product_code", "product_name",
+                        "판매량", "매출", "이익",
+                        "상품코드", "마진율(%)", "개당마진금액",
+                    ]
                 )
+            grp = (
+                src.groupby(["product_code", "product_name"], dropna=False)
+                .agg(판매량=("qty", "sum"), 매출=("sales", "sum"), 이익=("profit", "sum"))
                 .reset_index()
             )
-
-            product_grouped["상품코드"] = product_grouped["product_code"].fillna("").astype(str).str.strip()
-            product_grouped.loc[product_grouped["상품코드"] == "", "상품코드"] = product_grouped["product_name"]
-
-            product_grouped["마진율(%)"] = product_grouped.apply(
-                lambda x: round((x["이익"] / x["매출"] * 100), 1) if x["매출"] else 0,
-                axis=1,
+            grp["상품코드"] = grp["product_code"].fillna("").astype(str).str.strip()
+            grp.loc[grp["상품코드"] == "", "상품코드"] = grp["product_name"]
+            grp["마진율(%)"] = grp.apply(
+                lambda x: round(x["이익"] / x["매출"] * 100, 1) if x["매출"] else 0, axis=1
             )
-
-            product_grouped["개당마진금액"] = product_grouped.apply(
-                lambda x: round((x["이익"] / x["판매량"]), 0) if x["판매량"] else 0,
-                axis=1,
+            grp["개당마진금액"] = grp.apply(
+                lambda x: round(x["이익"] / x["판매량"], 0) if x["판매량"] else 0, axis=1
             )
+            return grp.sort_values("매출", ascending=False).reset_index(drop=True)
 
-            product_grouped = product_grouped.sort_values("매출", ascending=False).reset_index(drop=True)
+        product_grouped          = build_product_grouped(cigar_df)
+        retail_product_grouped   = build_product_grouped(retail_cigar_df)
+        wholesale_product_grouped = build_product_grouped(wholesale_cigar_df)
 
         total_sales = brand_grouped["매출"].sum()
         total_profit = brand_grouped["이익"].sum()
@@ -309,19 +302,12 @@ def render():
 
         st.divider()
 
-        # 파이차트
-        brand_pie_df = group_minor_as_others(
-            brand_grouped.rename(columns={"브랜드": "구분", "매출": "금액"}),
-            label_col="구분",
-            value_col="금액",
-            top_n=6,
-        )
-
-        if product_grouped.empty:
-            product_pie_df = pd.DataFrame(columns=["구분", "금액"])
-        else:
-            product_pie_df = group_minor_as_others(
-                product_grouped.rename(columns={"상품코드": "구분", "매출": "금액"}),
+        # 파이차트 — 시가상품별 매출금액 비중 (소매 / 도매 각각)
+        def make_product_pie_df(grp: pd.DataFrame) -> pd.DataFrame:
+            if grp.empty:
+                return pd.DataFrame(columns=["구분", "금액"])
+            return group_minor_as_others(
+                grp.rename(columns={"상품코드": "구분", "매출": "금액"}),
                 label_col="구분",
                 value_col="금액",
                 top_n=6,
@@ -331,18 +317,18 @@ def render():
 
         with p1:
             render_pie_chart(
-                brand_pie_df,
+                make_product_pie_df(retail_product_grouped),
                 label_col="구분",
                 value_col="금액",
-                title="브랜드별 매출금액 비중",
+                title="시가상품별 매출금액 비중 (소매)",
             )
 
         with p2:
             render_pie_chart(
-                product_pie_df,
+                make_product_pie_df(wholesale_product_grouped),
                 label_col="구분",
                 value_col="금액",
-                title="시가상품별 매출금액 비중",
+                title="시가상품별 매출금액 비중 (도매)",
             )
 
         st.divider()
