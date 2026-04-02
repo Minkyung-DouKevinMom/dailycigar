@@ -265,6 +265,7 @@ def render():
                         "wholesale_price": "도매가(₩)",
                         "retail_price": "소매가(₩)",
                         "store_retail_price": "매장운영가(₩)",
+                        "source_row_no": "정렬번호",
                         "updated_at": "수정일시",
                     }
                 )
@@ -281,7 +282,8 @@ def render():
                     "소매가(₩)",
                     "매장운영가(₩)",
                     "사용",
-                    "수정일시",
+                    "정렬번호",
+                    "수정일시"
                 ]
 
                 styled_df = display_df[display_cols].style.set_properties(

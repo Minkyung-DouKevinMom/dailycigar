@@ -228,7 +228,7 @@ def build_product_intro_from_template(
             _merge_within_group_same_value(ws, header_map, "Guide", group_start, group_end)
 
         _apply_alignment(ws, start_row, end_row, header_map)
-        _apply_body_style(ws, start_row, end_row)
+        _apply_body_style(ws, header_map, start_row, end_row)
 
     output = io.BytesIO()
     wb.save(output)

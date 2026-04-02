@@ -465,10 +465,11 @@ def get_all_blend_profile():
         flavor,
         strength,
         guide,
+        description,
         created_at,
         updated_at
     FROM blend_profile_mst
-    ORDER BY product_name
+    ORDER BY id,product_name
     """
     return run_query(sql)
 
@@ -481,6 +482,7 @@ def get_blend_profile_detail(row_id):
         flavor,
         strength,
         guide,
+        description,
         created_at,
         updated_at
     FROM blend_profile_mst
@@ -489,24 +491,26 @@ def get_blend_profile_detail(row_id):
     return run_query(sql, [row_id])
 
 
-def upsert_blend_profile(product_name, flavor, strength, guide):
+def upsert_blend_profile(product_name, flavor, strength, guide, description=None):
     sql = """
     INSERT INTO blend_profile_mst (
         product_name,
         flavor,
         strength,
-        guide
-    ) VALUES (?, ?, ?, ?)
+        guide,
+        description
+    ) VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(product_name) DO UPDATE SET
         flavor = excluded.flavor,
         strength = excluded.strength,
         guide = excluded.guide,
+        description = excluded.description,
         updated_at = CURRENT_TIMESTAMP
     """
-    execute(sql, [product_name, flavor, strength, guide])
+    execute(sql, [product_name, flavor, strength, guide, description])
 
 
-def update_blend_profile(row_id, product_name, flavor, strength, guide):
+def update_blend_profile(row_id, product_name, flavor, strength, guide, description=None):
     sql = """
     UPDATE blend_profile_mst
     SET
@@ -514,10 +518,11 @@ def update_blend_profile(row_id, product_name, flavor, strength, guide):
         flavor = ?,
         strength = ?,
         guide = ?,
+        description = ?,
         updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
     """
-    execute(sql, [product_name, flavor, strength, guide, row_id])
+    execute(sql, [product_name, flavor, strength, guide, description, row_id])
 
 
 def delete_blend_profile(row_id):

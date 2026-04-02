@@ -17,22 +17,28 @@ def render():
     if df.empty:
         st.info("blend_profile_mst 데이터가 없습니다.")
         df = pd.DataFrame(columns=[
-            "id", "product_name", "flavor", "strength", "guide", "created_at", "updated_at"
+            "id", "product_name", "flavor", "strength", "guide", "description", "created_at", "updated_at"
         ])
 
-    keyword = st.text_input("검색", placeholder="상품명 / 향 / 강도 / 가이드")
+    # description 컬럼이 없는 경우(기존 DB) 방어 처리
+    if "description" not in df.columns:
+        df["description"] = None
+
+    keyword = st.text_input("검색", placeholder="상품명 / 향 / 강도 / 가이드 / 메뉴 설명")
     if keyword:
         mask = (
             df["product_name"].fillna("").str.contains(keyword, case=False) |
             df["flavor"].fillna("").str.contains(keyword, case=False) |
             df["strength"].fillna("").str.contains(keyword, case=False) |
-            df["guide"].fillna("").str.contains(keyword, case=False)
+            df["guide"].fillna("").str.contains(keyword, case=False) |
+            df["description"].fillna("").str.contains(keyword, case=False)
         )
         df = df[mask].copy()
 
     if "delete_yn" not in df.columns:
         df.insert(0, "delete_yn", False)
 
+    # created_at / updated_at 은 그리드에서 제외
     display_columns = [
         "delete_yn",
         "id",
@@ -40,8 +46,7 @@ def render():
         "flavor",
         "strength",
         "guide",
-        "created_at",
-        "updated_at",
+        "description",
     ]
 
     edit_df = df[display_columns].copy()
@@ -58,10 +63,9 @@ def render():
             "flavor": st.column_config.TextColumn("향/노트"),
             "strength": st.column_config.TextColumn("강도"),
             "guide": st.column_config.TextColumn("가이드"),
-            "created_at": st.column_config.TextColumn("생성일", disabled=True),
-            "updated_at": st.column_config.TextColumn("수정일", disabled=True),
+            "description": st.column_config.TextColumn("메뉴 설명", width="large"),
         },
-        disabled=["id", "created_at", "updated_at"],
+        disabled=["id"],
         key="blend_profile_editor",
     )
 
@@ -89,9 +93,10 @@ def render():
                 delete_yn = bool(row.get("delete_yn", False))
 
                 product_name = null_if_blank(row.get("product_name"))
-                flavor = null_if_blank(row.get("flavor"))
-                strength = null_if_blank(row.get("strength"))
-                guide = null_if_blank(row.get("guide"))
+                flavor       = null_if_blank(row.get("flavor"))
+                strength     = null_if_blank(row.get("strength"))
+                guide        = null_if_blank(row.get("guide"))
+                description  = null_if_blank(row.get("description"))
 
                 is_blank_new_row = (
                     pd.isna(row_id)
@@ -99,6 +104,7 @@ def render():
                     and not flavor
                     and not strength
                     and not guide
+                    and not description
                 )
                 if is_blank_new_row:
                     continue
@@ -119,6 +125,7 @@ def render():
                         flavor=flavor,
                         strength=strength,
                         guide=guide,
+                        description=description,
                     )
                     update_count += 1
                 else:
@@ -127,6 +134,7 @@ def render():
                         flavor=flavor,
                         strength=strength,
                         guide=guide,
+                        description=description,
                     )
                     insert_count += 1
 
