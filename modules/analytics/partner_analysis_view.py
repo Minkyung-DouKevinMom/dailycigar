@@ -1,9 +1,9 @@
 import os
 import sqlite3
+from datetime import timedelta
 
 import pandas as pd
 import streamlit as st
-import altair as alt
 
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
@@ -19,10 +19,7 @@ def fmt_krw(x):
         return "₩0"
 
 
-def _find_date_column(df: pd.DataFrame) -> str | None:
-    """
-    v_wholesale_sales 안의 날짜 컬럼명을 자동 탐지
-    """
+def _find_date_column(df: pd.DataFrame):
     candidates = [
         "sales_date",
         "sale_date",
@@ -40,39 +37,87 @@ def _find_date_column(df: pd.DataFrame) -> str | None:
     return None
 
 
-def _calc_partner_cycle_stats(partner_df: pd.DataFrame) -> dict:
-    buy_dates = (
-        pd.Series(partner_df["date"].dropna().dt.normalize().unique())
-        .sort_values()
-        .reset_index(drop=True)
+def _build_partner_daily_series(line_df: pd.DataFrame, partner_name: str) -> pd.DataFrame:
+    partner_df = line_df[line_df["partner_name"] == partner_name].copy()
+
+    if partner_df.empty:
+        return pd.DataFrame(columns=["date", "sales", "sales_ma7"])
+
+    daily_df = (
+        partner_df.groupby("date", dropna=False)["sales"]
+        .sum()
+        .reset_index()
+        .sort_values("date")
     )
 
-    buy_count = len(buy_dates)
-    latest_buy_date = buy_dates.iloc[-1].date() if buy_count >= 1 else None
-    prev_buy_date = buy_dates.iloc[-2].date() if buy_count >= 2 else None
+    min_date = daily_df["date"].min()
+    max_date = daily_df["date"].max()
 
-    if buy_count >= 2:
-        gaps = buy_dates.diff().dropna().dt.days
-        recent_gap = int((buy_dates.iloc[-1] - buy_dates.iloc[-2]).days)
-        avg_gap = round(float(gaps.mean()), 1) if len(gaps) else None
-    else:
-        recent_gap = None
-        avg_gap = None
+    all_dates = pd.date_range(start=min_date, end=max_date, freq="D")
+    base_df = pd.DataFrame({"date": all_dates})
 
-    latest_buy_amount = (
-        partner_df.loc[partner_df["date"].dt.normalize() == buy_dates.iloc[-1], "sales"].sum()
-        if buy_count >= 1
-        else 0
+    daily_df["date"] = pd.to_datetime(daily_df["date"])
+    merged = base_df.merge(daily_df, on="date", how="left")
+    merged["sales"] = pd.to_numeric(merged["sales"], errors="coerce").fillna(0)
+
+    # 7일 이동평균
+    merged["sales_ma7"] = merged["sales"].rolling(window=7, min_periods=1).mean()
+    return merged
+
+
+def _build_partner_cycle_summary(line_df: pd.DataFrame) -> pd.DataFrame:
+    if line_df.empty:
+        return pd.DataFrame()
+
+    purchase_days = (
+        line_df.groupby(["partner_name", "date"], dropna=False)["sales"]
+        .sum()
+        .reset_index()
     )
+    purchase_days = purchase_days[purchase_days["sales"] > 0].copy()
 
-    return {
-        "최근 구매일": latest_buy_date.strftime("%Y-%m-%d") if latest_buy_date else "-",
-        "이전 구매일": prev_buy_date.strftime("%Y-%m-%d") if prev_buy_date else "-",
-        "최근 구매간격(일)": recent_gap if recent_gap is not None else "-",
-        "평균 구매간격(일)": avg_gap if avg_gap is not None else "-",
-        "구매일수": buy_count,
-        "최근 구매금액": latest_buy_amount,
-    }
+    if purchase_days.empty:
+        return pd.DataFrame()
+
+    rows = []
+
+    for partner_name, g in purchase_days.groupby("partner_name", dropna=False):
+        g = g.sort_values("date").copy()
+        dates = list(pd.to_datetime(g["date"]))
+        sales_values = list(pd.to_numeric(g["sales"], errors="coerce").fillna(0))
+
+        recent_purchase_date = dates[-1] if dates else pd.NaT
+        prev_purchase_date = dates[-2] if len(dates) >= 2 else pd.NaT
+        recent_purchase_amount = sales_values[-1] if sales_values else 0
+        purchase_count = len(dates)
+        total_sales = sum(sales_values)
+
+        interval_days = []
+        for i in range(1, len(dates)):
+            interval_days.append((dates[i] - dates[i - 1]).days)
+
+        recent_interval = interval_days[-1] if interval_days else None
+        avg_interval = round(sum(interval_days) / len(interval_days), 1) if interval_days else None
+
+        rows.append(
+            {
+                "거래처": partner_name,
+                "최근 구매일": recent_purchase_date.date() if pd.notna(recent_purchase_date) else "",
+                "이전 구매일": prev_purchase_date.date() if pd.notna(prev_purchase_date) else "",
+                "최근 구매간격(일)": recent_interval if recent_interval is not None else "",
+                "평균 구매간격(일)": avg_interval if avg_interval is not None else "",
+                "구매일수": purchase_count,
+                "최근 구매금액": recent_purchase_amount,
+                "누적 매출": total_sales,
+            }
+        )
+
+    summary_df = pd.DataFrame(rows)
+    if summary_df.empty:
+        return summary_df
+
+    summary_df = summary_df.sort_values(["누적 매출", "거래처"], ascending=[False, True]).reset_index(drop=True)
+    return summary_df
 
 
 def render():
@@ -138,7 +183,7 @@ def render():
         for col in ["매출", "이익"]:
             show_df[col] = show_df[col].apply(fmt_krw)
 
-        st.dataframe(show_df, use_container_width=True, height=450, hide_index=True)
+        st.dataframe(show_df, use_container_width=True, height=420, hide_index=True)
 
         st.markdown("### TOP 거래처")
 
@@ -151,14 +196,13 @@ def render():
         metric = "매출" if basis == "매출 기준" else "이익"
         top_df = grouped.sort_values(metric, ascending=False).head(10)
         chart_df = top_df.set_index("partner_name")[[metric]]
-
         st.bar_chart(chart_df)
 
-        st.markdown("### 거래처별 구매 패턴 상세")
+        st.markdown("### 거래처별 상세 추이")
 
         date_col = _find_date_column(df)
         if not date_col:
-            st.info("일자 컬럼을 찾지 못했습니다. (예: sales_date, sale_date, created_at)")
+            st.info("일자 컬럼을 찾지 못했습니다. 예: sales_date, sale_date, created_at")
             return
 
         line_df = df.copy()
@@ -169,24 +213,41 @@ def render():
             st.info("일자 데이터가 없어 상세 그래프를 표시할 수 없습니다.")
             return
 
-        partner_options = grouped["partner_name"].tolist()
-        default_partner = partner_options[0] if partner_options else None
+        line_df["date"] = line_df["date"].dt.normalize()
+
+        partner_list = sorted(line_df["partner_name"].dropna().unique().tolist())
+        default_partner = partner_list[0] if partner_list else None
 
         selected_partner = st.selectbox(
-            "거래처 선택",
-            options=partner_options,
+            "상세 분석 거래처 선택",
+            options=partner_list,
             index=0 if default_partner else None,
         )
 
-        if not selected_partner:
-            st.info("거래처를 선택해주세요.")
-            return
+        partner_daily = _build_partner_daily_series(line_df, selected_partner)
 
-        partner_df = line_df[line_df["partner_name"] == selected_partner].copy()
-        if partner_df.empty:
-            st.info("선택한 거래처의 데이터가 없습니다.")
-            return
+        if partner_daily.empty:
+            st.info("선택한 거래처의 일자별 데이터가 없습니다.")
+        else:
+            st.caption("막대는 일자별 구매금액, 선은 7일 이동평균입니다. 구매가 없는 날짜는 0으로 표시합니다.")
 
-        partner_df["date"] = partner_df["date"].dt.normalize()
+            bar_df = partner_daily.set_index("date")[["sales"]]
+            st.bar_chart(bar_df, use_container_width=True)
 
-        daily_sales
+            line_ma_df = partner_daily.set_index("date")[["sales_ma7"]]
+            st.line_chart(line_ma_df, use_container_width=True)
+
+        st.markdown("### 거래처별 구매주기 요약")
+
+        summary_df = _build_partner_cycle_summary(line_df)
+        if summary_df.empty:
+            st.info("구매주기 요약을 계산할 데이터가 없습니다.")
+        else:
+            for col in ["최근 구매금액", "누적 매출"]:
+                if col in summary_df.columns:
+                    summary_df[col] = summary_df[col].apply(fmt_krw)
+
+            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+    finally:
+        conn.close()
