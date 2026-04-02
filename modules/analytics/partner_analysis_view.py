@@ -3,6 +3,7 @@ import sqlite3
 
 import pandas as pd
 import streamlit as st
+import altair as alt
 
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
@@ -39,15 +40,47 @@ def _find_date_column(df: pd.DataFrame) -> str | None:
     return None
 
 
+def _calc_partner_cycle_stats(partner_df: pd.DataFrame) -> dict:
+    buy_dates = (
+        pd.Series(partner_df["date"].dropna().dt.normalize().unique())
+        .sort_values()
+        .reset_index(drop=True)
+    )
+
+    buy_count = len(buy_dates)
+    latest_buy_date = buy_dates.iloc[-1].date() if buy_count >= 1 else None
+    prev_buy_date = buy_dates.iloc[-2].date() if buy_count >= 2 else None
+
+    if buy_count >= 2:
+        gaps = buy_dates.diff().dropna().dt.days
+        recent_gap = int((buy_dates.iloc[-1] - buy_dates.iloc[-2]).days)
+        avg_gap = round(float(gaps.mean()), 1) if len(gaps) else None
+    else:
+        recent_gap = None
+        avg_gap = None
+
+    latest_buy_amount = (
+        partner_df.loc[partner_df["date"].dt.normalize() == buy_dates.iloc[-1], "sales"].sum()
+        if buy_count >= 1
+        else 0
+    )
+
+    return {
+        "최근 구매일": latest_buy_date.strftime("%Y-%m-%d") if latest_buy_date else "-",
+        "이전 구매일": prev_buy_date.strftime("%Y-%m-%d") if prev_buy_date else "-",
+        "최근 구매간격(일)": recent_gap if recent_gap is not None else "-",
+        "평균 구매간격(일)": avg_gap if avg_gap is not None else "-",
+        "구매일수": buy_count,
+        "최근 구매금액": latest_buy_amount,
+    }
+
+
 def render():
     st.subheader("거래처 분석")
 
     conn = get_conn()
 
     try:
-        # -----------------------
-        # 도매 데이터
-        # -----------------------
         df = pd.read_sql_query(
             """
             SELECT *
@@ -60,7 +93,6 @@ def render():
             st.warning("도매 데이터가 없습니다.")
             return
 
-        # 필수 컬럼 보정
         if "partner_name" not in df.columns:
             st.error("v_wholesale_sales에 partner_name 컬럼이 없습니다.")
             return
@@ -91,9 +123,6 @@ def render():
         )
         grouped = grouped.sort_values("매출", ascending=False)
 
-        # -----------------------
-        # KPI
-        # -----------------------
         total_sales = grouped["매출"].sum()
         total_profit = grouped["이익"].sum()
         partner_count = len(grouped)
@@ -105,18 +134,12 @@ def render():
 
         st.divider()
 
-        # -----------------------
-        # 테이블
-        # -----------------------
         show_df = grouped.rename(columns={"partner_name": "거래처"}).copy()
         for col in ["매출", "이익"]:
             show_df[col] = show_df[col].apply(fmt_krw)
 
         st.dataframe(show_df, use_container_width=True, height=450, hide_index=True)
 
-        # -----------------------
-        # TOP 차트
-        # -----------------------
         st.markdown("### TOP 거래처")
 
         basis = st.radio(
@@ -131,15 +154,11 @@ def render():
 
         st.bar_chart(chart_df)
 
-        # -----------------------
-        # 일자별 거래처 선그래프
-        # -----------------------
-        st.markdown("### 일자별 거래처 구매금액")
+        st.markdown("### 거래처별 구매 패턴 상세")
 
         date_col = _find_date_column(df)
-
         if not date_col:
-            st.info("일자 컬럼을 찾지 못해 선그래프를 표시하지 못했습니다. (예: sales_date, sale_date, created_at)")
+            st.info("일자 컬럼을 찾지 못했습니다. (예: sales_date, sale_date, created_at)")
             return
 
         line_df = df.copy()
@@ -147,43 +166,27 @@ def render():
         line_df = line_df.dropna(subset=["date"]).copy()
 
         if line_df.empty:
-            st.info("일자 데이터가 없어 선그래프를 표시할 수 없습니다.")
+            st.info("일자 데이터가 없어 상세 그래프를 표시할 수 없습니다.")
             return
 
-        line_df["date"] = line_df["date"].dt.date
+        partner_options = grouped["partner_name"].tolist()
+        default_partner = partner_options[0] if partner_options else None
 
-        partner_sales_rank = (
-            line_df.groupby("partner_name", dropna=False)["sales"]
-            .sum()
-            .sort_values(ascending=False)
+        selected_partner = st.selectbox(
+            "거래처 선택",
+            options=partner_options,
+            index=0 if default_partner else None,
         )
 
-        default_partners = partner_sales_rank.head(5).index.tolist()
-
-        selected_partners = st.multiselect(
-            "선그래프 거래처 선택",
-            options=partner_sales_rank.index.tolist(),
-            default=default_partners,
-        )
-
-        if not selected_partners:
-            st.info("선그래프에 표시할 거래처를 선택해주세요.")
+        if not selected_partner:
+            st.info("거래처를 선택해주세요.")
             return
 
-        daily_df = (
-            line_df[line_df["partner_name"].isin(selected_partners)]
-            .groupby(["date", "partner_name"], dropna=False)["sales"]
-            .sum()
-            .reset_index()
-        )
+        partner_df = line_df[line_df["partner_name"] == selected_partner].copy()
+        if partner_df.empty:
+            st.info("선택한 거래처의 데이터가 없습니다.")
+            return
 
-        pivot_df = (
-            daily_df.pivot(index="date", columns="partner_name", values="sales")
-            .sort_index()
-        )
+        partner_df["date"] = partner_df["date"].dt.normalize()
 
-        st.caption("매출이 발생한 날짜만 표시하며, 거래가 없는 날짜는 0으로 채우지 않습니다.")
-        st.line_chart(pivot_df)
-
-    finally:
-        conn.close()
+        daily_sales
