@@ -36,6 +36,13 @@ def view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
     return cur.fetchone() is not None
 
 
+def get_table_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table_name})")
+    rows = cur.fetchall()
+    return [str(r[1]).strip() for r in rows]
+
+
 def normalize_code(series: pd.Series) -> pd.Series:
     return series.fillna("").astype(str).str.strip().str.upper()
 
@@ -107,16 +114,31 @@ def get_non_cigar_category_map(conn) -> dict:
     if not table_exists(conn, "non_cigar_product_mst"):
         return {}
 
-    df = pd.read_sql_query(
-        """
-        SELECT
-            UPPER(TRIM(COALESCE(product_code, ''))) AS product_code,
-            COALESCE(category, '미분류') AS category
-        FROM non_cigar_product_mst
-        WHERE TRIM(COALESCE(product_code, '')) <> ''
-        """,
-        conn,
-    )
+    cols = get_table_columns(conn, "non_cigar_product_mst")
+    cols_lower = {c.lower(): c for c in cols}
+
+    code_col = cols_lower.get("product_code")
+    if not code_col:
+        return {}
+
+    category_col = None
+    for candidate in ["category", "product_category", "item_category", "product_type"]:
+        if candidate in cols_lower:
+            category_col = cols_lower[candidate]
+            break
+
+    if not category_col:
+        return {}
+
+    sql = f"""
+    SELECT
+        UPPER(TRIM(COALESCE({code_col}, ''))) AS product_code,
+        COALESCE({category_col}, '미분류') AS category
+    FROM non_cigar_product_mst
+    WHERE TRIM(COALESCE({code_col}, '')) <> ''
+    """
+
+    df = pd.read_sql_query(sql, conn)
 
     if df.empty:
         return {}
