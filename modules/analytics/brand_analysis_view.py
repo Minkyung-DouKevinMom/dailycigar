@@ -111,7 +111,7 @@ def get_non_cigar_category_map(conn) -> dict:
         """
         SELECT
             UPPER(TRIM(COALESCE(product_code, ''))) AS product_code,
-            COALESCE(product_category, '미분류') AS category
+            COALESCE(category, '미분류') AS category
         FROM non_cigar_product_mst
         WHERE TRIM(COALESCE(product_code, '')) <> ''
         """,
@@ -337,7 +337,6 @@ def render():
         st.caption(f"기준월: {year}-{month:02d}")
         st.divider()
 
-        # 기존 파이차트 2개 유지
         def make_product_pie_df(grp: pd.DataFrame) -> pd.DataFrame:
             if grp.empty:
                 return pd.DataFrame(columns=["구분", "금액"])
@@ -366,7 +365,6 @@ def render():
 
         st.divider()
 
-        # 신규 파이차트 2개
         retail_work = retail_df.copy()
         retail_work["product_code"] = normalize_code(retail_work["product_code"])
         retail_work["구분"] = retail_work["product_code"].apply(
@@ -380,21 +378,19 @@ def render():
         )
 
         retail_non_cigar_df = retail_work[retail_work["구분"] == "사이드"].copy()
-        retail_non_cigar_df["non_cigar_category"] = retail_non_cigar_df["product_code"].map(non_cigar_category_map)
-        retail_non_cigar_df["non_cigar_category"] = (
-            retail_non_cigar_df["non_cigar_category"]
+        retail_non_cigar_df["카테고리"] = retail_non_cigar_df["product_code"].map(non_cigar_category_map)
+        retail_non_cigar_df["카테고리"] = (
+            retail_non_cigar_df["카테고리"]
             .fillna("미분류")
             .astype(str)
             .str.strip()
         )
-        retail_non_cigar_df.loc[
-            retail_non_cigar_df["non_cigar_category"] == "", "non_cigar_category"
-        ] = "미분류"
+        retail_non_cigar_df.loc[retail_non_cigar_df["카테고리"] == "", "카테고리"] = "미분류"
 
         retail_non_cigar_by_category = (
-            retail_non_cigar_df.groupby("non_cigar_category", as_index=False)["sales"]
+            retail_non_cigar_df.groupby("카테고리", as_index=False)["sales"]
             .sum()
-            .rename(columns={"non_cigar_category": "카테고리", "sales": "금액"})
+            .rename(columns={"sales": "금액"})
         )
 
         retail_non_cigar_by_category = group_minor_as_others(
@@ -423,7 +419,6 @@ def render():
 
         st.divider()
 
-        # 기존 막대차트 2개 유지
         b1, b2 = st.columns(2)
 
         if product_grouped.empty:
@@ -492,8 +487,6 @@ def render():
                     .properties(height=360)
                 )
                 st.altair_chart(chart, use_container_width=True)
-
-        # 하단 그리드 제거
 
     finally:
         conn.close()
