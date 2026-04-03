@@ -225,27 +225,35 @@ def build_compare_table(a: dict, b: dict) -> pd.DataFrame:
     return pd.DataFrame(result)
 
 
+
 def format_compare_table(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
     money_metrics = ["매출", "이익", "객단가", "소매매출", "도매매출", "소매이익", "도매이익"]
     count_metrics = ["거래건수"]
 
-    for idx in out.index:
-        metric = out.at[idx, "항목"]
-        if metric in money_metrics:
-            out.at[idx, "기간 A"] = fmt_krw(out.at[idx, "기간 A"])
-            out.at[idx, "기간 B"] = fmt_krw(out.at[idx, "기간 B"])
-            out.at[idx, "증감액"] = fmt_krw(out.at[idx, "증감액"])
-        elif metric in count_metrics:
-            out.at[idx, "기간 A"] = fmt_count(out.at[idx, "기간 A"])
-            out.at[idx, "기간 B"] = fmt_count(out.at[idx, "기간 B"])
-            out.at[idx, "증감액"] = f"{int(out.at[idx, '증감액']):,}건"
+    # 먼저 표시용으로 object 타입으로 바꿔 dtype 충돌 방지
+    for col in ["기간 A", "기간 B", "증감액", "증감률(%)"]:
+        out[col] = out[col].astype(object)
 
-        out.at[idx, "증감률(%)"] = f"{float(out.at[idx, '증감률(%)']):+.1f}%"
+    money_mask = out["항목"].isin(money_metrics)
+    count_mask = out["항목"].isin(count_metrics)
+
+    out.loc[money_mask, "기간 A"] = out.loc[money_mask, "기간 A"].apply(fmt_krw)
+    out.loc[money_mask, "기간 B"] = out.loc[money_mask, "기간 B"].apply(fmt_krw)
+    out.loc[money_mask, "증감액"] = out.loc[money_mask, "증감액"].apply(fmt_krw)
+
+    out.loc[count_mask, "기간 A"] = out.loc[count_mask, "기간 A"].apply(fmt_count)
+    out.loc[count_mask, "기간 B"] = out.loc[count_mask, "기간 B"].apply(fmt_count)
+    out.loc[count_mask, "증감액"] = out.loc[count_mask, "증감액"].apply(
+        lambda x: f"{int(x):,}건" if pd.notna(x) else "0건"
+    )
+
+    out["증감률(%)"] = out["증감률(%)"].apply(
+        lambda x: f"{float(x):+.1f}%" if pd.notna(x) else "0.0%"
+    )
 
     return out
-
 
 # =========================
 # 렌더
