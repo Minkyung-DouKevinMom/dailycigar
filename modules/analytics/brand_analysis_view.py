@@ -103,16 +103,41 @@ def get_cigar_product_codes(conn) -> set:
     return set(df["product_code"].dropna().tolist())
 
 
+def get_non_cigar_category_map(conn) -> dict:
+    if not table_exists(conn, "non_cigar_product_mst"):
+        return {}
+
+    df = pd.read_sql_query(
+        """
+        SELECT
+            UPPER(TRIM(COALESCE(product_code, ''))) AS product_code,
+            COALESCE(product_category, '미분류') AS category
+        FROM non_cigar_product_mst
+        WHERE TRIM(COALESCE(product_code, '')) <> ''
+        """,
+        conn,
+    )
+
+    if df.empty:
+        return {}
+
+    df["product_code"] = df["product_code"].fillna("").astype(str).str.strip().str.upper()
+    df["category"] = df["category"].fillna("미분류").astype(str).str.strip()
+    df.loc[df["category"] == "", "category"] = "미분류"
+    df = df.drop_duplicates(subset=["product_code"], keep="first")
+
+    return dict(zip(df["product_code"], df["category"]))
+
+
 def get_retail_brand_product_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     if not view_exists(conn, "v_retail_sales_enriched"):
         return pd.DataFrame(
-            columns=["brand", "category", "product_code", "product_name", "qty", "sales", "profit"]
+            columns=["brand", "product_code", "product_name", "qty", "sales", "profit"]
         )
 
     sql = """
     SELECT
         COALESCE(category, '미분류') AS brand,
-        COALESCE(category, '미분류') AS category,
         COALESCE(product_code, product_code_raw, '') AS product_code,
         COALESCE(mst_product_name, product_code_raw, '미분류') AS product_name,
         COALESCE(qty, 0) AS qty,
@@ -128,9 +153,6 @@ def get_retail_brand_product_data(conn, date_from: str, date_to: str) -> pd.Data
 
     df["brand"] = df["brand"].fillna("미분류").astype(str).str.strip()
     df.loc[df["brand"] == "", "brand"] = "미분류"
-
-    df["category"] = df["category"].fillna("미분류").astype(str).str.strip()
-    df.loc[df["category"] == "", "category"] = "미분류"
 
     return df
 
@@ -254,6 +276,7 @@ def render():
         brand_grouped = brand_grouped.sort_values("매출", ascending=False).reset_index(drop=True)
 
         cigar_codes = get_cigar_product_codes(conn)
+        non_cigar_category_map = get_non_cigar_category_map(conn)
 
         def filter_cigar(src: pd.DataFrame) -> pd.DataFrame:
             if src.empty:
@@ -343,36 +366,40 @@ def render():
 
         st.divider()
 
-        # 신규 파이차트 2개 추가
+        # 신규 파이차트 2개
         retail_work = retail_df.copy()
         retail_work["product_code"] = normalize_code(retail_work["product_code"])
-        retail_work["item_group"] = retail_work["product_code"].apply(
+        retail_work["구분"] = retail_work["product_code"].apply(
             lambda x: "시가" if x in cigar_codes else "사이드"
         )
 
         retail_cigar_side_df = (
-            retail_work.groupby("item_group", as_index=False)["sales"]
+            retail_work.groupby("구분", as_index=False)["sales"]
             .sum()
-            .rename(columns={"item_group": "구분", "sales": "금액"})
+            .rename(columns={"sales": "금액"})
         )
 
-        retail_side_df = retail_work[~retail_work["product_code"].isin(cigar_codes)].copy()
+        retail_non_cigar_df = retail_work[retail_work["구분"] == "사이드"].copy()
+        retail_non_cigar_df["non_cigar_category"] = retail_non_cigar_df["product_code"].map(non_cigar_category_map)
+        retail_non_cigar_df["non_cigar_category"] = (
+            retail_non_cigar_df["non_cigar_category"]
+            .fillna("미분류")
+            .astype(str)
+            .str.strip()
+        )
+        retail_non_cigar_df.loc[
+            retail_non_cigar_df["non_cigar_category"] == "", "non_cigar_category"
+        ] = "미분류"
 
-        if "category" not in retail_side_df.columns:
-            retail_side_df["category"] = "미분류"
-
-        retail_side_df["category"] = retail_side_df["category"].fillna("미분류").astype(str).str.strip()
-        retail_side_df.loc[retail_side_df["category"] == "", "category"] = "미분류"
-
-        retail_side_category_df = (
-            retail_side_df.groupby("category", as_index=False)["sales"]
+        retail_non_cigar_by_category = (
+            retail_non_cigar_df.groupby("non_cigar_category", as_index=False)["sales"]
             .sum()
-            .rename(columns={"category": "구분", "sales": "금액"})
+            .rename(columns={"non_cigar_category": "카테고리", "sales": "금액"})
         )
 
-        retail_side_category_df = group_minor_as_others(
-            retail_side_category_df,
-            label_col="구분",
+        retail_non_cigar_by_category = group_minor_as_others(
+            retail_non_cigar_by_category,
+            label_col="카테고리",
             value_col="금액",
             top_n=8,
         )
@@ -388,10 +415,10 @@ def render():
 
         with p4:
             render_pie_chart(
-                retail_side_category_df,
-                label_col="구분",
+                retail_non_cigar_by_category,
+                label_col="카테고리",
                 value_col="금액",
-                title="소매 사이드 카테고리별 매출금액",
+                title="소매 시가 외 상품 카테고리별 매출금액",
             )
 
         st.divider()
