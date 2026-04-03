@@ -643,13 +643,26 @@ try:
                 .sort_index()
             )
 
+            date_index = pd.date_range(
+                start=pd.Timestamp(last_30_start).normalize(),
+                end=pd.Timestamp(today).normalize(),
+                freq="D",
+            )
+            daily_sales = daily_sales.reindex(date_index, fill_value=0)
+            daily_sales.index.name = "date"
+
             for col in ["소매", "도매"]:
                 if col not in daily_sales.columns:
                     daily_sales[col] = 0
             daily_sales = daily_sales[["소매", "도매"]]
 
-            st.line_chart(daily_sales, use_container_width=True)
-            st.caption(f"계산기간: {last_30_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')}")
+            daily_sales["전체평균선"] = daily_sales.sum(axis=1).mean()
+
+            st.line_chart(daily_sales[["소매", "도매", "전체평균선"]], use_container_width=True)
+            st.caption(
+                f"계산기간: {last_30_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')} | "
+                f"최근 30일 일평균 매출: {fmt_krw(daily_sales['전체평균선'].iloc[0])}"
+            )
 
     with right:
         st.subheader("최근 30일 채널 비중")
