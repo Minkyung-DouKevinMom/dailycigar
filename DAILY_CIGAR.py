@@ -656,12 +656,18 @@ try:
                     daily_sales[col] = 0
             daily_sales = daily_sales[["소매", "도매"]]
 
-            daily_sales["전체평균선"] = daily_sales.sum(axis=1).mean()
+            retail_avg = daily_sales["소매"].mean()
+            wholesale_avg = daily_sales["도매"].mean()
+            daily_sales["소매평균선"] = retail_avg
+            daily_sales["도매평균선"] = wholesale_avg
 
-            st.line_chart(daily_sales[["소매", "도매", "전체평균선"]], use_container_width=True)
+            st.line_chart(
+                daily_sales[["소매", "도매", "소매평균선", "도매평균선"]],
+                use_container_width=True,
+            )
             st.caption(
                 f"계산기간: {last_30_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')} | "
-                f"최근 30일 일평균 매출: {fmt_krw(daily_sales['전체평균선'].iloc[0])}"
+                f"소매 일평균: {fmt_krw(retail_avg)} | 도매 일평균: {fmt_krw(wholesale_avg)}"
             )
 
     with right:
