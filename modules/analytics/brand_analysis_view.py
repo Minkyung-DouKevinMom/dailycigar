@@ -64,7 +64,6 @@ def group_minor_as_others(
             [top_df, pd.DataFrame([{label_col: "기타", value_col: others_sum}])],
             ignore_index=True,
         )
-
     return top_df
 
 
@@ -101,7 +100,6 @@ def get_cigar_product_codes(conn) -> set:
         """,
         conn,
     )
-
     return set(df["product_code"].dropna().tolist())
 
 
@@ -110,15 +108,15 @@ def get_retail_brand_product_data(conn, date_from: str, date_to: str) -> pd.Data
         return pd.DataFrame(columns=["brand", "product_code", "product_name", "qty", "sales", "profit"])
 
     sql = """
-        SELECT
-            COALESCE(category, '미분류') AS brand,
-            COALESCE(product_code, product_code_raw, '') AS product_code,
-            COALESCE(mst_product_name, product_code_raw, '미분류') AS product_name,
-            COALESCE(qty, 0) AS qty,
-            COALESCE(net_sales_amount, 0) AS sales,
-            COALESCE(retail_gross_profit_krw, 0) AS profit
-        FROM v_retail_sales_enriched
-        WHERE sale_date BETWEEN ? AND ?
+    SELECT
+        COALESCE(category, '미분류') AS brand,
+        COALESCE(product_code, product_code_raw, '') AS product_code,
+        COALESCE(mst_product_name, product_code_raw, '미분류') AS product_name,
+        COALESCE(qty, 0) AS qty,
+        COALESCE(net_sales_amount, 0) AS sales,
+        COALESCE(retail_gross_profit_krw, 0) AS profit
+    FROM v_retail_sales_enriched
+    WHERE sale_date BETWEEN ? AND ?
     """
     df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
 
@@ -140,27 +138,27 @@ def get_wholesale_brand_product_data(conn, date_from: str, date_to: str) -> pd.D
 
     if source == "v_wholesale_sales":
         sql = """
-            SELECT
-                COALESCE(item_type, '미분류') AS brand,
-                COALESCE(product_code, '') AS product_code,
-                COALESCE(product_name, product_code, '미분류') AS product_name,
-                COALESCE(qty, 0) AS qty,
-                COALESCE(sales_amount, 0) AS sales,
-                COALESCE(profit_amount, 0) AS profit
-            FROM v_wholesale_sales
-            WHERE sale_date BETWEEN ? AND ?
+        SELECT
+            COALESCE(item_type, '미분류') AS brand,
+            COALESCE(product_code, '') AS product_code,
+            COALESCE(product_name, product_code, '미분류') AS product_name,
+            COALESCE(qty, 0) AS qty,
+            COALESCE(sales_amount, 0) AS sales,
+            COALESCE(profit_amount, 0) AS profit
+        FROM v_wholesale_sales
+        WHERE sale_date BETWEEN ? AND ?
         """
     else:
         sql = """
-            SELECT
-                COALESCE(item_type, '미분류') AS brand,
-                COALESCE(product_code, '') AS product_code,
-                COALESCE(product_name, product_code, '미분류') AS product_name,
-                COALESCE(qty, 0) AS qty,
-                COALESCE(sales_amount, 0) AS sales,
-                COALESCE(profit_amount, 0) AS profit
-            FROM wholesale_sales
-            WHERE sale_date BETWEEN ? AND ?
+        SELECT
+            COALESCE(item_type, '미분류') AS brand,
+            COALESCE(product_code, '') AS product_code,
+            COALESCE(product_name, product_code, '미분류') AS product_name,
+            COALESCE(qty, 0) AS qty,
+            COALESCE(sales_amount, 0) AS sales,
+            COALESCE(profit_amount, 0) AS profit
+        FROM wholesale_sales
+        WHERE sale_date BETWEEN ? AND ?
         """
 
     df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
@@ -221,15 +219,12 @@ def render():
             return
 
         df = pd.concat(frames, ignore_index=True)
-
         df["brand"] = df["brand"].fillna("미분류").astype(str).str.strip()
         df.loc[df["brand"] == "", "brand"] = "미분류"
-
         df["product_code"] = normalize_code(df["product_code"])
         df["product_name"] = df["product_name"].fillna("미분류").astype(str).str.strip()
         df.loc[df["product_name"] == "", "product_name"] = "미분류"
 
-        # 브랜드 집계 (전체)
         brand_grouped = (
             df.groupby("brand", dropna=False)
             .agg(
@@ -240,14 +235,12 @@ def render():
             .reset_index()
             .rename(columns={"brand": "브랜드"})
         )
-
         brand_grouped["마진율(%)"] = brand_grouped.apply(
             lambda x: round((x["이익"] / x["매출"] * 100), 1) if x["매출"] else 0,
             axis=1,
         )
         brand_grouped = brand_grouped.sort_values("매출", ascending=False).reset_index(drop=True)
 
-        # 시가상품(product_mst 등록 상품)만 필터
         cigar_codes = get_cigar_product_codes(conn)
 
         def filter_cigar(src: pd.DataFrame) -> pd.DataFrame:
@@ -257,19 +250,25 @@ def render():
                 return src[src["product_code"].isin(cigar_codes)].copy()
             return pd.DataFrame(columns=src.columns)
 
-        retail_cigar_df    = filter_cigar(retail_df)
+        retail_cigar_df = filter_cigar(retail_df)
         wholesale_cigar_df = filter_cigar(wholesale_df)
-        cigar_df           = filter_cigar(df)
+        cigar_df = filter_cigar(df)
 
         def build_product_grouped(src: pd.DataFrame) -> pd.DataFrame:
             if src.empty:
                 return pd.DataFrame(
                     columns=[
-                        "product_code", "product_name",
-                        "판매량", "매출", "이익",
-                        "상품코드", "마진율(%)", "개당마진금액",
+                        "product_code",
+                        "product_name",
+                        "판매량",
+                        "매출",
+                        "이익",
+                        "상품코드",
+                        "마진율(%)",
+                        "개당마진금액",
                     ]
                 )
+
             grp = (
                 src.groupby(["product_code", "product_name"], dropna=False)
                 .agg(판매량=("qty", "sum"), 매출=("sales", "sum"), 이익=("profit", "sum"))
@@ -278,16 +277,16 @@ def render():
             grp["상품코드"] = grp["product_code"].fillna("").astype(str).str.strip()
             grp.loc[grp["상품코드"] == "", "상품코드"] = grp["product_name"]
             grp["마진율(%)"] = grp.apply(
-                lambda x: round(x["이익"] / x["매출"] * 100, 1) if x["매출"] else 0, axis=1
+                lambda x: round(x["이익"] / x["매출"] * 100, 1) if x["매출"] else 0,
+                axis=1
             )
             grp["개당마진금액"] = grp.apply(
-                lambda x: round(x["이익"] / x["판매량"], 0) if x["판매량"] else 0, axis=1
+                lambda x: round(x["이익"] / x["판매량"], 0) if x["판매량"] else 0,
+                axis=1
             )
             return grp.sort_values("매출", ascending=False).reset_index(drop=True)
 
-        product_grouped          = build_product_grouped(cigar_df)
-        retail_product_grouped   = build_product_grouped(retail_cigar_df)
-        wholesale_product_grouped = build_product_grouped(wholesale_cigar_df)
+        product_grouped = build_product_grouped(cigar_df)
 
         total_sales = brand_grouped["매출"].sum()
         total_profit = brand_grouped["이익"].sum()
@@ -299,41 +298,69 @@ def render():
         k3.metric("브랜드 수", f"{brand_count:,}")
 
         st.caption(f"기준월: {year}-{month:02d}")
-
         st.divider()
 
-        # 파이차트 — 시가상품별 매출금액 비중 (소매 / 도매 각각)
-        def make_product_pie_df(grp: pd.DataFrame) -> pd.DataFrame:
-            if grp.empty:
-                return pd.DataFrame(columns=["구분", "금액"])
-            return group_minor_as_others(
-                grp.rename(columns={"상품코드": "구분", "매출": "금액"}),
-                label_col="구분",
-                value_col="금액",
-                top_n=6,
-            )
+        # -----------------------------
+        # 요청사항 1) 소매 매출금액 중 시가 / 시가외
+        # -----------------------------
+        retail_work = retail_df.copy()
+        retail_work["product_code"] = normalize_code(retail_work["product_code"])
+        retail_work["구분"] = retail_work["product_code"].apply(
+            lambda x: "시가" if x in cigar_codes else "시가외"
+        )
+
+        retail_cigar_vs_noncigar = (
+            retail_work.groupby("구분", as_index=False)["sales"]
+            .sum()
+            .rename(columns={"sales": "금액"})
+        )
+
+        # -----------------------------
+        # 요청사항 2) 소매 시가외 항목 카테고리별 매출금액
+        # -----------------------------
+        retail_non_cigar_df = retail_work[retail_work["구분"] == "시가외"].copy()
+        retail_non_cigar_by_category = (
+            retail_non_cigar_df.groupby("brand", as_index=False)["sales"]
+            .sum()
+            .rename(columns={"brand": "카테고리", "sales": "금액"})
+        )
+        retail_non_cigar_by_category["카테고리"] = (
+            retail_non_cigar_by_category["카테고리"]
+            .fillna("미분류")
+            .astype(str)
+            .str.strip()
+        )
+        retail_non_cigar_by_category.loc[
+            retail_non_cigar_by_category["카테고리"] == "", "카테고리"
+        ] = "미분류"
+
+        # 항목이 많으면 기타 묶기
+        retail_non_cigar_by_category = group_minor_as_others(
+            retail_non_cigar_by_category,
+            label_col="카테고리",
+            value_col="금액",
+            top_n=8,
+        )
 
         p1, p2 = st.columns(2)
-
         with p1:
             render_pie_chart(
-                make_product_pie_df(retail_product_grouped),
+                retail_cigar_vs_noncigar,
                 label_col="구분",
                 value_col="금액",
-                title="시가상품별 매출금액 비중 (소매)",
+                title="소매 매출금액 비중 (시가 / 시가외)",
             )
-
         with p2:
             render_pie_chart(
-                make_product_pie_df(wholesale_product_grouped),
-                label_col="구분",
+                retail_non_cigar_by_category,
+                label_col="카테고리",
                 value_col="금액",
-                title="시가상품별 매출금액 비중 (도매)",
+                title="소매 시가외 카테고리별 매출금액",
             )
 
         st.divider()
 
-        # 하단 막대차트 2개 - 시가상품만 / X축 상품코드
+        # 하단 막대차트 2개 - 기존 유지
         b1, b2 = st.columns(2)
 
         if product_grouped.empty:
@@ -345,7 +372,6 @@ def render():
 
         with b1:
             st.markdown("### 시가상품별 매출금액 (TOP 20)")
-
             if top_product_sales.empty:
                 st.info("시가상품 데이터가 없습니다.")
             else:
@@ -361,13 +387,10 @@ def render():
                     .encode(
                         x=alt.X(
                             "상품코드:N",
-                            sort=chart_df["상품코드"].tolist(),  # 🔥 순서 강제
+                            sort=chart_df["상품코드"].tolist(),
                             title="상품코드",
                         ),
-                        y=alt.Y(
-                            "매출:Q",
-                            title="매출금액",
-                        ),
+                        y=alt.Y("매출:Q", title="매출금액"),
                         tooltip=[
                             alt.Tooltip("상품코드:N", title="상품코드"),
                             alt.Tooltip("매출:Q", title="매출금액", format=",.0f"),
@@ -375,12 +398,10 @@ def render():
                     )
                     .properties(height=360)
                 )
-
                 st.altair_chart(chart, use_container_width=True)
 
         with b2:
             st.markdown("### 시가상품별 개당 마진금액 (TOP 20)")
-
             if top_product_unit_profit.empty:
                 st.info("시가상품 데이터가 없습니다.")
             else:
@@ -396,13 +417,10 @@ def render():
                     .encode(
                         x=alt.X(
                             "상품코드:N",
-                            sort=chart_df["상품코드"].tolist(),   # 현재 정렬 순서 그대로 강제
+                            sort=chart_df["상품코드"].tolist(),
                             title="상품코드",
                         ),
-                        y=alt.Y(
-                            "개당마진금액:Q",
-                            title="개당 마진금액",
-                        ),
+                        y=alt.Y("개당마진금액:Q", title="개당 마진금액"),
                         tooltip=[
                             alt.Tooltip("상품코드:N", title="상품코드"),
                             alt.Tooltip("개당마진금액:Q", title="개당 마진금액", format=",.0f"),
@@ -410,23 +428,9 @@ def render():
                     )
                     .properties(height=360)
                 )
-
                 st.altair_chart(chart, use_container_width=True)
 
-        st.divider()
-
-        st.markdown("### 브랜드 상세")
-
-        show_brand_df = brand_grouped.copy()
-        show_brand_df["매출"] = show_brand_df["매출"].apply(fmt_krw)
-        show_brand_df["이익"] = show_brand_df["이익"].apply(fmt_krw)
-
-        st.dataframe(
-            show_brand_df[["브랜드", "판매량", "매출", "이익", "마진율(%)"]],
-            use_container_width=True,
-            hide_index=True,
-            height=420,
-        )
+        # 기존 브랜드 상세 그리드 제거
 
     finally:
         conn.close()
