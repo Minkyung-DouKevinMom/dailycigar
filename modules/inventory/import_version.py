@@ -66,6 +66,7 @@ def render():
                     "total_weight_g": st.column_config.NumberColumn("총 무게(g)", format="%.2f"),
                     "total_amount_usd": st.column_config.NumberColumn("총 금액(USD)", format="%.2f"),
                     "total_amount_krw": st.column_config.NumberColumn("총 금액(KRW)", format="₩%.0f"),
+                    "total_tax_krw": st.column_config.NumberColumn("총 세금(KRW)", format="₩%.0f"),
                     "notes": "비고",
                     "created_at": "생성일",
                 }

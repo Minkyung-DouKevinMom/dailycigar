@@ -151,6 +151,7 @@ def get_all_import_batch():
         total_weight_g,
         total_amount_usd,
         total_amount_krw,
+        total_tax_krw,
         notes,
         created_at
     FROM import_batch
@@ -178,16 +179,6 @@ def get_import_items_by_batch(batch_id):
     ORDER BY source_row_no
     """
     return run_query(sql, [batch_id])
-
-
-def update_import_batch_note(batch_id, notes):
-    sql = """
-    UPDATE import_batch
-    SET notes = ?
-    WHERE id = ?
-    """
-    execute(sql, [notes, batch_id])
-
 
 def get_all_tax_rule():
     sql = """
@@ -395,7 +386,8 @@ def get_import_item_list_filtered(batch_id, keyword=""):
         proposal_retail_price_krw,
         supply_price_krw,
         margin_krw,
-        source_row_no
+        source_row_no,
+        notes
     FROM import_item
     WHERE batch_id = ?
     """
@@ -407,12 +399,13 @@ def get_import_item_list_filtered(batch_id, keyword=""):
             product_name LIKE ?
             OR size_name LIKE ?
             OR product_code LIKE ?
+            OR notes LIKE ?
         )
         """
         like_kw = f"%{keyword.strip()}%"
-        params.extend([like_kw, like_kw, like_kw])
+        params.extend([like_kw, like_kw, like_kw, like_kw])
 
-    sql += " ORDER BY id DESC"
+    sql += " ORDER BY source_row_no, id DESC"
     return run_query(sql, params)
 
 def get_export_price_item_filtered(keyword=None, package_type=None, package_qty=None):
@@ -466,6 +459,7 @@ def get_all_blend_profile():
         strength,
         guide,
         description,
+        detail_description,
         created_at,
         updated_at
     FROM blend_profile_mst
@@ -510,19 +504,17 @@ def upsert_blend_profile(product_name, flavor, strength, guide, description=None
     execute(sql, [product_name, flavor, strength, guide, description])
 
 
-def update_blend_profile(row_id, product_name, flavor, strength, guide, description=None):
+def update_blend_profile(row_id, product_name, flavor, strength, guide,
+                          description=None, detail_description=None):  # ← 이게 있어야 함
     sql = """
     UPDATE blend_profile_mst
-    SET
-        product_name = ?,
-        flavor = ?,
-        strength = ?,
-        guide = ?,
-        description = ?,
-        updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
+    SET product_name=?, flavor=?, strength=?, guide=?,
+        description=?, detail_description=?,
+        updated_at=CURRENT_TIMESTAMP
+    WHERE id=?
     """
-    execute(sql, [product_name, flavor, strength, guide, description, row_id])
+    execute(sql, [product_name, flavor, strength, guide,
+                  description, detail_description, row_id])
 
 
 def delete_blend_profile(row_id):
@@ -744,13 +736,9 @@ def create_import_batch(
     usd_to_krw_rate=None,
     php_to_krw_rate=None,
     local_markup_rate=None,
+    tax_rule_id=None,
     notes=None,
 ):
-    """
-    import_version.py 신규 등록 화면과 맞춘 안전한 INSERT
-    실제 import_batch 테이블에 존재하는 컬럼만 INSERT 한다.
-    """
-
     cols_df = run_query("PRAGMA table_info(import_batch)")
     existing_cols = set(cols_df["name"].tolist()) if not cols_df.empty else set()
 
@@ -770,6 +758,7 @@ def create_import_batch(
     add_col("usd_to_krw_rate", usd_to_krw_rate)
     add_col("php_to_krw_rate", php_to_krw_rate)
     add_col("local_markup_rate", local_markup_rate)
+    add_col("tax_rule_id", tax_rule_id)
     add_col("notes", notes)
 
     if "created_at" in existing_cols:
@@ -797,13 +786,9 @@ def update_import_batch(
     usd_to_krw_rate=None,
     php_to_krw_rate=None,
     local_markup_rate=None,
+    tax_rule_id=None,
     notes=None,
 ):
-    """
-    import_version.py 수정 화면과 맞춘 안전한 UPDATE
-    실제 import_batch 테이블에 존재하는 컬럼만 업데이트한다.
-    """
-
     cols_df = run_query("PRAGMA table_info(import_batch)")
     existing_cols = set(cols_df["name"].tolist()) if not cols_df.empty else set()
 
@@ -833,6 +818,10 @@ def update_import_batch(
     if "local_markup_rate" in existing_cols:
         update_parts.append("local_markup_rate = ?")
         params.append(local_markup_rate)
+
+    if "tax_rule_id" in existing_cols:
+        update_parts.append("tax_rule_id = ?")
+        params.append(tax_rule_id)
 
     if "notes" in existing_cols:
         update_parts.append("notes = ?")
@@ -1255,6 +1244,7 @@ def get_import_item_detail(item_id):
         supply_price_krw,
         margin_krw,
         source_row_no,
+        notes,
         raw_row_json,
         raw_formula_json
     FROM import_item
@@ -1299,6 +1289,7 @@ def upsert_import_item_full(
     store_retail_price_krw=None,
     margin_krw=None,
     source_row_no=None,
+    notes=None,
     raw_row_json=None,
     raw_formula_json=None,
 ):
@@ -1340,6 +1331,7 @@ def upsert_import_item_full(
         "store_retail_price_krw": store_retail_price_krw,
         "margin_krw": margin_krw,
         "source_row_no": source_row_no,
+        "notes": notes,
         "raw_row_json": raw_row_json,
         "raw_formula_json": raw_formula_json,
     }
@@ -1397,8 +1389,9 @@ def refresh_import_batch_totals(batch_id):
             COUNT(*) AS total_item_count,
             COALESCE(SUM(import_unit_qty), 0) AS total_unit_qty,
             COALESCE(SUM(total_weight_g), 0) AS total_weight_g,
-            COALESCE(SUM(discounted_box_price_usd), 0) AS total_amount_usd,
-            COALESCE(SUM(import_total_cost_krw), 0) AS total_amount_krw
+            COALESCE(SUM(COALESCE(export_unit_price_usd, 0) * COALESCE(import_unit_qty, 0)), 0) AS total_amount_usd,
+            COALESCE(SUM(import_total_cost_krw), 0) AS total_amount_krw,
+            COALESCE(SUM(tax_total_all_krw), 0) AS total_tax_krw
         FROM import_item
         WHERE batch_id = ?
         """,
@@ -1411,6 +1404,7 @@ def refresh_import_batch_totals(batch_id):
         total_weight_g = 0
         total_amount_usd = 0
         total_amount_krw = 0
+        total_tax_krw = 0
     else:
         row = item_df.iloc[0]
         total_item_count = int(row["total_item_count"] or 0)
@@ -1418,6 +1412,7 @@ def refresh_import_batch_totals(batch_id):
         total_weight_g = float(row["total_weight_g"] or 0)
         total_amount_usd = float(row["total_amount_usd"] or 0)
         total_amount_krw = float(row["total_amount_krw"] or 0)
+        total_tax_krw = float(row["total_tax_krw"] or 0)
 
     cols_df = run_query("PRAGMA table_info(import_batch)")
     existing_cols = set(cols_df["name"].tolist()) if not cols_df.empty else set()
@@ -1444,6 +1439,10 @@ def refresh_import_batch_totals(batch_id):
     if "total_amount_krw" in existing_cols:
         update_parts.append("total_amount_krw = ?")
         params.append(total_amount_krw)
+
+    if "total_tax_krw" in existing_cols:
+        update_parts.append("total_tax_krw = ?")
+        params.append(total_tax_krw)
 
     if "updated_at" in existing_cols:
         update_parts.append("updated_at = CURRENT_TIMESTAMP")

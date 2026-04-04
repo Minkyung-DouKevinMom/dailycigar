@@ -431,6 +431,7 @@ def render():
             "supply_price_krw": "공급가",
             "margin_krw": "마진",
             "source_row_no": "원본행번호",
+            "notes": "코멘트",
         }).copy()
 
         for col in ["총수입금액", "소비자가", "제안소비자가", "공급가", "마진"]:
@@ -699,6 +700,13 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 step=1,
             )
 
+            item_notes = st.text_area(
+                "특징/코멘트",
+                value=str(detail_row.get("notes") or ""),
+                height=100,
+                placeholder="예: 시트러스 향이 강함 / 래퍼 상태 좋음 / 추천 포인트 등",
+            )
+
         with col2:
             usd_to_krw_rate = _n(batch_row.get("usd_to_krw_rate"), USD_TO_KRW_DEFAULT)
             php_to_krw_rate = _n(batch_row.get("php_to_krw_rate"), PHP_TO_KRW_DEFAULT)
@@ -855,6 +863,8 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
         c1, c2 = st.columns(2)
         save_btn = c1.form_submit_button("저장", use_container_width=True, type="primary")
         delete_btn = c2.form_submit_button("삭제", use_container_width=True)
+        # 원본행번호 중복 체크
+        dup_df = df.copy() if df is not None else pd.DataFrame()
 
         if save_btn:
             if not str(product_name).strip():
@@ -868,6 +878,29 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
             if manual_input and not str(product_code).strip():
                 st.warning("직접 입력 모드에서는 상품코드를 입력해 주세요.")
                 st.stop()
+            
+            if not dup_df.empty and "source_row_no" in dup_df.columns:
+                # 기존 수정이면 자기 자신은 제외
+                if edit_mode == "기존 수정" and selected_item_id is not None and "id" in dup_df.columns:
+                    dup_df = dup_df[dup_df["id"] != selected_item_id]
+
+                dup_rows = dup_df[dup_df["source_row_no"] == source_row_no]
+
+                if not dup_rows.empty:
+                    dup_names = []
+                    if "product_name" in dup_rows.columns and "size_name" in dup_rows.columns:
+                        dup_names = [
+                            f'{r["product_name"]} / {r["size_name"]}'
+                            for _, r in dup_rows.iterrows()
+                        ]
+
+                    dup_msg = ", ".join(dup_names) if dup_names else "기존 품목"
+
+                    st.error(
+                        f"원본 행번호 {source_row_no} 는 이미 사용 중입니다. "
+                        f"중복 품목: {dup_msg}. 다른 번호를 입력해 주세요."
+                    )
+                    st.stop()
 
             upsert_import_item_full(
                 item_id=selected_item_id,
@@ -905,6 +938,7 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 store_retail_price_krw=_none_if_zero_num(calc["store_retail_price_krw"]),
                 margin_krw=_none_if_zero_num(margin_krw),
                 source_row_no=None if source_row_no == 0 else source_row_no,
+                notes=_none_if_blank_text(item_notes),
                 raw_row_json=raw_row_json,
                 raw_formula_json=raw_formula_json,
             )

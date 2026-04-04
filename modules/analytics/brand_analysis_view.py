@@ -366,7 +366,7 @@ def render():
                 grp.rename(columns={"상품코드": "구분", "매출": "금액"}),
                 label_col="구분",
                 value_col="금액",
-                top_n=6,
+                top_n=10,
             )
 
         p1, p2 = st.columns(2)
@@ -383,60 +383,6 @@ def render():
                 label_col="구분",
                 value_col="금액",
                 title="시가상품별 매출금액 비중 (도매)",
-            )
-
-        st.divider()
-
-        retail_work = retail_df.copy()
-        retail_work["product_code"] = normalize_code(retail_work["product_code"])
-        retail_work["구분"] = retail_work["product_code"].apply(
-            lambda x: "시가" if x in cigar_codes else "사이드"
-        )
-
-        retail_cigar_side_df = (
-            retail_work.groupby("구분", as_index=False)["sales"]
-            .sum()
-            .rename(columns={"sales": "금액"})
-        )
-
-        retail_non_cigar_df = retail_work[retail_work["구분"] == "사이드"].copy()
-        retail_non_cigar_df["카테고리"] = retail_non_cigar_df["product_code"].map(non_cigar_category_map)
-        retail_non_cigar_df["카테고리"] = (
-            retail_non_cigar_df["카테고리"]
-            .fillna("미분류")
-            .astype(str)
-            .str.strip()
-        )
-        retail_non_cigar_df.loc[retail_non_cigar_df["카테고리"] == "", "카테고리"] = "미분류"
-
-        retail_non_cigar_by_category = (
-            retail_non_cigar_df.groupby("카테고리", as_index=False)["sales"]
-            .sum()
-            .rename(columns={"sales": "금액"})
-        )
-
-        retail_non_cigar_by_category = group_minor_as_others(
-            retail_non_cigar_by_category,
-            label_col="카테고리",
-            value_col="금액",
-            top_n=8,
-        )
-
-        p3, p4 = st.columns(2)
-        with p3:
-            render_pie_chart(
-                retail_cigar_side_df,
-                label_col="구분",
-                value_col="금액",
-                title="소매 매출금액 비중 (시가 / 사이드)",
-            )
-
-        with p4:
-            render_pie_chart(
-                retail_non_cigar_by_category,
-                label_col="카테고리",
-                value_col="금액",
-                title="소매 시가 외 상품 카테고리별 매출금액",
             )
 
         st.divider()

@@ -4,6 +4,7 @@ from modules.analytics.price_analysis import render as render_price
 from modules.analytics.period_compare_view import render as render_period
 from modules.analytics.partner_analysis_view import render as render_partner
 from modules.analytics.brand_analysis_view import render as render_brand
+from modules.analytics.retail_sales_analysis_view import render as render_retail_sales
 
 st.set_page_config(page_title="분석", layout="wide")
 st.title("분석")
@@ -25,7 +26,7 @@ with st.sidebar:
     
 menu = st.radio(
     "메뉴 선택",
-    ["가격 통합분석", "기간 비교", "거래처 분석", "브랜드 분석"],
+    ["가격 통합분석", "기간 비교", "거래처 분석", "브랜드 분석", "소매판매 분석"],
     horizontal=True,
 )
 
@@ -37,3 +38,5 @@ elif menu == "거래처 분석":
     render_partner()
 elif menu == "브랜드 분석":
     render_brand()
+elif menu == "소매판매 분석":
+    render_retail_sales()
