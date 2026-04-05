@@ -158,6 +158,82 @@ def render_packaging_trend_chart(trend_df: pd.DataFrame):
 
     st.altair_chart(chart, use_container_width=True)
 
+def get_usage_fee_trend_data(conn) -> pd.DataFrame:
+    if not table_exists(conn, "retail_sales"):
+        return pd.DataFrame(columns=["sale_month", "사용료금액"])
+
+    cols = get_table_columns(conn, "retail_sales")
+    cols_lower = {c.lower(): c for c in cols}
+
+    sale_date_col = cols_lower.get("sale_date")
+    product_code_col = cols_lower.get("product_code")
+    unit_price_col = cols_lower.get("unit_price")
+
+    required = [sale_date_col, product_code_col, unit_price_col]
+    if any(c is None for c in required):
+        return pd.DataFrame(columns=["sale_month", "사용료금액"])
+
+    sql = f"""
+    SELECT
+        {sale_date_col} AS sale_date,
+        COALESCE({product_code_col}, '') AS product_code,
+        COALESCE({unit_price_col}, 0) AS unit_price
+    FROM retail_sales
+    WHERE COALESCE({sale_date_col}, '') <> ''
+    """
+    df = pd.read_sql_query(sql, conn)
+
+    if df.empty:
+        return pd.DataFrame(columns=["sale_month", "사용료금액"])
+
+    df["sale_date"] = pd.to_datetime(df["sale_date"], errors="coerce")
+    df = df[df["sale_date"].notna()].copy()
+
+    df["product_code"] = normalize_code(df["product_code"])
+    df["unit_price"] = pd.to_numeric(df["unit_price"], errors="coerce").fillna(0)
+
+    # 상품코드가 '사용료' 인 행만 사용
+    df = df[df["product_code"] == "사용료"].copy()
+
+    if df.empty:
+        return pd.DataFrame(columns=["sale_month", "사용료금액"])
+
+    df["sale_month"] = df["sale_date"].dt.to_period("M").astype(str)
+
+    trend_df = (
+        df.groupby("sale_month", as_index=False)["unit_price"]
+        .sum()
+        .rename(columns={"unit_price": "사용료금액"})
+        .sort_values("sale_month")
+    )
+
+    return trend_df
+
+def render_usage_fee_trend_chart(trend_df: pd.DataFrame):
+    st.markdown("### 월별 사용료 금액 추이")
+
+    if trend_df.empty:
+        st.info("사용료 데이터가 없습니다.")
+        return
+
+    month_order = trend_df["sale_month"].drop_duplicates().tolist()
+
+    chart = (
+        alt.Chart(trend_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("sale_month:N", title="월", sort=month_order),
+            y=alt.Y("사용료금액:Q", title="사용료 금액"),
+            tooltip=[
+                alt.Tooltip("sale_month:N", title="월"),
+                alt.Tooltip("사용료금액:Q", title="사용료 금액", format=",.0f"),
+            ],
+        )
+        .properties(height=320)
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
@@ -409,6 +485,11 @@ def render():
 
         trend_df = get_packaging_trend_data(conn)
         render_packaging_trend_chart(trend_df)
+
+        st.divider()
+
+        usage_fee_trend_df = get_usage_fee_trend_data(conn)
+        render_usage_fee_trend_chart(usage_fee_trend_df)
 
     finally:
         conn.close()
