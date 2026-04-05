@@ -288,19 +288,28 @@ def render():
             st.markdown("#### 등급 승급 처리")
             st.caption("달성일자를 기준으로 즉시 새 등급이 시작되고, 12개월 유지됩니다. 기존 활성 등급은 전일자로 자동 종료됩니다.")
 
+            if grade_labels:
+                default_grade_idx = 0
+            else:
+                st.warning("partner_grade_mst에 등급이 없습니다.")
+                return
+
+            achieved_key = f"pgh_achieved_date_{partner_id}"
+            if achieved_key not in st.session_state:
+                st.session_state[achieved_key] = pd.Timestamp.today().date()
+
+            achieved_date_preview = st.date_input(
+                "달성일자",
+                value=st.session_state[achieved_key],
+                key=achieved_key,
+            )
+
+            auto_end_preview = add_12_months_minus_1day(achieved_date_preview)
+            st.text_input("자동 종료일", value=str(auto_end_preview), disabled=True)
+
             with st.form("grade_upgrade_form"):
-                if grade_labels:
-                    default_grade_idx = 0
-                    selected_grade_label = st.selectbox("새 등급", grade_labels, index=default_grade_idx)
-                else:
-                    st.warning("partner_grade_mst에 등급이 없습니다.")
-                    return
-
-                achieved_date = st.date_input("달성일자", value=pd.Timestamp.today().date())
-                auto_end = add_12_months_minus_1day(achieved_date)
-                st.text_input("자동 종료일", value=str(auto_end), disabled=True)
+                selected_grade_label = st.selectbox("새 등급", grade_labels, index=default_grade_idx)
                 reason = st.text_area("사유", height=100, placeholder="예: 최근 12개월 매출 목표 달성")
-
                 submit_upgrade = st.form_submit_button("승급 적용", use_container_width=True)
 
             if submit_upgrade:
@@ -309,7 +318,7 @@ def render():
                         conn=conn,
                         partner_id=partner_id,
                         grade_code=grade_map[selected_grade_label],
-                        achieved_date=str(achieved_date),
+                        achieved_date=str(achieved_date_preview),
                         reason=reason.strip(),
                     )
                     st.success("승급이 적용되었습니다.")
@@ -381,12 +390,9 @@ def render():
                         "시작일",
                         value=pd.to_datetime(selected["start_date"]).date() if selected and selected.get("start_date") else pd.Timestamp.today().date(),
                     )
-                    default_end = (
-                        pd.to_datetime(selected["end_date"]).date()
-                        if selected and selected.get("end_date")
-                        else add_12_months_minus_1day(start_date)
-                    )
-                    end_date = st.date_input("종료일", value=default_end)
+
+                    auto_end_date = add_12_months_minus_1day(start_date)
+                    st.text_input("자동 종료일", value=str(auto_end_date), disabled=True)
                     reason = st.text_area(
                         "사유",
                         value=selected.get("reason", "") if selected else "",

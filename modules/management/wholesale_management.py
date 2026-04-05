@@ -143,6 +143,60 @@ def ensure_statement_tables(conn):
 
     conn.commit()
 
+def load_partner_purchase_summary_from_grade(conn) -> pd.DataFrame:
+    ensure_wholesale_sales_columns(conn)
+
+    if not table_exists(conn, "partner_mst") or not table_exists(conn, "wholesale_sales"):
+        return pd.DataFrame(columns=["partner_id", "purchase_item_names", "purchase_supply_amount_sum"])
+
+    partner_cols = get_table_columns(conn, "partner_mst")
+    has_grade_date = "grade_acquired_date" in partner_cols
+
+    sales_df = load_wholesale_sales_for_grid(conn)
+    if sales_df.empty:
+        return pd.DataFrame(columns=["partner_id", "purchase_item_names", "purchase_supply_amount_sum"])
+
+    base_partners = load_partners(conn)[["id", "grade_acquired_date"]].copy()
+    base_partners = base_partners.rename(columns={"id": "partner_id"})
+
+    df = sales_df.merge(base_partners, how="left", on="partner_id")
+
+    df["sale_date"] = pd.to_datetime(df["sale_date"], errors="coerce")
+    df["grade_acquired_date"] = pd.to_datetime(df["grade_acquired_date"], errors="coerce")
+    df["supply_amount"] = pd.to_numeric(df.get("supply_amount", 0), errors="coerce").fillna(0)
+    df["product_name"] = df.get("product_name", "").fillna("").astype(str).str.strip()
+
+    if has_grade_date:
+        df = df[
+            df["grade_acquired_date"].isna() |
+            (
+                df["sale_date"].notna() &
+                (df["sale_date"] >= df["grade_acquired_date"])
+            )
+        ].copy()
+
+    if df.empty:
+        return pd.DataFrame(columns=["partner_id", "purchase_item_names", "purchase_supply_amount_sum"])
+
+    def _join_unique_names(series):
+        vals = []
+        seen = set()
+        for x in series.fillna("").astype(str):
+            x = x.strip()
+            if x and x not in seen:
+                vals.append(x)
+                seen.add(x)
+        return ", ".join(vals)
+
+    summary_df = (
+        df.groupby("partner_id", as_index=False)
+        .agg(
+            purchase_item_names=("product_name", _join_unique_names),
+            purchase_supply_amount_sum=("supply_amount", "sum"),
+        )
+    )
+
+    return summary_df
 
 def issue_statement_document_no(conn, sale_date_str: str) -> str:
     return issue_document_no(conn, "STATEMENT", STATEMENT_DOC_PREFIX, sale_date_str)
@@ -206,6 +260,7 @@ def load_partners(conn) -> pd.DataFrame:
         "current_grade_code",
         "status",
         "join_date",
+        "grade_acquired_date",
         "notes",
     ]
     final_select = []
@@ -221,7 +276,6 @@ def load_partners(conn) -> pd.DataFrame:
         ORDER BY partner_name
     """
     return pd.read_sql(sql, conn)
-
 
 def load_grade_codes(conn) -> list[str]:
     if not table_exists(conn, "partner_grade_mst"):
@@ -1017,6 +1071,19 @@ def render_partner_registration(conn):
 
     mode = st.radio("작업", ["신규 등록", "기존 업체 수정"], horizontal=True)
 
+    purchase_summary = load_partner_purchase_summary_from_grade(conn)
+
+    if not purchase_summary.empty:
+        partners = partners.merge(
+            purchase_summary,
+            how="left",
+            left_on="id",
+            right_on="partner_id",
+        )
+    else:
+        partners["purchase_item_names"] = ""
+        partners["purchase_supply_amount_sum"] = 0
+
     selected_partner = None
     selected_row = None
     if mode == "기존 업체 수정":
@@ -1147,21 +1214,55 @@ def render_partner_registration(conn):
         view_df = partners.rename(columns={
             "partner_name": "거래처명",
             "partner_type": "유형",
-            "business_no": "사업자번호",
-            "owner_name": "대표자명",
-            "contact_name": "담당자명",
             "phone": "연락처",
-            "email": "이메일",
-            "address": "주소",
             "current_grade_code": "등급",
             "status": "상태",
             "join_date": "가입일",
+            "grade_acquired_date": "등급업일",
+            "purchase_item_names": "등급업 이후 구매물품",
+            "purchase_supply_amount_sum": "등급업 이후 공급가합계",
             "notes": "비고",
+            "business_no": "사업자번호",
+            "owner_name": "대표자명",
+            "contact_name": "담당자명",
+            "email": "이메일",
+            "address": "주소",
         })
+
+        # 금액 컬럼 콤마 포맷
+        if "등급업 이후 공급가합계" in view_df.columns:
+            view_df["등급업 이후 공급가합계"] = (
+                pd.to_numeric(view_df["등급업 이후 공급가합계"], errors="coerce")
+                .fillna(0)
+                .map(lambda x: f"{x:,.0f}")
+            )
+
+        # 칼럼 순서 재배치
+        preferred_order = [
+            "거래처명",
+            "유형",
+            "연락처",
+            "등급",
+            "상태",
+            "가입일",
+            "등급업일",
+            "등급업 이후 공급가합계",
+            "등급업 이후 구매물품",
+            "사업자번호",
+            "비고",
+            "이메일",
+            "대표자명",
+            "담당자명",
+            "주소",
+        ]
+
+        existing_order = [c for c in preferred_order if c in view_df.columns]
+        remaining_cols = [c for c in view_df.columns if c not in existing_order]
+        view_df = view_df[existing_order + remaining_cols]
+
         st.dataframe(view_df, use_container_width=True, hide_index=True)
     else:
         st.info("등록된 거래처가 없습니다.")
-
 
 def render_wholesale_management(conn):
     st.markdown("### 도매 판매 관리")
