@@ -239,7 +239,7 @@ def build_product_intro_from_template(
 def render_product_intro_export():
     st.subheader("상품소개서 엑셀 다운로드")
     st.caption("템플릿 파일을 그대로 사용하고, 상품 데이터를 채워 넣어 다운로드합니다.")
-
+    
     c1, c2, c3, c4 = st.columns([1.2, 1, 1, 1])
 
     with c1:
@@ -396,7 +396,9 @@ def _write_estimate_rows(ws, df: pd.DataFrame, start_row=10, end_row=64, use_pro
             proposal_price = row.get("proposal_retail_price_krw", None)
             if proposal_price not in (None, "", 0):
                 retail_price = proposal_price
-        supply_price = row.get("supply_price_krw", 0) or 0
+        supply_price = row.get("estimate_supply_price_krw", None)
+        if supply_price in (None, "", 0):
+            supply_price = row.get("supply_price_krw", 0) or 0
 
         display_name = f"{product_name} / {size_name}" if str(size_name).strip() else str(product_name)
 
@@ -426,7 +428,14 @@ def _set_estimate_total_formulas(ws, start_row=10, end_row=64, total_row=65):
 def _update_estimate_amount_text(ws, df: pd.DataFrame):
     total_supply = 0
     if not df.empty:
-        total_supply = int((df["qty"].fillna(0) * df["supply_price_krw"].fillna(0)).sum())
+        qty = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
+
+        if "estimate_supply_price_krw" in df.columns:
+            supply = pd.to_numeric(df["estimate_supply_price_krw"], errors="coerce").fillna(0)
+        else:
+            supply = pd.to_numeric(df["supply_price_krw"], errors="coerce").fillna(0)
+
+        total_supply = int((qty * supply).sum())
 
     ws["A8"] = f" 금 액 (견적금액) : {total_supply:,.0f} 원 (V.A.T. 제외)"
 
@@ -537,17 +546,37 @@ def _sort_estimate_editor_df(df: pd.DataFrame, is_non_cigar: bool = False) -> pd
     return work
 
 
-def _get_estimate_editor_column_config():
-    return {
+def _get_estimate_editor_column_config(is_non_cigar: bool = False):
+    config = {
         "product_code": st.column_config.TextColumn("상품코드", disabled=True),
         "product_name": st.column_config.TextColumn("상품명", disabled=True),
         "size_name": st.column_config.TextColumn("사이즈", disabled=True),
         "retail_price_krw": st.column_config.NumberColumn("소비자가", format="₩%.0f", disabled=True),
         "proposal_retail_price_krw": st.column_config.NumberColumn("제안소비자가", format="₩%.0f", disabled=True),
-        "supply_price_krw": st.column_config.NumberColumn("공급가", format="₩%.0f", disabled=True),
+        "supply_price_krw": st.column_config.NumberColumn("원공급가", format="₩%.0f", disabled=True),
         "qty": st.column_config.NumberColumn("수량", min_value=0, step=1),
     }
 
+    if not is_non_cigar:
+        config["estimate_discount_rate_text"] = st.column_config.TextColumn("할인율", disabled=True)
+        config["estimate_supply_price_krw"] = st.column_config.NumberColumn("견적공급가", format="₩%.0f", disabled=True)
+
+    return config
+
+def _apply_partner_grade_discount(df: pd.DataFrame, discount_rate: float) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    work = df.copy()
+    work["estimate_discount_rate"] = float(discount_rate or 0)
+
+    base_supply = pd.to_numeric(work.get("supply_price_krw", 0), errors="coerce").fillna(0)
+    work["base_supply_price_krw"] = base_supply
+    work["estimate_supply_price_krw"] = (
+        base_supply * (1 - work["estimate_discount_rate"])
+    ).round(0).astype(int)
+
+    return work
 
 def render_estimate_export():
     st.subheader("견적서 엑셀 다운로드")
@@ -567,6 +596,12 @@ def render_estimate_export():
     selected_partner_id = partner_options[selected_partner_name]
 
     partner_info = get_partner_detail_by_id(selected_partner_id)
+    estimate_discount_rate = float(partner_info.get("estimate_discount_rate", 0) or 0)
+
+    st.caption(
+        f"현재 등급: {partner_info.get('grade_code', '-')}"
+        f" / 시가 견적 할인율: {int(estimate_discount_rate * 100)}%"
+    )
 
     use_proposal_retail_price = st.checkbox(
         "견적서 소비자가를 제안소비자가로 대체",
@@ -580,11 +615,25 @@ def render_estimate_export():
     st.markdown("### 시가")
     if cigar_master_df.empty:
         st.info("조회 가능한 시가 품목이 없습니다.")
-        cigar_df = pd.DataFrame(columns=["product_code", "product_name", "size_name", "qty", "retail_price_krw", "supply_price_krw"])
+        cigar_df = pd.DataFrame(columns=[
+            "product_code", "product_name", "size_name", "qty",
+            "retail_price_krw", "proposal_retail_price_krw",
+            "supply_price_krw", "estimate_supply_price_krw"
+        ])
     else:
         cigar_edit_df = cigar_master_df.copy()
         cigar_edit_df = _sort_estimate_editor_df(cigar_edit_df, is_non_cigar=False)
+        cigar_edit_df = _apply_partner_grade_discount(cigar_edit_df, estimate_discount_rate)
         cigar_edit_df["qty"] = 0
+
+        cigar_edit_df["estimate_discount_rate_text"] = (
+            pd.to_numeric(cigar_edit_df["estimate_discount_rate"], errors="coerce")
+            .fillna(0)
+            .mul(100)
+            .round(0)
+            .astype(int)
+            .astype(str) + "%"
+        )
 
         cigar_column_order = [
             c for c in [
@@ -594,6 +643,8 @@ def render_estimate_export():
                 "retail_price_krw",
                 "proposal_retail_price_krw",
                 "supply_price_krw",
+                "estimate_discount_rate_text",
+                "estimate_supply_price_krw",
                 "qty",
             ]
             if c in cigar_edit_df.columns
@@ -604,7 +655,7 @@ def render_estimate_export():
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            column_config=_get_estimate_editor_column_config(),
+            column_config=_get_estimate_editor_column_config(is_non_cigar=False),
             column_order=cigar_column_order,
         )
         cigar_df = edited_cigar_df[edited_cigar_df["qty"] > 0].copy()
@@ -612,7 +663,11 @@ def render_estimate_export():
     st.markdown("### 시가 외")
     if non_cigar_master_df.empty:
         st.info("조회 가능한 시가 외 품목이 없습니다.")
-        non_cigar_df = pd.DataFrame(columns=["product_code", "product_name", "size_name", "qty", "retail_price_krw", "supply_price_krw"])
+        non_cigar_df = pd.DataFrame(columns=[
+            "product_code", "product_name", "size_name", "qty",
+            "retail_price_krw", "proposal_retail_price_krw",
+            "supply_price_krw"
+        ])
     else:
         non_cigar_edit_df = non_cigar_master_df.copy()
         non_cigar_edit_df = _sort_estimate_editor_df(non_cigar_edit_df, is_non_cigar=True)
@@ -636,7 +691,7 @@ def render_estimate_export():
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            column_config=_get_estimate_editor_column_config(),
+            column_config=_get_estimate_editor_column_config(is_non_cigar=True),
             column_order=non_cigar_column_order,
         )
         non_cigar_df = edited_non_cigar_df[edited_non_cigar_df["qty"] > 0].copy()

@@ -1474,18 +1474,23 @@ def get_all_partner_for_select():
 
 def get_partner_detail_by_id(partner_id):
     sql = """
-    SELECT
-        id AS partner_id,
-        partner_name,
-        owner_name,
-        contact_name,
-        phone,
-        email,
-        address,
-        status,
-        notes
-    FROM partner_mst
-    WHERE id = ?
+        SELECT
+        p.id AS partner_id,
+        p.partner_name,
+        p.address,
+        p.owner_name,
+        p.contact_name,
+        p.phone,
+        h.grade_code,
+        COALESCE(g.estimate_discount_rate, 0) AS estimate_discount_rate
+    FROM partner_mst p
+    LEFT JOIN partner_grade_history h
+        ON h.partner_id = p.id
+    AND date('now') BETWEEN h.start_date AND COALESCE(h.end_date, '9999-12-31')
+    LEFT JOIN partner_grade_mst g
+        ON h.grade_code = g.grade_code
+    WHERE p.id = ?
+    LIMIT 1
     """
     df = run_query(sql, [partner_id])
     return df.iloc[0].to_dict() if not df.empty else {}
