@@ -751,53 +751,6 @@ try:
                     delta="OK" if exists else "없음",
                 )
 
-    with st.expander("매출 로딩 디버그"):
-        try:
-            if has_table(conn, "retail_sales"):
-                st.write("retail_sales 컬럼:", get_table_columns(conn, "retail_sales"))
-            else:
-                st.write("retail_sales 테이블 없음")
-
-            if has_table(conn, "wholesale_sales"):
-                st.write("wholesale_sales 컬럼:", get_table_columns(conn, "wholesale_sales"))
-            else:
-                st.write("wholesale_sales 테이블 없음")
-
-            if has_table(conn, "non_cigar_product_mst"):
-                st.write("non_cigar_product_mst 컬럼:", get_table_columns(conn, "non_cigar_product_mst"))
-            else:
-                st.write("non_cigar_product_mst 테이블 없음")
-
-            if has_table(conn, "product_mst"):
-                st.write("product_mst 컬럼:", get_table_columns(conn, "product_mst"))
-            else:
-                st.write("product_mst 테이블 없음")
-
-            if view_exists(conn, "v_wholesale_sales"):
-                st.write("v_wholesale_sales 컬럼:", get_table_columns(conn, "v_wholesale_sales"))
-            else:
-                st.write("v_wholesale_sales 뷰 없음")
-
-            st.write("전체 로딩 건수:", len(sales_df))
-
-            if not sales_df.empty:
-                st.write("구분별 건수")
-                st.dataframe(
-                    sales_df.groupby("sales_type").size().reset_index(name="건수"),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-                st.write("최근 판매 샘플")
-                st.dataframe(
-                    sales_df.head(20),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-        except Exception as e:
-            st.warning(f"디버그 정보 조회 중 오류: {e}")
-
     st.caption("왼쪽 사이드바에서 상세 페이지를 선택하세요.")
 
 finally:

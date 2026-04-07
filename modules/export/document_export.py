@@ -439,12 +439,44 @@ def _update_estimate_amount_text(ws, df: pd.DataFrame):
 
     ws["A8"] = f" 금 액 (견적금액) : {total_supply:,.0f} 원 (V.A.T. 제외)"
 
+def _fill_estimate_header(ws, partner_info: dict, show_grade_discount: bool = False):
+    today_str = datetime.now().strftime("%Y.%m.%d")
+    ws["A3"] = today_str
+
+    partner_name = str(partner_info.get("partner_name", "") or "").strip()
+    address = str(partner_info.get("address", "") or "").strip()
+    owner_name = str(partner_info.get("owner_name", "") or "").strip()
+    contact_name = str(partner_info.get("contact_name", "") or "").strip()
+    phone = str(partner_info.get("phone", "") or "").strip()
+
+    ws["G3"] = partner_name
+    ws["G4"] = partner_name
+    ws["G5"] = address
+
+    if owner_name:
+        ws["G6"] = f"{owner_name} 대표님"
+    elif contact_name:
+        ws["G6"] = contact_name
+    else:
+        ws["G6"] = f"{partner_name} 담당자"
+
+    ws["G7"] = phone
+
+    # H8 옵션 표기
+    if show_grade_discount:
+        grade_code = str(partner_info.get("grade_code", "") or "-").strip()
+        discount_rate = float(partner_info.get("estimate_discount_rate", 0) or 0)
+        discount_pct = int(round(discount_rate * 100))
+        ws["H8"] = f"Grade: {grade_code}(할인율: {discount_pct}%)"
+    else:
+        ws["H8"] = None
 
 def build_estimate_workbook(
     cigar_df: pd.DataFrame,
     non_cigar_df: pd.DataFrame,
     partner_info: dict,
     use_proposal_retail_price: bool = False,
+    show_grade_discount: bool = False,
 ) -> io.BytesIO:
     wb = _load_estimate_template_workbook()
 
@@ -456,14 +488,19 @@ def build_estimate_workbook(
         ws_non_cigar = wb.copy_worksheet(ws_cigar)
         ws_non_cigar.title = "시가 외"
 
-    # 좌측 카테고리 문구 변경 원하면 아래 사용
     ws_cigar["A10"] = "CIGAR"
     ws_non_cigar["A10"] = "NON CIGAR"
 
     for ws, df in [(ws_cigar, cigar_df), (ws_non_cigar, non_cigar_df)]:
-        _fill_estimate_header(ws, partner_info)
+        _fill_estimate_header(ws, partner_info, show_grade_discount=show_grade_discount)
         _clear_estimate_detail_rows(ws, start_row=10, end_row=64)
-        _write_estimate_rows(ws, df, start_row=10, end_row=64, use_proposal_retail_price=use_proposal_retail_price)
+        _write_estimate_rows(
+            ws,
+            df,
+            start_row=10,
+            end_row=64,
+            use_proposal_retail_price=use_proposal_retail_price,
+        )
         _set_estimate_total_formulas(ws, start_row=10, end_row=64, total_row=65)
         _update_estimate_amount_text(ws, df)
 
@@ -471,7 +508,6 @@ def build_estimate_workbook(
     wb.save(output)
     output.seek(0)
     return output
-
 
 def _build_sample_estimate_data():
     cigar_df = pd.DataFrame([
@@ -609,6 +645,12 @@ def render_estimate_export():
         help="체크 시 견적서의 소비자가(F열)에 기본 소비자가 대신 제안소비자가를 표시합니다."
     )
 
+    show_grade_discount = st.checkbox(
+        "견적서에 등급/할인율 표기",
+        value=False,
+        help="체크 시 엑셀 H8 셀에 Grade: 등급(할인율: 5%) 형식으로 표시합니다."
+    )
+
     cigar_master_df = get_estimate_cigar_items()
     non_cigar_master_df = get_estimate_non_cigar_items()
 
@@ -721,6 +763,7 @@ def render_estimate_export():
         download_non_cigar_df,
         partner_info,
         use_proposal_retail_price=use_proposal_retail_price,
+        show_grade_discount=show_grade_discount,
     )
 
     today = datetime.now().strftime("%Y%m%d")
