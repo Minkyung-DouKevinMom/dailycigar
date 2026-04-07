@@ -9,282 +9,301 @@ from db import (
 )
 
 
-def _render_fallback_editor(grid_df: pd.DataFrame):
-    st.warning("그리드 컴포넌트 로딩에 실패하여 기본 편집기로 표시합니다.")
+DISPLAY_COLUMNS = [
+    "id",
+    "product_name",
+    "size_name",
+    "product_code",
+    "use_yn",
+    "length_mm",
+    "ring_gauge",
+    "smoking_time_text",
+    "unit_weight_g",
+    "box_width_cm",
+    "box_depth_cm",
+    "box_height_cm",
+]
 
-    edited_df = st.data_editor(
-        grid_df,
-        use_container_width=True,
-        num_rows="dynamic",
-        hide_index=True,
-        column_config={
-            "delete_yn": st.column_config.CheckboxColumn("삭제"),
-            "id": st.column_config.NumberColumn("ID", disabled=True),
-            "product_name": st.column_config.TextColumn("상품명"),
-            "size_name": st.column_config.TextColumn("사이즈"),
-            "product_code": st.column_config.TextColumn("코드"),
-            "use_yn": st.column_config.SelectboxColumn("사용여부", options=["Y", "N"]),
-            "length_mm": st.column_config.NumberColumn("길이(mm)"),
-            "ring_gauge": st.column_config.NumberColumn("링게이지"),
-            "smoking_time_text": st.column_config.TextColumn("흡연시간"),
-            "unit_weight_g": st.column_config.NumberColumn("개당무게(g)"),
-            "box_width_cm": st.column_config.NumberColumn("박스가로(cm)"),
-            "box_depth_cm": st.column_config.NumberColumn("박스세로(cm)"),
-            "box_height_cm": st.column_config.NumberColumn("박스높이(cm)"),
-        },
-        key="product_grid_fallback",
-    )
-    return pd.DataFrame(edited_df)
+COLUMN_RENAME = {
+    "id": "ID",
+    "product_name": "상품명",
+    "size_name": "사이즈",
+    "product_code": "상품코드",
+    "use_yn": "사용여부",
+    "length_mm": "길이(mm)",
+    "ring_gauge": "링게이지",
+    "smoking_time_text": "흡연시간",
+    "unit_weight_g": "개당무게(g)",
+    "box_width_cm": "박스가로(cm)",
+    "box_depth_cm": "박스세로(cm)",
+    "box_height_cm": "박스높이(cm)",
+}
 
 
-def render():
-    st.subheader("시가")
-    st.caption("수정은 셀을 직접 편집 후 저장합니다. 삭제는 '삭제' 체크 후 저장합니다.")
+def _null(v):
+    if pd.isna(v):
+        return None
+    if isinstance(v, str) and v.strip() == "":
+        return None
+    return v
 
+
+def _safe_float(v):
+    v = _null(v)
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except Exception:
+        return None
+
+
+def _normalize_use_yn(v):
+    v = str(v or "Y").strip().upper()
+    return v if v in ["Y", "N"] else "Y"
+
+
+def _load_df():
     df = get_all_product_mst_for_edit()
+    if df is None or df.empty:
+        df = pd.DataFrame(columns=DISPLAY_COLUMNS)
 
-    if df is None:
-        df = pd.DataFrame()
-
-    if "use_yn" not in df.columns:
-        df["use_yn"] = "Y"
-
-    if not df.empty:
-        df["use_yn"] = (
-            df["use_yn"]
-            .fillna("Y")
-            .astype(str)
-            .str.upper()
-        )
-        df.loc[~df["use_yn"].isin(["Y", "N"]), "use_yn"] = "Y"
-
-    if df.empty:
-        df = pd.DataFrame(
-            columns=[
-                "id",
-                "product_name",
-                "size_name",
-                "product_code",
-                "use_yn",
-                "length_mm",
-                "ring_gauge",
-                "smoking_time_text",
-                "unit_weight_g",
-                "box_width_cm",
-                "box_depth_cm",
-                "box_height_cm",
-            ]
-        )
-
-    keyword = st.text_input("검색", placeholder="상품명 / 사이즈 / 코드")
-
-    if keyword:
-        keyword = str(keyword).strip()
-        df = df[
-            df["product_name"].fillna("").astype(str).str.contains(keyword, case=False, na=False)
-            | df["size_name"].fillna("").astype(str).str.contains(keyword, case=False, na=False)
-            | df["product_code"].fillna("").astype(str).str.contains(keyword, case=False, na=False)
-        ].copy()
-
-    if "delete_yn" not in df.columns:
-        df.insert(0, "delete_yn", False)
-
-    display_columns = [
-        "delete_yn",
-        "id",
-        "product_name",
-        "size_name",
-        "product_code",
-        "use_yn",
-        "length_mm",
-        "ring_gauge",
-        "smoking_time_text",
-        "unit_weight_g",
-        "box_width_cm",
-        "box_depth_cm",
-        "box_height_cm",
-    ]
-
-    for col in display_columns:
+    for col in DISPLAY_COLUMNS:
         if col not in df.columns:
             df[col] = None
 
-    grid_df = df[display_columns].copy()
+    df = df[DISPLAY_COLUMNS].copy()
+    df["use_yn"] = df["use_yn"].fillna("Y").astype(str).str.upper()
+    df.loc[~df["use_yn"].isin(["Y", "N"]), "use_yn"] = "Y"
 
-    col1, col2 = st.columns([1, 4])
+    return df
 
-    with col1:
-        if st.button("➕ 신규 행 추가", use_container_width=True):
-            new_row = {col: None for col in grid_df.columns}
-            new_row["delete_yn"] = False
-            new_row["use_yn"] = "Y"
-            grid_df = pd.concat([grid_df, pd.DataFrame([new_row])], ignore_index=True)
 
-    edited_df = None
-    aggrid_error = None
+def _render_view_table(df: pd.DataFrame):
+    st.markdown("#### 조회")
 
-    # AgGrid는 클라우드에서 깨질 수 있어 런타임 import + fallback 처리
-    try:
-        from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
+    keyword = st.text_input("검색", placeholder="상품명 / 사이즈 / 상품코드")
 
-        with st.container(border=True):
-            gb = GridOptionsBuilder.from_dataframe(grid_df)
+    filtered_df = df.copy()
+    if keyword:
+        keyword = str(keyword).strip()
+        filtered_df = filtered_df[
+            filtered_df["product_name"].fillna("").astype(str).str.contains(keyword, case=False, na=False)
+            | filtered_df["size_name"].fillna("").astype(str).str.contains(keyword, case=False, na=False)
+            | filtered_df["product_code"].fillna("").astype(str).str.contains(keyword, case=False, na=False)
+        ].copy()
 
-            gb.configure_default_column(
-                sortable=True,
-                filter=True,
-                resizable=True,
-                editable=True,
-                wrapText=True,
-                autoHeight=False,
+    st.caption("표 헤더 클릭으로 정렬해서 볼 수 있습니다.")
+    st.dataframe(
+        filtered_df.rename(columns=COLUMN_RENAME),
+        use_container_width=True,
+        height=520,
+        hide_index=True,
+    )
+    st.caption(f"총 {len(filtered_df):,}건")
+
+    return filtered_df
+
+
+def _render_edit_form(df: pd.DataFrame):
+    st.markdown("#### 기존 데이터 수정 / 삭제")
+
+    if df.empty:
+        st.info("등록된 데이터가 없습니다.")
+        return
+
+    options_df = df.copy()
+    options_df["label"] = options_df.apply(
+        lambda r: f"[{int(r['id'])}] {r['product_name']} / {r['size_name']} / {r['product_code']}",
+        axis=1,
+    )
+
+    selected_label = st.selectbox(
+        "수정할 상품 선택",
+        options=options_df["label"].tolist(),
+        index=0,
+        key="product_edit_selectbox",
+    )
+
+    selected_row = options_df.loc[options_df["label"] == selected_label].iloc[0]
+
+    with st.form("product_edit_form", clear_on_submit=False):
+        st.caption(f"선택 ID: {int(selected_row['id'])}")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            product_name = st.text_input("상품명", value=selected_row.get("product_name") or "")
+        with col2:
+            size_name = st.text_input("사이즈", value=selected_row.get("size_name") or "")
+        with col3:
+            product_code = st.text_input("상품코드", value=selected_row.get("product_code") or "")
+
+        col4, col5, col6 = st.columns(3)
+        with col4:
+            use_yn = st.selectbox(
+                "사용여부",
+                options=["Y", "N"],
+                index=0 if str(selected_row.get("use_yn") or "Y").upper() == "Y" else 1,
+            )
+        with col5:
+            length_mm = st.number_input(
+                "길이(mm)",
+                value=float(selected_row["length_mm"]) if pd.notna(selected_row["length_mm"]) else 0.0,
+                step=1.0,
+                format="%.0f",
+            )
+        with col6:
+            ring_gauge = st.number_input(
+                "링게이지",
+                value=float(selected_row["ring_gauge"]) if pd.notna(selected_row["ring_gauge"]) else 0.0,
+                step=1.0,
+                format="%.0f",
             )
 
-            gb.configure_grid_options(
-                rowHeight=42,
-                headerHeight=42,
-                suppressHorizontalScroll=False,
-                domLayout="normal",
-                animateRows=False,
+        col7, col8 = st.columns(2)
+        with col7:
+            smoking_time_text = st.text_input("흡연시간", value=selected_row.get("smoking_time_text") or "")
+        with col8:
+            unit_weight_g = st.number_input(
+                "개당무게(g)",
+                value=float(selected_row["unit_weight_g"]) if pd.notna(selected_row["unit_weight_g"]) else 0.0,
+                step=0.01,
+                format="%.2f",
             )
 
-            gb.configure_column(
-                "delete_yn",
-                header_name="삭제",
-                editable=True,
-                cellEditor="agCheckboxCellEditor",
-                checkboxSelection=False,
-                width=70,
-                pinned="left",
+        col9, col10, col11 = st.columns(3)
+        with col9:
+            box_width_cm = st.number_input(
+                "박스가로(cm)",
+                value=float(selected_row["box_width_cm"]) if pd.notna(selected_row["box_width_cm"]) else 0.0,
+                step=0.01,
+                format="%.2f",
             )
-            gb.configure_column("id", header_name="ID", editable=False, width=80, pinned="left")
-            gb.configure_column("product_name", header_name="상품명", minWidth=220, flex=2)
-            gb.configure_column("size_name", header_name="사이즈", minWidth=140, flex=1)
-            gb.configure_column("product_code", header_name="코드", minWidth=140, flex=1)
-            gb.configure_column(
-                "use_yn",
-                header_name="사용여부",
-                cellEditor="agSelectCellEditor",
-                cellEditorParams={"values": ["Y", "N"]},
-                width=100,
+        with col10:
+            box_depth_cm = st.number_input(
+                "박스세로(cm)",
+                value=float(selected_row["box_depth_cm"]) if pd.notna(selected_row["box_depth_cm"]) else 0.0,
+                step=0.01,
+                format="%.2f",
             )
-            gb.configure_column("length_mm", header_name="길이(mm)", width=110)
-            gb.configure_column("ring_gauge", header_name="링게이지", width=110)
-            gb.configure_column("smoking_time_text", header_name="흡연시간", minWidth=140, flex=1)
-            gb.configure_column("unit_weight_g", header_name="개당무게(g)", width=120)
-            gb.configure_column("box_width_cm", header_name="박스가로(cm)", width=130)
-            gb.configure_column("box_depth_cm", header_name="박스세로(cm)", width=130)
-            gb.configure_column("box_height_cm", header_name="박스높이(cm)", width=130)
-
-            grid_options = gb.build()
-
-            grid_response = AgGrid(
-                grid_df,
-                gridOptions=grid_options,
-                height=650,
-                data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-                update_mode=GridUpdateMode.VALUE_CHANGED,
-                fit_columns_on_grid_load=False,
-                theme="streamlit",
-                key="product_grid",
+        with col11:
+            box_height_cm = st.number_input(
+                "박스높이(cm)",
+                value=float(selected_row["box_height_cm"]) if pd.notna(selected_row["box_height_cm"]) else 0.0,
+                step=0.01,
+                format="%.2f",
             )
 
-            edited_df = pd.DataFrame(grid_response["data"])
+        delete_yn = st.checkbox("이 상품 삭제", value=False)
 
-    except Exception as e:
-        aggrid_error = e
+        btn_col1, btn_col2 = st.columns(2)
+        with btn_col1:
+            submitted_update = st.form_submit_button("수정 저장", use_container_width=True, type="primary")
+        with btn_col2:
+            submitted_delete = st.form_submit_button("삭제 실행", use_container_width=True)
 
-    if edited_df is None:
-        if aggrid_error:
-            st.error(f"AgGrid 오류: {aggrid_error}")
-        with st.container(border=True):
-            edited_df = _render_fallback_editor(grid_df)
+    if submitted_update:
+        if not product_name.strip() or not size_name.strip() or not product_code.strip():
+            st.warning("상품명, 사이즈, 상품코드는 필수입니다.")
+            return
 
-    st.caption(f"총 {len(edited_df):,}건 조회되었습니다.")
-    st.info("삭제할 행은 맨 왼쪽 '삭제'를 체크한 뒤 저장하세요.")
+        update_product_mst_by_id(
+            row_id=int(selected_row["id"]),
+            product_name=product_name.strip(),
+            size_name=size_name.strip(),
+            product_code=product_code.strip(),
+            use_yn=_normalize_use_yn(use_yn),
+            length_mm=_safe_float(length_mm),
+            ring_gauge=_safe_float(ring_gauge),
+            smoking_time_text=_null(smoking_time_text),
+            unit_weight_g=_safe_float(unit_weight_g),
+            box_width_cm=_safe_float(box_width_cm),
+            box_depth_cm=_safe_float(box_depth_cm),
+            box_height_cm=_safe_float(box_height_cm),
+        )
+        st.success("수정되었습니다.")
+        st.rerun()
 
-    if st.button("저장", type="primary", use_container_width=True):
-        try:
-            update_count = 0
-            insert_count = 0
-            delete_count = 0
+    if submitted_delete:
+        if not delete_yn:
+            st.warning("삭제하려면 '이 상품 삭제'를 체크하세요.")
+            return
 
-            def null(v):
-                if pd.isna(v):
-                    return None
-                if isinstance(v, str) and v.strip() == "":
-                    return None
-                return v
+        delete_product_mst_by_id(int(selected_row["id"]))
+        st.success("삭제되었습니다.")
+        st.rerun()
 
-            for _, row in edited_df.iterrows():
-                row_id = row.get("id")
-                delete_yn = bool(row.get("delete_yn", False))
 
-                product_name = null(row.get("product_name"))
-                size_name = null(row.get("size_name"))
-                product_code = null(row.get("product_code"))
-                length_mm = null(row.get("length_mm"))
-                ring_gauge = null(row.get("ring_gauge"))
-                smoking_time_text = null(row.get("smoking_time_text"))
-                unit_weight_g = null(row.get("unit_weight_g"))
-                box_width_cm = null(row.get("box_width_cm"))
-                box_depth_cm = null(row.get("box_depth_cm"))
-                box_height_cm = null(row.get("box_height_cm"))
-                use_yn = str(row.get("use_yn") or "Y").upper()
+def _render_insert_form():
+    st.markdown("#### 신규 데이터 추가")
 
-                if use_yn not in ["Y", "N"]:
-                    use_yn = "Y"
+    with st.form("product_insert_form", clear_on_submit=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            product_name = st.text_input("상품명")
+        with col2:
+            size_name = st.text_input("사이즈")
+        with col3:
+            product_code = st.text_input("상품코드")
 
-                # 기존 행 삭제
-                if delete_yn and pd.notna(row_id):
-                    delete_product_mst_by_id(int(row_id))
-                    delete_count += 1
-                    continue
+        col4, col5, col6 = st.columns(3)
+        with col4:
+            use_yn = st.selectbox("사용여부", options=["Y", "N"], index=0)
+        with col5:
+            length_mm = st.number_input("길이(mm)", value=0.0, step=1.0, format="%.0f")
+        with col6:
+            ring_gauge = st.number_input("링게이지", value=0.0, step=1.0, format="%.0f")
 
-                # 신규 빈 행 무시
-                if not product_name and not size_name and not product_code:
-                    continue
+        col7, col8 = st.columns(2)
+        with col7:
+            smoking_time_text = st.text_input("흡연시간")
+        with col8:
+            unit_weight_g = st.number_input("개당무게(g)", value=0.0, step=0.01, format="%.2f")
 
-                # 필수값 체크
-                if not product_name or not size_name or not product_code:
-                    st.warning(
-                        f"필수값 누락: 상품명={product_name}, 사이즈={size_name}, 코드={product_code}"
-                    )
-                    continue
+        col9, col10, col11 = st.columns(3)
+        with col9:
+            box_width_cm = st.number_input("박스가로(cm)", value=0.0, step=0.01, format="%.2f")
+        with col10:
+            box_depth_cm = st.number_input("박스세로(cm)", value=0.0, step=0.01, format="%.2f")
+        with col11:
+            box_height_cm = st.number_input("박스높이(cm)", value=0.0, step=0.01, format="%.2f")
 
-                if pd.notna(row_id) and str(row_id).strip() != "":
-                    update_product_mst_by_id(
-                        row_id=int(row_id),
-                        product_name=product_name,
-                        size_name=size_name,
-                        product_code=product_code,
-                        use_yn=use_yn,
-                        length_mm=length_mm,
-                        ring_gauge=ring_gauge,
-                        smoking_time_text=smoking_time_text,
-                        unit_weight_g=unit_weight_g,
-                        box_width_cm=box_width_cm,
-                        box_depth_cm=box_depth_cm,
-                        box_height_cm=box_height_cm,
-                    )
-                    update_count += 1
-                else:
-                    insert_product_mst(
-                        product_name=product_name,
-                        size_name=size_name,
-                        product_code=product_code,
-                        use_yn=use_yn,
-                        length_mm=length_mm,
-                        ring_gauge=ring_gauge,
-                        smoking_time_text=smoking_time_text,
-                        unit_weight_g=unit_weight_g,
-                        box_width_cm=box_width_cm,
-                        box_depth_cm=box_depth_cm,
-                        box_height_cm=box_height_cm,
-                    )
-                    insert_count += 1
+        submitted_insert = st.form_submit_button("신규 등록", use_container_width=True, type="primary")
 
-            st.success(f"완료: 수정 {update_count} / 신규 {insert_count} / 삭제 {delete_count}")
-            st.rerun()
+    if submitted_insert:
+        if not product_name.strip() or not size_name.strip() or not product_code.strip():
+            st.warning("상품명, 사이즈, 상품코드는 필수입니다.")
+            return
 
-        except Exception as e:
-            st.error(f"에러: {e}")
+        insert_product_mst(
+            product_name=product_name.strip(),
+            size_name=size_name.strip(),
+            product_code=product_code.strip(),
+            use_yn=_normalize_use_yn(use_yn),
+            length_mm=_safe_float(length_mm),
+            ring_gauge=_safe_float(ring_gauge),
+            smoking_time_text=_null(smoking_time_text),
+            unit_weight_g=_safe_float(unit_weight_g),
+            box_width_cm=_safe_float(box_width_cm),
+            box_depth_cm=_safe_float(box_depth_cm),
+            box_height_cm=_safe_float(box_height_cm),
+        )
+        st.success("신규 등록되었습니다.")
+        st.rerun()
+
+
+def render():
+    st.subheader("시가 상품 마스터")
+
+    df = _load_df()
+
+    filtered_df = _render_view_table(df)
+    st.divider()
+
+    tab1, tab2 = st.tabs(["기존 데이터 수정/삭제", "신규 데이터 추가"])
+
+    with tab1:
+        _render_edit_form(filtered_df)
+
+    with tab2:
+        _render_insert_form()
