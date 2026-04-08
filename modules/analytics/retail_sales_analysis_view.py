@@ -81,9 +81,10 @@ def get_packaging_trend_data(conn) -> pd.DataFrame:
     sale_date_col = cols_lower.get("sale_date")
     product_code_col = cols_lower.get("product_code")
     unit_price_col = cols_lower.get("unit_price")
-    discount_name_col = cols_lower.get("product_discount_name")
+    product_discount_name_col = cols_lower.get("product_discount_name")
+    order_discount_name_col = cols_lower.get("order_discount_name")
 
-    required = [sale_date_col, product_code_col, unit_price_col, discount_name_col]
+    required = [sale_date_col, product_code_col, unit_price_col]
     if any(c is None for c in required):
         return pd.DataFrame(columns=["sale_month", "포장구분", "금액"])
 
@@ -92,7 +93,8 @@ def get_packaging_trend_data(conn) -> pd.DataFrame:
         {sale_date_col} AS sale_date,
         COALESCE({product_code_col}, '') AS product_code,
         COALESCE({unit_price_col}, 0) AS unit_price,
-        COALESCE({discount_name_col}, '') AS product_discount_name
+        COALESCE({product_discount_name_col}, '') AS product_discount_name,
+        COALESCE({order_discount_name_col}, '') AS order_discount_name
     FROM retail_sales
     WHERE COALESCE({sale_date_col}, '') <> ''
     """
@@ -107,6 +109,7 @@ def get_packaging_trend_data(conn) -> pd.DataFrame:
     df["product_code"] = normalize_code(df["product_code"])
     df["unit_price"] = pd.to_numeric(df["unit_price"], errors="coerce").fillna(0)
     df["product_discount_name"] = df["product_discount_name"].fillna("").astype(str).str.strip()
+    df["order_discount_name"] = df["order_discount_name"].fillna("").astype(str).str.strip()
 
     # 사이드 카테고리 제외
     non_cigar_category_map = get_non_cigar_category_map(conn)
@@ -115,8 +118,11 @@ def get_packaging_trend_data(conn) -> pd.DataFrame:
     df = df[df["non_cigar_category"] != "사이드"].copy()
 
     # 포장 / 비포장 구분
-    df["포장구분"] = df["product_discount_name"].apply(
-        lambda x: "포장" if x == "포장할인" else "비포장"
+    df["포장구분"] = df.apply(
+        lambda row: "포장"
+        if row["product_discount_name"] == "포장할인" or row["order_discount_name"] == "포장할인"
+        else "비포장",
+        axis=1,
     )
 
     df["sale_month"] = df["sale_date"].dt.to_period("M").astype(str)
@@ -125,8 +131,15 @@ def get_packaging_trend_data(conn) -> pd.DataFrame:
         df.groupby(["sale_month", "포장구분"], as_index=False)["unit_price"]
         .sum()
         .rename(columns={"unit_price": "금액"})
-        .sort_values(["sale_month", "포장구분"])
     )
+
+    # 월별 합계 대비 비중(%)
+    trend_df["월합계"] = trend_df.groupby("sale_month")["금액"].transform("sum")
+    trend_df["비중"] = (
+        (trend_df["금액"] / trend_df["월합계"]) * 100
+    ).fillna(0)
+
+    trend_df = trend_df.sort_values(["sale_month", "포장구분"])
 
     return trend_df
 
@@ -151,6 +164,7 @@ def render_packaging_trend_chart(trend_df: pd.DataFrame):
                 alt.Tooltip("sale_month:N", title="월"),
                 alt.Tooltip("포장구분:N", title="구분"),
                 alt.Tooltip("금액:Q", title="금액", format=",.0f"),
+                alt.Tooltip("비중:Q", title="비중(%)", format=".1f"),
             ],
         )
         .properties(height=380)
