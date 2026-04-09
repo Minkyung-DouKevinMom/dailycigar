@@ -112,7 +112,7 @@ def _render_edit_form(df: pd.DataFrame):
         st.info("등록된 데이터가 없습니다.")
         return
 
-    options_df = df.copy()
+    options_df = df.copy().sort_values(by="id", ascending=True).reset_index(drop=True)
     options_df["label"] = options_df.apply(
         lambda r: f"[{int(r['id'])}] {r['product_name']} / {r['size_name']} / {r['product_code']}",
         axis=1,
