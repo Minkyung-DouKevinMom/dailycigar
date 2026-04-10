@@ -279,6 +279,7 @@ def render():
         "supply_price_krw",
         "retail_price_krw",
         "store_retail_price_krw",
+        "proposal_retail_price_krw",
         "import_total_cost_krw",
         "tax_total_all_krw",
         "margin_krw",
@@ -319,6 +320,20 @@ def render():
     else:
         df["retail_extra_margin_krw"] = 0
 
+    if "proposal_retail_price_krw" in df.columns and "korea_cost_krw" in df.columns:
+        df["proposal_retail_margin_krw"] = (
+            df["proposal_retail_price_krw"].fillna(0) - df["korea_cost_krw"].fillna(0)
+        ).clip(lower=0)
+    else:
+        df["proposal_retail_margin_krw"] = 0
+
+    if "proposal_retail_price_krw" in df.columns and "supply_price_krw" in df.columns:
+        df["proposal_retail_extra_margin_krw"] = (
+            df["proposal_retail_price_krw"].fillna(0) - df["supply_price_krw"].fillna(0)
+        ).clip(lower=0)
+    else:
+        df["proposal_retail_extra_margin_krw"] = 0
+
     df["wholesale_margin_rate"] = df.apply(
         lambda r: (r["wholesale_margin_krw"] / r["supply_price_krw"] * 100)
         if pd.notna(r.get("supply_price_krw")) and r.get("supply_price_krw", 0) > 0
@@ -328,6 +343,12 @@ def render():
     df["retail_margin_rate"] = df.apply(
         lambda r: (r["retail_margin_krw"] / r["retail_price_krw"] * 100)
         if pd.notna(r.get("retail_price_krw")) and r.get("retail_price_krw", 0) > 0
+        else 0,
+        axis=1,
+    )
+    df["proposal_retail_margin_rate"] = df.apply(
+        lambda r: (r["proposal_retail_margin_krw"] / r["proposal_retail_price_krw"] * 100)
+        if pd.notna(r.get("proposal_retail_price_krw")) and r.get("proposal_retail_price_krw", 0) > 0
         else 0,
         axis=1,
     )
@@ -442,16 +463,23 @@ def render():
 
     st.subheader("제품별 가격 구조 그래프")
 
-    o1, o2, o3 = st.columns([1.2, 1.2, 1.6])
+    o1, o2, o3 = st.columns([1.6, 1.0, 1.6])
 
     with o1:
-        view_mode = st.radio("그래프 기준", ["소매 기준", "도매 기준"], horizontal=True)
+        view_mode = st.radio(
+            "그래프 기준",
+            ["소비자가 기준", "제안소비자가 기준", "도매 기준"],
+            horizontal=True,
+        )
 
     with o2:
         top10_only = st.toggle("Top 10만 보기", value=False)
 
     with o3:
-        sort_by = st.selectbox("정렬 기준", ["소비자가", "공급가", "한국원가", "도매마진", "소매마진"])
+        sort_by = st.selectbox(
+            "정렬 기준",
+            ["소비자가", "제안소비자가", "공급가", "한국원가", "도매마진", "소매마진"],
+        )
 
     chart_df = df.copy()
 
@@ -468,30 +496,47 @@ def render():
 
     sort_map = {
         "소비자가": "retail_price_krw",
+        "제안소비자가": "proposal_retail_price_krw",
         "공급가": "supply_price_krw",
         "한국원가": "korea_cost_krw",
         "도매마진": "wholesale_margin_krw",
-        "소매마진": "retail_margin_krw",
+        "소매마진": (
+            "retail_margin_krw"
+            if view_mode == "소비자가 기준"
+            else "proposal_retail_margin_krw"
+            if view_mode == "제안소비자가 기준"
+            else "wholesale_margin_krw"
+        ),
     }
 
-    sort_col = sort_map[sort_by]
+    sort_col = sort_map.get(sort_by)
     if sort_col in chart_df.columns:
         chart_df = chart_df.sort_values(sort_col, ascending=False)
 
     if top10_only:
         chart_df = chart_df.head(10)
 
-    if view_mode == "소매 기준":
-        chart_title = "제품별 가격 구조 (소매 기준)"
+    if view_mode == "소비자가 기준":
+        chart_title = "제품별 가격 구조 (소비자가 기준)"
+        required_cols = ["korea_cost_krw", "wholesale_margin_krw", "retail_extra_margin_krw"]
+    elif view_mode == "제안소비자가 기준":
+        chart_title = "제품별 가격 구조 (제안소비자가 기준)"
+        required_cols = ["korea_cost_krw", "wholesale_margin_krw", "proposal_retail_extra_margin_krw"]
     else:
         chart_title = "제품별 가격 구조 (도매 기준)"
+        required_cols = ["korea_cost_krw", "wholesale_margin_krw"]
 
-    for col in ["korea_cost_krw", "wholesale_margin_krw", "retail_extra_margin_krw"]:
+    for col in required_cols:
         if col not in chart_df.columns:
             chart_df[col] = 0
         chart_df[col] = pd.to_numeric(chart_df[col], errors="coerce").fillna(0)
 
-    render_pretty_stacked_bar_chart(chart_df=chart_df, view_mode=view_mode, chart_title=chart_title)
+    render_pretty_stacked_bar_chart(
+        chart_df=chart_df,
+        view_mode=view_mode,
+        chart_title=chart_title,
+        sort_by=sort_by,
+    )
 
     s1, s2 = st.columns(2)
 
@@ -509,16 +554,25 @@ def render():
             st.table(top_wholesale)
 
     with s2:
-        if "retail_margin_krw" in chart_df.columns:
-            top_retail = chart_df.nlargest(
-                min(5, len(chart_df)), "retail_margin_krw"
-            )[["product_name", "size_name", "retail_margin_krw", "retail_margin_rate"]].copy()
+        if view_mode == "제안소비자가 기준":
+            margin_col = "proposal_retail_margin_krw"
+            margin_rate_col = "proposal_retail_margin_rate"
+            caption_text = "제안소비자가 기준 마진 상위 제품"
+        else:
+            margin_col = "retail_margin_krw"
+            margin_rate_col = "retail_margin_rate"
+            caption_text = "소매 마진 상위 제품"
 
-            top_retail["소매마진"] = top_retail["retail_margin_krw"].apply(format_krw)
-            top_retail["소매마진율"] = top_retail["retail_margin_rate"].fillna(0).map(lambda x: f"{x:.1f}%")
+        if margin_col in chart_df.columns:
+            top_retail = chart_df.nlargest(
+                min(5, len(chart_df)), margin_col
+            )[["product_name", "size_name", margin_col, margin_rate_col]].copy()
+
+            top_retail["소매마진"] = top_retail[margin_col].apply(format_krw)
+            top_retail["소매마진율"] = top_retail[margin_rate_col].fillna(0).map(lambda x: f"{x:.1f}%")
             top_retail = top_retail[["product_name", "size_name", "소매마진", "소매마진율"]]
 
-            st.caption("소매 마진 상위 제품")
+            st.caption(caption_text)
             st.table(top_retail)
 
 
@@ -545,18 +599,29 @@ def highlight_columns(dataframe: pd.DataFrame):
     return styles
 
 
-def render_pretty_stacked_bar_chart(chart_df: pd.DataFrame, view_mode: str, chart_title: str):
+def render_pretty_stacked_bar_chart(
+    chart_df: pd.DataFrame,
+    view_mode: str,
+    chart_title: str,
+    sort_by: str,
+):
     if chart_df.empty:
         st.info("그래프 데이터가 없습니다.")
         return
 
     work = chart_df.copy()
 
-    if view_mode == "소매 기준":
+    if view_mode == "소비자가 기준":
         part_defs = [
             ("한국원가", "korea_cost_krw"),
             ("도매 마진", "wholesale_margin_krw"),
             ("추가 소매 마진", "retail_extra_margin_krw"),
+        ]
+    elif view_mode == "제안소비자가 기준":
+        part_defs = [
+            ("한국원가", "korea_cost_krw"),
+            ("도매 마진", "wholesale_margin_krw"),
+            ("추가 소매 마진", "proposal_retail_extra_margin_krw"),
         ]
     else:
         part_defs = [
@@ -577,8 +642,34 @@ def render_pretty_stacked_bar_chart(chart_df: pd.DataFrame, view_mode: str, char
         st.info("그래프 데이터가 없습니다.")
         return
 
-    order_df = plot_df.groupby("label", as_index=False)["금액"].sum().sort_values("금액", ascending=False)
-    label_order = order_df["label"].tolist()
+    sort_map = {
+        "소비자가": "retail_price_krw",
+        "제안소비자가": "proposal_retail_price_krw",
+        "공급가": "supply_price_krw",
+        "한국원가": "korea_cost_krw",
+        "도매마진": "wholesale_margin_krw",
+        "소매마진": (
+            "retail_margin_krw"
+            if view_mode == "소비자가 기준"
+            else "proposal_retail_margin_krw"
+            if view_mode == "제안소비자가 기준"
+            else "wholesale_margin_krw"
+        ),
+    }
+
+    sort_col = sort_map.get(sort_by)
+
+    if sort_col and sort_col in work.columns:
+        order_df = (
+            work[["label", sort_col]]
+            .copy()
+            .assign(_sort_value=lambda x: pd.to_numeric(x[sort_col], errors="coerce").fillna(0))
+            .sort_values("_sort_value", ascending=False)
+        )
+        label_order = order_df["label"].tolist()
+    else:
+        order_df = plot_df.groupby("label", as_index=False)["금액"].sum().sort_values("금액", ascending=False)
+        label_order = order_df["label"].tolist()
 
     chart = (
         alt.Chart(plot_df)
