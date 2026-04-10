@@ -476,7 +476,7 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
     product_names = get_export_price_product_names() or []
 
     st.markdown("### 수입제품 입력")
-
+    
     manual_default = False
     if detail_row and detail_row.get("product_name") not in product_names:
         manual_default = True
@@ -490,6 +490,8 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
     # ---- 의존 선택값은 form 밖에서 즉시 반영되도록 처리 ----
     export_box_price_usd = 0.0
     package_qty = 1
+    export_package_type = ""
+    export_package_qty = 1
     product_info = {}
     product_name = ""
     size_name = ""
@@ -514,10 +516,12 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
             package_qty = st.number_input(
                 "포장 수량(개)",
                 min_value=1,
-                value=max(_i(detail_row.get("import_unit_qty"), 1), 1),
+                value=max(_i(detail_row.get("export_package_qty"), 1), 1),
                 step=1,
                 key=f"package_qty_manual_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
             )
+            export_package_type = str(detail_row.get("export_package_type") or "MANUAL").strip() or "MANUAL"
+            export_package_qty = package_qty
 
             export_box_price_usd = st.number_input(
                 "본사 수출가격(USD, 박스기준)",
@@ -542,10 +546,12 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 package_qty = st.number_input(
                     "포장 수량(개)",
                     min_value=1,
-                    value=max(_i(detail_row.get("import_unit_qty"), 1), 1),
+                    value=max(_i(detail_row.get("export_package_qty"), 1), 1),
                     step=1,
                     key=f"package_qty_fallback_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
                 )
+                export_package_type = str(detail_row.get("export_package_type") or "MANUAL").strip() or "MANUAL"
+                export_package_qty = package_qty
                 export_box_price_usd = st.number_input(
                     "본사 수출가격(USD, 박스기준)",
                     min_value=0.0,
@@ -599,37 +605,63 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 if package_labels:
                     default_package_label = package_labels[0]
 
-                    # 수정모드에서 기존 저장값과 가장 유사한 포장유형을 기본 선택
+                    widget_suffix = f"{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}_{product_name}_{size_name}"
+                    package_key = f"package_select_{widget_suffix}"
+                    edit_token = f"{selected_batch_id}_{selected_item_id}_{edit_mode}_{product_name}_{size_name}"
+
+                    if st.session_state.get("last_import_package_token") != edit_token:
+                        st.session_state["last_import_package_token"] = edit_token
+                        st.session_state.pop(package_key, None)
+
                     if detail_row:
-                        detail_export_usd = _n(detail_row.get("export_box_price_usd"), 0.0)
-                        detail_import_qty = _i(detail_row.get("import_unit_qty"), 0)
+                        saved_pkg_type = str(detail_row.get("export_package_type") or "").strip()
+                        saved_pkg_qty = _i(detail_row.get("export_package_qty"), 0)
+                        saved_export_usd = _n(detail_row.get("export_box_price_usd"), 0.0)
+
+                        matched_label = None
 
                         for label, pkg in package_map.items():
+                            pkg_type = str(pkg.get("package_type") or "").strip()
                             pkg_qty = _i(pkg.get("package_qty"), 0)
-                            pkg_export_usd = _n(pkg.get("export_price_usd"), 0.0)
 
-                            if pkg_qty == detail_import_qty and abs(pkg_export_usd - detail_export_usd) < 0.001:
-                                default_package_label = label
+                            if pkg_type == saved_pkg_type and pkg_qty == saved_pkg_qty:
+                                matched_label = label
                                 break
 
+                        if matched_label is None:
+                            for label, pkg in package_map.items():
+                                pkg_qty = _i(pkg.get("package_qty"), 0)
+                                pkg_export_usd = _n(pkg.get("export_price_usd"), 0.0)
+
+                                if pkg_qty == saved_pkg_qty and abs(pkg_export_usd - saved_export_usd) < 0.001:
+                                    matched_label = label
+                                    break
+
+                        if matched_label is not None:
+                            default_package_label = matched_label
+                    
                     package_label = st.selectbox(
                         "수출 포장유형 / 개수",
                         package_labels,
                         index=package_labels.index(default_package_label),
-                        key=f"package_select_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}_{product_name}_{size_name}",
+                        key=package_key,
                     )
                     pkg = package_map[package_label]
+                    export_package_type = str(pkg.get("package_type") or "").strip()
+                    export_package_qty = _i(pkg.get("package_qty"), 1)
                     export_box_price_usd = _n(pkg.get("export_price_usd"))
-                    package_qty = _i(pkg.get("package_qty"), 1)
+                    package_qty = export_package_qty
                 else:
                     st.warning("해당 상품/사이즈의 포장유형 데이터가 없습니다. 직접 입력을 사용하거나 수출가격을 수동 입력하세요.")
                     package_qty = st.number_input(
                         "포장 수량(개)",
                         min_value=1,
-                        value=max(_i(detail_row.get("import_unit_qty"), 1), 1),
+                        value=max(_i(detail_row.get("export_package_qty"), 1), 1),
                         step=1,
                         key=f"package_qty_no_pkg_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}_{product_name}_{size_name}",
                     )
+                    export_package_type = str(detail_row.get("export_package_type") or "MANUAL").strip() or "MANUAL"
+                    export_package_qty = package_qty
                     export_box_price_usd = st.number_input(
                         "본사 수출가격(USD, 박스기준)",
                         min_value=0.0,
@@ -908,6 +940,8 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 product_name=product_name,
                 size_name=size_name,
                 product_code=_none_if_blank_text(product_code),
+                export_package_type=_none_if_blank_text(export_package_type),
+                export_package_qty=None if _i(export_package_qty, 0) == 0 else _i(export_package_qty, 0),
                 export_box_price_usd=_none_if_zero_num(export_box_price_usd),
                 discounted_box_price_usd=_none_if_zero_num(calc["discounted_box_price_usd"]),
                 discount_rate=_none_if_zero_num(calc["discount_factor"]),
