@@ -384,6 +384,26 @@ def render():
                 c.metric(label, f"{value:,.0f}")
             else:
                 c.metric(label, f"{value:,}")
+        st.markdown("### 일별 판매 금액")
+
+        if "sale_date" in df.columns and "net_sales_amount" in df.columns:
+            chart_df = df.copy()
+            chart_df["sale_date"] = pd.to_datetime(chart_df["sale_date"], errors="coerce")
+            chart_df["net_sales_amount"] = pd.to_numeric(chart_df["net_sales_amount"], errors="coerce").fillna(0)
+
+            chart_df = (
+                chart_df.dropna(subset=["sale_date"])
+                .groupby("sale_date", as_index=False)["net_sales_amount"]
+                .sum()
+                .sort_values("sale_date", ascending=True)
+            )
+
+            chart_df = chart_df.rename(columns={"sale_date": "판매일자", "net_sales_amount": "판매금액"})
+            chart_df = chart_df.set_index("판매일자")
+
+            st.line_chart(chart_df["판매금액"], use_container_width=True)
+        else:
+            st.info("일별 판매 금액 그래프를 표시할 수 있는 컬럼이 없습니다.")
 
         tab1, tab2, tab3 = st.tabs(["상세내역", "상품별 집계", "일자별 집계"])
 

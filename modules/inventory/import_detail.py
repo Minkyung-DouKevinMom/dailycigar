@@ -416,6 +416,7 @@ def render():
                 st.error(f"엑셀 생성 오류: {e}")
 
     st.markdown("### 조회 결과")
+    
     if not df.empty:
         show_df = df.rename(columns={
             "id": "ID",
@@ -428,17 +429,33 @@ def render():
             "total_weight_g": "총무게(g)",
             "retail_price_krw": "소비자가",
             "proposal_retail_price_krw": "제안소비자가",
+            "store_retail_price_krw": "매장운영가",
             "supply_price_krw": "공급가",
             "margin_krw": "마진",
             "source_row_no": "원본행번호",
             "notes": "코멘트",
         }).copy()
 
-        for col in ["총수입금액", "소비자가", "제안소비자가", "공급가", "마진"]:
+        for col in ["총수입금액", "제안소비자가", "소비자가", "매장운영가", "공급가", "마진"]:
             if col in show_df.columns:
                 show_df[col] = show_df[col].apply(
                     lambda x: f"₩{x:,.0f}" if pd.notna(x) else ""
                 )
+
+        preferred_order = [
+            "ID",
+            "버전ID",
+            "상품코드",
+            "상품명",
+            "사이즈",
+            "제안소비자가",
+            "소비자가",
+            "매장운영가",
+            "공급가",
+        ]
+
+        remaining_cols = [col for col in show_df.columns if col not in preferred_order]
+        show_df = show_df[preferred_order + remaining_cols]
 
         st.dataframe(show_df, use_container_width=True, hide_index=True, height=340)
         st.caption(f"{len(show_df):,}건 조회되었습니다.")

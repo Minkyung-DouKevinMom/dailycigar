@@ -460,6 +460,62 @@ def render():
             "total_weight_g": None,
         },
     )
+    st.subheader("제안소비자가와 매장운영가 차이 목록")
+
+    diff_df = df.copy()
+
+    price_compare_cols = [
+        "product_code",
+        "product_name",
+        "size_name",
+        "korea_cost_krw",
+        "supply_price_krw",
+        "store_retail_price_krw",
+        "retail_price_krw",
+        "proposal_retail_price_krw",
+    ]
+    existing_cols = [c for c in price_compare_cols if c in diff_df.columns]
+    diff_df = diff_df[existing_cols].copy()
+
+    for col in [
+        "korea_cost_krw",
+        "supply_price_krw",
+        "store_retail_price_krw",
+        "retail_price_krw",
+        "proposal_retail_price_krw",
+    ]:
+        if col in diff_df.columns:
+            diff_df[col] = pd.to_numeric(diff_df[col], errors="coerce")
+
+    diff_df = diff_df[
+        diff_df["proposal_retail_price_krw"].fillna(0)
+        != diff_df["store_retail_price_krw"].fillna(0)
+    ].copy()
+
+    if diff_df.empty:
+        st.info("제안소비자가와 매장운영가가 다른 제품이 없습니다.")
+    else:
+        diff_df = diff_df.sort_values(
+            by=["product_name", "size_name"],
+            ascending=[True, True]
+        )
+
+        st.dataframe(
+            diff_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "product_code": "코드",
+                "product_name": "상품명",
+                "size_name": "사이즈",
+                "korea_cost_krw": st.column_config.NumberColumn("한국원가", format="₩%.0f"),
+                "supply_price_krw": st.column_config.NumberColumn("공급가", format="₩%.0f"),
+                "store_retail_price_krw": st.column_config.NumberColumn("매장운영가", format="₩%.0f"),
+                "retail_price_krw": st.column_config.NumberColumn("소비자가", format="₩%.0f"),
+                "proposal_retail_price_krw": st.column_config.NumberColumn("제안소비자가", format="₩%.0f"),
+            },
+        )
+        st.caption(f"{len(diff_df):,}건 조회되었습니다.")
 
     st.subheader("제품별 가격 구조 그래프")
 

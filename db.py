@@ -386,6 +386,7 @@ def get_import_item_list_filtered(batch_id, keyword=""):
         total_weight_g,
         retail_price_krw,
         proposal_retail_price_krw,
+        store_retail_price_krw,
         supply_price_krw,
         margin_krw,
         source_row_no,
@@ -1554,6 +1555,8 @@ def get_store_menu_view(batch_id=None, keyword=""):
         ii.product_code,
         ii.product_name,
         ii.size_name,
+        length_mm,
+        ring_gauge,
         COALESCE(ii.store_retail_price_krw, 0) AS store_retail_price_krw,
         COALESCE(bp.flavor, '') AS flavor,
         COALESCE(bp.strength, '') AS strength,
@@ -1565,7 +1568,10 @@ def get_store_menu_view(batch_id=None, keyword=""):
         ON ii.batch_id = ib.id
     LEFT JOIN blend_profile_mst bp
         ON TRIM(ii.product_name) = TRIM(bp.product_name)
+    LEFT JOIN product_mst pm
+        ON ii.product_code = pm.product_code
     WHERE 1=1
+    and pm.use_yn = 'Y'
     """
 
     params = []

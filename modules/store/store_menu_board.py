@@ -67,11 +67,16 @@ def build_size_table_df(group_df: pd.DataFrame) -> pd.DataFrame:
     out_df = pd.DataFrame({
         "사이즈": temp_df["size_name"].apply(lambda x: safe_text(x)),
         "강도": temp_df["strength"].apply(normalize_strength),
+        "길이": temp_df["length_mm"].apply(
+            lambda x: f"{int(float(x))}mm" if pd.notna(x) and str(x).strip() != "" else "-"
+        ) if "length_mm" in temp_df.columns else "-",
+        "링게이지": temp_df["ring_gauge"].apply(
+            lambda x: f"{int(float(x))}" if pd.notna(x) and str(x).strip() != "" else "-"
+        ) if "ring_gauge" in temp_df.columns else "-",
         "가격": temp_df["store_retail_price_krw"],
     })
 
     return out_df
-
 
 def draw_grouped_menu_card(group_df: pd.DataFrame, card_no: int):
     first_row = group_df.iloc[0].to_dict()
@@ -185,6 +190,8 @@ def render():
                 "product_name",
                 "size_name",
                 "strength",
+                "length_mm",
+                "ring_gauge",
                 "store_retail_price_krw",
                 "flavor",
                 "guide",
@@ -198,6 +205,8 @@ def render():
                 "product_name": "상품명",
                 "size_name": "사이즈",
                 "strength": "강도",
+                "length_mm": "길이(mm)",
+                "ring_gauge": "링게이지",
                 "store_retail_price_krw": "매장운영가",
                 "flavor": "특징",
                 "guide": "가이드",
