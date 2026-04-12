@@ -2,7 +2,9 @@ import os
 import sqlite3
 from io import BytesIO
 
+import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
@@ -398,10 +400,44 @@ def render():
                 .sort_values("sale_date", ascending=True)
             )
 
-            chart_df = chart_df.rename(columns={"sale_date": "판매일자", "net_sales_amount": "판매금액"})
-            chart_df = chart_df.set_index("판매일자")
+            fig = go.Figure()
 
-            st.line_chart(chart_df["판매금액"], use_container_width=True)
+            # 판매금액 라인
+            fig.add_trace(go.Scatter(
+                x=chart_df["sale_date"],
+                y=chart_df["net_sales_amount"],
+                mode="lines+markers",
+                name="판매금액",
+                line=dict(color="#1f77b4", width=2),
+                marker=dict(size=5),
+                hovertemplate="%{x|%Y-%m-%d}<br>₩%{y:,.0f}<extra></extra>",
+            ))
+
+            # 추세선 (선형 회귀) — 데이터가 2개 이상일 때만
+            if len(chart_df) >= 2:
+                x_numeric = (chart_df["sale_date"] - chart_df["sale_date"].min()).dt.days.values
+                coeffs = np.polyfit(x_numeric, chart_df["net_sales_amount"].values, 1)
+                trend_values = np.polyval(coeffs, x_numeric)
+
+                fig.add_trace(go.Scatter(
+                    x=chart_df["sale_date"],
+                    y=trend_values,
+                    mode="lines",
+                    name="추세선",
+                    line=dict(color="red", dash="dash", width=2),
+                    hovertemplate="%{x|%Y-%m-%d}<br>추세: ₩%{y:,.0f}<extra></extra>",
+                ))
+
+            fig.update_layout(
+                xaxis_title="판매일자",
+                yaxis_title="판매금액 (₩)",
+                yaxis=dict(tickformat=",.0f"),
+                hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(t=40, b=40),
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("일별 판매 금액 그래프를 표시할 수 있는 컬럼이 없습니다.")
 
