@@ -116,7 +116,7 @@ def _tab_stock_summary():
     })
 
     # 현재고 0 이하 강조
-    styled = display.style.applymap(
+    styled = display.style.map(
         _stock_color, subset=["현재고"]
     ).format({
         "입고": "{:,.0f}",
