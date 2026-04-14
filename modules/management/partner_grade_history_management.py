@@ -391,8 +391,10 @@ def render():
                         value=pd.to_datetime(selected["start_date"]).date() if selected and selected.get("start_date") else pd.Timestamp.today().date(),
                     )
 
+                    # ✅ 수정: auto_end_date를 폼 안에서 계산 후 변수 유지
                     auto_end_date = add_12_months_minus_1day(start_date)
                     st.text_input("자동 종료일", value=str(auto_end_date), disabled=True)
+
                     reason = st.text_area(
                         "사유",
                         value=selected.get("reason", "") if selected else "",
@@ -409,7 +411,8 @@ def render():
                     )
 
                 if save_clicked:
-                    if pd.Timestamp(end_date) < pd.Timestamp(start_date):
+                    # ✅ 수정: end_date → auto_end_date 로 변수명 통일
+                    if pd.Timestamp(auto_end_date) < pd.Timestamp(start_date):
                         st.error("종료일은 시작일보다 빠를 수 없습니다.")
                     else:
                         try:
@@ -420,7 +423,7 @@ def render():
                                     "partner_id": partner_id,
                                     "grade_code": grade_map[grade_label],
                                     "start_date": pd.Timestamp(start_date).strftime("%Y-%m-%d"),
-                                    "end_date": pd.Timestamp(end_date).strftime("%Y-%m-%d"),
+                                    "end_date": pd.Timestamp(auto_end_date).strftime("%Y-%m-%d"),  # ✅ 핵심 수정
                                     "reason": reason.strip(),
                                 },
                             )
