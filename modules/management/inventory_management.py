@@ -10,7 +10,7 @@ modules/management/inventory_management.py
 import pandas as pd
 import streamlit as st
 
-from db_inventory import (
+from db import (
     OUT_TYPE_LABELS,
     delete_stock_out,
     get_sample_summary_by_partner,
