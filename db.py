@@ -1603,3 +1603,311 @@ def get_store_menu_view(batch_id=None, keyword=""):
     """
 
     return run_query(sql, params)
+
+
+# ──────────────────────────────────────────────
+# 1. 테이블 초기화 (최초 1회 실행)
+# ──────────────────────────────────────────────
+
+def init_stock_out_table():
+    """stock_out 테이블이 없으면 생성"""
+    execute("""
+        CREATE TABLE IF NOT EXISTS stock_out (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            out_date     TEXT    NOT NULL,
+            product_code TEXT    NOT NULL,
+            qty          INTEGER NOT NULL CHECK(qty > 0),
+            out_type     TEXT    NOT NULL
+                             CHECK(out_type IN ('sample','gift_set','disposal','etc')),
+            partner_id   INTEGER,
+            note         TEXT,
+            created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
+# ──────────────────────────────────────────────
+# 2. 재고 현황 조회
+# ──────────────────────────────────────────────
+
+def get_stock_summary(keyword: str = "", include_inactive: bool = False):
+    """
+    상품별 현재고 요약
+      total_in       : import_item 입고 합계
+      retail_out     : retail_sales (CIGAR) 차감
+      wholesale_out  : wholesale_sales (cigar) 차감
+      other_out      : stock_out (샘플/선물세트/폐기/기타) 차감
+      current_stock  : 현재고 = total_in - retail_out - wholesale_out - other_out
+    """
+    use_filter = "" if include_inactive else "AND p.use_yn = 'Y'"
+    keyword_filter = ""
+    params = []
+
+    if keyword.strip():
+        keyword_filter = """
+            AND (
+                p.product_code LIKE ?
+                OR p.product_name LIKE ?
+                OR p.size_name   LIKE ?
+            )
+        """
+        kw = f"%{keyword.strip()}%"
+        params.extend([kw, kw, kw])
+
+    sql = f"""
+        SELECT
+            p.product_code,
+            p.product_name,
+            p.size_name,
+            p.use_yn,
+            COALESCE(si.total_in,      0) AS total_in,
+            COALESCE(rs.retail_out,    0) AS retail_out,
+            COALESCE(ws.wholesale_out, 0) AS wholesale_out,
+            COALESCE(so.other_out,     0) AS other_out,
+            COALESCE(si.total_in,      0)
+            - COALESCE(rs.retail_out,    0)
+            - COALESCE(ws.wholesale_out, 0)
+            - COALESCE(so.other_out,     0) AS current_stock
+        FROM product_mst p
+
+        -- 입고
+        LEFT JOIN (
+            SELECT product_code, SUM(import_unit_qty) AS total_in
+            FROM import_item
+            GROUP BY product_code
+        ) si ON p.product_code = si.product_code
+
+        -- 소매 판매
+        LEFT JOIN (
+            SELECT product_code, SUM(qty) AS retail_out
+            FROM retail_sales
+            WHERE category = 'CIGAR'
+            GROUP BY product_code
+        ) rs ON p.product_code = rs.product_code
+
+        -- 도매 판매
+        LEFT JOIN (
+            SELECT pm.product_code, SUM(ws.qty) AS wholesale_out
+            FROM wholesale_sales ws
+            JOIN product_mst pm ON ws.cigar_product_id = pm.id
+            WHERE ws.item_type = 'cigar'
+            GROUP BY pm.product_code
+        ) ws ON p.product_code = ws.product_code
+
+        -- 기타 출고 (샘플/선물세트/폐기)
+        LEFT JOIN (
+            SELECT product_code, SUM(qty) AS other_out
+            FROM stock_out
+            GROUP BY product_code
+        ) so ON p.product_code = so.product_code
+
+        WHERE 1=1
+        {use_filter}
+        {keyword_filter}
+        ORDER BY p.product_name, p.size_name
+    """
+    return run_query(sql, params)
+
+
+def get_stock_detail(product_code: str):
+    """
+    특정 상품의 입출고 이벤트 전체 이력 (날짜 오름차순)
+    type 컬럼: 'import' | 'retail' | 'wholesale' | 'sample' | 'gift_set' | 'disposal' | 'etc'
+    """
+    sql = """
+        -- 입고
+        SELECT
+            i.created_at AS event_date,
+            'import'     AS event_type,
+            b.version_name AS ref_name,
+            i.import_unit_qty AS qty_in,
+            0                 AS qty_out,
+            NULL              AS partner_name,
+            NULL              AS note
+        FROM import_item i
+        JOIN import_batch b ON i.batch_id = b.id
+        WHERE i.product_code = ?
+
+        UNION ALL
+
+        -- 소매 판매
+        SELECT
+            r.sale_date,
+            'retail',
+            r.order_no,
+            0,
+            r.qty,
+            NULL,
+            r.order_channel
+        FROM retail_sales r
+        WHERE r.product_code = ?
+          AND r.category = 'CIGAR'
+
+        UNION ALL
+
+        -- 도매 판매
+        SELECT
+            w.sale_date,
+            'wholesale',
+            p.partner_name,
+            0,
+            w.qty,
+            p.partner_name,
+            w.notes
+        FROM wholesale_sales w
+        JOIN product_mst pm ON w.cigar_product_id = pm.id
+        LEFT JOIN partner_mst p ON w.partner_id = p.id
+        WHERE pm.product_code = ?
+          AND w.item_type = 'cigar'
+
+        UNION ALL
+
+        -- 기타 출고 (샘플/선물세트/폐기/기타)
+        SELECT
+            so.out_date,
+            so.out_type,
+            COALESCE(pm.partner_name, '-'),
+            0,
+            so.qty,
+            pm.partner_name,
+            so.note
+        FROM stock_out so
+        LEFT JOIN partner_mst pm ON so.partner_id = pm.id
+        WHERE so.product_code = ?
+
+        ORDER BY event_date, rowid
+    """
+    return run_query(sql, [product_code, product_code, product_code, product_code])
+
+
+# ──────────────────────────────────────────────
+# 3. stock_out CRUD
+# ──────────────────────────────────────────────
+
+OUT_TYPE_LABELS = {
+    "sample":    "샘플/서비스",
+    "gift_set":  "선물세트",
+    "disposal":  "폐기/손실",
+    "etc":       "기타",
+}
+
+def get_stock_out_list(product_code: str = "", out_type: str = "", partner_id: int = None):
+    """stock_out 이력 조회"""
+    conditions = ["1=1"]
+    params = []
+
+    if product_code.strip():
+        conditions.append("so.product_code = ?")
+        params.append(product_code.strip())
+
+    if out_type.strip():
+        conditions.append("so.out_type = ?")
+        params.append(out_type.strip())
+
+    if partner_id:
+        conditions.append("so.partner_id = ?")
+        params.append(partner_id)
+
+    where = " AND ".join(conditions)
+
+    sql = f"""
+        SELECT
+            so.id,
+            so.out_date,
+            so.product_code,
+            p_mst.product_name,
+            p_mst.size_name,
+            so.qty,
+            so.out_type,
+            so.partner_id,
+            pm.partner_name,
+            so.note,
+            so.created_at
+        FROM stock_out so
+        LEFT JOIN product_mst p_mst ON so.product_code = p_mst.product_code
+        LEFT JOIN partner_mst pm    ON so.partner_id   = pm.id
+        WHERE {where}
+        ORDER BY so.out_date DESC, so.id DESC
+    """
+    return run_query(sql, params)
+
+
+def insert_stock_out(
+    out_date: str,
+    product_code: str,
+    qty: int,
+    out_type: str,
+    partner_id: int = None,
+    note: str = None,
+):
+    """기타 출고 1건 등록"""
+    execute(
+        """
+        INSERT INTO stock_out (out_date, product_code, qty, out_type, partner_id, note)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [out_date, product_code, qty, out_type, partner_id, note],
+    )
+
+
+def update_stock_out(
+    row_id: int,
+    out_date: str,
+    product_code: str,
+    qty: int,
+    out_type: str,
+    partner_id: int = None,
+    note: str = None,
+):
+    """기타 출고 1건 수정"""
+    execute(
+        """
+        UPDATE stock_out
+           SET out_date     = ?,
+               product_code = ?,
+               qty          = ?,
+               out_type     = ?,
+               partner_id   = ?,
+               note         = ?,
+               updated_at   = CURRENT_TIMESTAMP
+         WHERE id = ?
+        """,
+        [out_date, product_code, qty, out_type, partner_id, note, row_id],
+    )
+
+
+def delete_stock_out(row_id: int):
+    """기타 출고 1건 삭제"""
+    execute("DELETE FROM stock_out WHERE id = ?", [row_id])
+
+
+def get_stock_out_one(row_id: int) -> dict:
+    """stock_out 단건 조회"""
+    df = run_query("SELECT * FROM stock_out WHERE id = ?", [row_id])
+    return df.iloc[0].to_dict() if not df.empty else {}
+
+
+# ──────────────────────────────────────────────
+# 4. 거래처별 샘플 수령 현황
+# ──────────────────────────────────────────────
+
+def get_sample_summary_by_partner():
+    """거래처별 샘플 제공 합계"""
+    sql = """
+        SELECT
+            pm.partner_name,
+            so.product_code,
+            p.product_name,
+            p.size_name,
+            SUM(so.qty) AS total_sample_qty,
+            MIN(so.out_date) AS first_date,
+            MAX(so.out_date) AS last_date
+        FROM stock_out so
+        JOIN partner_mst pm ON so.partner_id = pm.id
+        LEFT JOIN product_mst p ON so.product_code = p.product_code
+        WHERE so.out_type = 'sample'
+        GROUP BY pm.partner_name, so.product_code
+        ORDER BY pm.partner_name, so.product_code
+    """
+    return run_query(sql)
