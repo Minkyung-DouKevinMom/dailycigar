@@ -1,4 +1,5 @@
 import os
+import zipfile
 from pathlib import Path
 import sqlite3
 from typing import Optional
@@ -22,8 +23,6 @@ STATEMENT_DOC_PREFIX = "TS"
 STATEMENT_PAYMENT_DUE_DAYS = 3
 STATEMENT_TEMPLATE_DIR = BASE_DIR / "templates"
 STATEMENT_TEMPLATE_PATH = Path(os.getenv("DAILYCIGAR_STATEMENT_TEMPLATE_PATH", str(STATEMENT_TEMPLATE_DIR / "거래명세서_template.xlsx")))
-STATEMENT_MAX_ITEM_ROWS = 20
-
 # -----------------------------
 # DB helpers
 # -----------------------------
@@ -563,10 +562,6 @@ def _build_statement_from_rows(conn, selected_df: pd.DataFrame, document_no: str
     partner_id = _safe_int(selected_df.iloc[0].get("partner_id", 0), 0)
     partner_info = get_partner_detail_by_id(conn, partner_id)
 
-    st.write("DEBUG partner_id:", partner_id)
-    st.write("DEBUG selected row:", selected_df.iloc[0].to_dict())
-    st.write("DEBUG partner_info:", partner_info)
-
     row0 = selected_df.iloc[0]
 
     partner_name = str(
@@ -730,49 +725,113 @@ def _make_statement_excel_bytes(header: dict, statement_df: pd.DataFrame, totals
     ws["H13"] = STATEMENT_BANK_ACCOUNT
     ws["H14"] = STATEMENT_ACCOUNT_HOLDER
 
-    ws["B44"] = header.get("notes", "") or "비고를 입력해주세요."
+    # ── 비고: 상단(B44)과 하단(B56) 두 군데 모두 기록 → 행 삽입 시 자동으로 밀려남
+    # 하단 템플릿 기본값("비고를 입력해주세요.")을 덮어써서 중복 방지
+    notes_value = str(header.get("notes", "") or "")
+    ws["B44"] = notes_value
+    ws["B56"] = notes_value   # 원본 템플릿 하단 비고 기본값 덮어쓰기
 
     item_count = len(statement_df)
-    if item_count > STATEMENT_MAX_ITEM_ROWS:
-        raise ValueError(
-            f"거래명세서 템플릿은 최대 {STATEMENT_MAX_ITEM_ROWS}개 품목까지만 지원합니다. 현재 {item_count}개 선택됨"
-        )
+    TEMPLATE_ITEM_ROWS = 20   # 템플릿 기본 품목 행 수 (18~37행)
+    start_row = 18
+    template_end_row = start_row + TEMPLATE_ITEM_ROWS  # 38 (exclusive)
 
-    # 기존 품목영역 초기화 (18~37행)
-    for row in range(18, 38):
+    # 품목 수가 20개 초과이면 행 삽입하여 템플릿 확장
+    extra_rows = max(0, item_count - TEMPLATE_ITEM_ROWS)
+    if extra_rows > 0:
+        ws.insert_rows(template_end_row, amount=extra_rows)
+
+    # 품목 영역 전체 초기화 (기본 20행 또는 확장된 행 전체)
+    total_item_rows = max(item_count, TEMPLATE_ITEM_ROWS)
+    for row in range(start_row, start_row + total_item_rows):
         ws[f"B{row}"] = None
         ws[f"F{row}"] = 0
         ws[f"G{row}"] = 0
+        ws[f"H{row}"] = 0
+        ws[f"I{row}"] = 0
+        ws[f"J{row}"] = 0
 
-    # 품목 입력
-    start_row = 18
+    # 품목 입력 (B: 품목명, F: 단가, G: 수량, H: 공급가액, I: 세액, J: 합계)
     for idx, item in statement_df.reset_index(drop=True).iterrows():
         row = start_row + idx
         ws[f"B{row}"] = item.get("품목", "")
         ws[f"F{row}"] = _safe_float(item.get("단가", 0), 0)
         ws[f"G{row}"] = _safe_int(item.get("수량", 0), 0)
+        ws[f"H{row}"] = _safe_float(item.get("공급가액", 0), 0)
+        ws[f"I{row}"] = _safe_float(item.get("세액", 0), 0)
+        ws[f"J{row}"] = _safe_float(item.get("합계", 0), 0)
 
-    # 남은 줄 0 처리
-    for row in range(start_row + item_count, 38):
+    # 남은 줄 0 처리 (item_count < 20일 때)
+    for row in range(start_row + item_count, start_row + TEMPLATE_ITEM_ROWS):
         ws[f"F{row}"] = 0
         ws[f"G{row}"] = 0
+        ws[f"H{row}"] = 0
+        ws[f"I{row}"] = 0
+        ws[f"J{row}"] = 0
 
-    # 숫자 포맷 유지
-    for row in range(18, 38):
-        ws[f"F{row}"].number_format = '#,##0'
-        ws[f"G{row}"].number_format = '#,##0'
-        ws[f"H{row}"].number_format = '#,##0'
-        ws[f"I{row}"].number_format = '#,##0'
-        ws[f"J{row}"].number_format = '#,##0'
+    # 숫자 포맷 유지 (품목 행 전체)
+    for row in range(start_row, start_row + total_item_rows):
+        for col in "FGHIJ":
+            ws[f"{col}{row}"].number_format = '#,##0'
 
-    ws["I39"].number_format = '#,##0'
-    ws["I40"].number_format = '#,##0'
-    ws["I41"].number_format = '#,##0'
+    # ── 합계 셀: 템플릿 원본 기준 I51(공급가액), I52(세액), I53(합계) → 행 삽입 시 밀림
+    # SUM 수식을 직접 값으로 덮어써서 재계산 없이도 올바른 값이 표시되도록 함
+    totals_base = 51 + extra_rows
+    ws[f"I{totals_base}"]     = totals.get("supply_amount", 0)   # 총 공급가액
+    ws[f"I{totals_base + 1}"] = totals.get("vat_amount", 0)      # 총 세액
+    ws[f"I{totals_base + 2}"] = totals.get("total_amount", 0)    # 총 합계
+    for t_row in range(totals_base, totals_base + 3):
+        ws[f"I{t_row}"].number_format = '#,##0'
 
     output = BytesIO()
     wb.save(output)
     output.seek(0)
     return output.getvalue()
+
+
+def _make_bulk_statement_zip_bytes(conn, selected_df: pd.DataFrame) -> tuple[bytes, int, list[str]]:
+    """
+    선택된 rows를 (partner_name, sale_date) 기준으로 그룹핑하여
+    각 그룹마다 거래명세서 Excel을 생성하고 하나의 ZIP으로 묶어 반환.
+
+    Returns:
+        zip_bytes: ZIP 파일 바이트
+        count: 생성된 거래명세서 수
+        errors: 오류가 발생한 그룹 설명 리스트
+    """
+    zip_buf = BytesIO()
+    count = 0
+    errors: list[str] = []
+
+    groups = selected_df.groupby(["partner_name", "sale_date"], sort=False)
+
+    with zipfile.ZipFile(zip_buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for (partner_name, sale_date), group_df in groups:
+            label = f"{partner_name} / {sale_date}"
+            try:
+                document_no = issue_statement_document_no(conn, str(sale_date))
+                header, stmt_df, totals = _build_statement_from_rows(conn, group_df.copy(), document_no)
+                header["document_no"] = document_no
+
+                excel_bytes = _make_statement_excel_bytes(header, stmt_df, totals)
+
+                safe_partner = (
+                    "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in str(partner_name))
+                    .strip("_") or "거래처"
+                )
+                file_name = f"거래명세서_{safe_partner}_{document_no}.xlsx"
+                zf.writestr(file_name, excel_bytes)
+
+                try:
+                    save_statement_history(conn, header, totals, file_name)
+                except sqlite3.IntegrityError:
+                    pass
+
+                count += 1
+            except Exception as exc:
+                errors.append(f"{label}: {exc}")
+
+    return zip_buf.getvalue(), count, errors
 
 
 # -----------------------------
@@ -1428,6 +1487,16 @@ def render_wholesale_management(conn):
         st.warning("검색 결과가 없습니다.")
         return
 
+    # 전체 선택 옵션
+    sel_col1, sel_col2 = st.columns([3, 1])
+    with sel_col1:
+        select_all_filtered = st.checkbox(
+            f"검색 결과 전체 선택 ({len(filtered):,}건) — 일괄 거래명세서 다운로드",
+            key="wholesale_select_all",
+        )
+    with sel_col2:
+        st.caption("※ 거래처·판매일자별로 각각 발행됩니다.")
+
     grid_df = filtered[[
         "id", "sale_date", "partner_name", "item_type_label", "product_code", "product_name",
         "qty", "unit_price", "supply_price", "unit_cost", "supply_amount",
@@ -1454,6 +1523,9 @@ def render_wholesale_management(conn):
     gb.configure_column("notes", header_name="비고", width=200)
     gb.configure_column("updated_at", header_name="수정일시", width=150)
 
+    # 필터 값이 바뀔 때마다 AgGrid를 강제 리렌더하기 위해 key를 동적으로 생성
+    _grid_key = f"wholesale_aggrid_{keyword.strip()}_{item_type_filter}_{partner_filter}"
+
     grid_response = AgGrid(
         grid_df,
         gridOptions=gb.build(),
@@ -1464,61 +1536,95 @@ def render_wholesale_management(conn):
         enable_enterprise_modules=False,
         height=420,
         use_container_width=True,
-        key="wholesale_aggrid",
+        key=_grid_key,
     )
 
     selected_rows = grid_response.get("selected_rows", [])
     if isinstance(selected_rows, pd.DataFrame):
         selected_rows = selected_rows.to_dict("records")
 
-    if selected_rows:
+    # 전체 선택 모드이면 filtered 전체를 사용, 아니면 그리드에서 체크된 항목만 사용
+    if select_all_filtered:
+        selected_grid_df = filtered.copy()
+    elif selected_rows:
         selected_ids = [r.get("id") for r in selected_rows if r.get("id") is not None]
         selected_grid_df = filtered[filtered["id"].isin(selected_ids)].copy()
     else:
         selected_grid_df = pd.DataFrame()
 
     if not selected_grid_df.empty:
-        ok, msg = _validate_statement_rows(selected_grid_df)
-        if ok:
-            preview_header, statement_df, totals = _build_statement_from_rows(conn, selected_grid_df)
-            _render_statement_preview(preview_header, statement_df, totals)
+        groups_for_stmt = selected_grid_df.groupby(["partner_name", "sale_date"], sort=False)
+        group_count = groups_for_stmt.ngroups
 
-            safe_partner = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in preview_header["partner_name"]).strip("_") or "거래처"
-            safe_date = str(preview_header["sale_date"]).replace("-", "")
+        if group_count == 1:
+            # ── 단일 거래처·판매일자: 기존과 동일하게 단건 다운로드 ──
+            ok, msg = _validate_statement_rows(selected_grid_df)
+            if ok:
+                preview_header, statement_df, totals = _build_statement_from_rows(conn, selected_grid_df)
+                _render_statement_preview(preview_header, statement_df, totals)
 
-            try:
-                document_no = issue_statement_document_no(conn, preview_header["sale_date"])
-                final_header = dict(preview_header)
-                final_header["document_no"] = document_no
+                safe_partner = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in preview_header["partner_name"]).strip("_") or "거래처"
 
-                excel_bytes = _make_statement_excel_bytes(final_header, statement_df, totals)
-                file_name = f"거래명세서_{safe_partner}_{document_no}.xlsx"
+                try:
+                    document_no = issue_statement_document_no(conn, preview_header["sale_date"])
+                    final_header = dict(preview_header)
+                    final_header["document_no"] = document_no
 
-                if st.download_button(
-                    "거래명세서 엑셀 다운로드",
-                    data=excel_bytes,
-                    file_name=file_name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key="download_statement_excel",
-                ):
-                    try:
-                        save_statement_history(conn, final_header, totals, file_name)
-                    except sqlite3.IntegrityError:
-                        pass
-                    st.success(f"거래명세서가 발행되었습니다. 문서번호: {document_no}")
-            except Exception as e:
-                st.error(f"거래명세서 생성 중 오류가 발생했습니다: {e}")
-                st.caption(
-                    f"템플릿 파일 경로: {STATEMENT_TEMPLATE_PATH} "
-                    "(프로젝트 루트의 templates/statement_template.xlsx 권장)"
-                )
+                    excel_bytes = _make_statement_excel_bytes(final_header, statement_df, totals)
+                    file_name = f"거래명세서_{safe_partner}_{document_no}.xlsx"
+
+                    if st.download_button(
+                        "거래명세서 엑셀 다운로드",
+                        data=excel_bytes,
+                        file_name=file_name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="download_statement_excel",
+                    ):
+                        try:
+                            save_statement_history(conn, final_header, totals, file_name)
+                        except sqlite3.IntegrityError:
+                            pass
+                        st.success(f"거래명세서가 발행되었습니다. 문서번호: {document_no}")
+                except Exception as e:
+                    st.error(f"거래명세서 생성 중 오류가 발생했습니다: {e}")
+                    st.caption(
+                        f"템플릿 파일 경로: {STATEMENT_TEMPLATE_PATH} "
+                        "(프로젝트 루트의 templates/statement_template.xlsx 권장)"
+                    )
+            else:
+                st.warning(msg)
 
         else:
-            st.warning(msg)
+            # ── 복수 그룹: ZIP으로 일괄 다운로드 ──
+            st.divider()
+            st.markdown(f"#### 거래명세서 일괄 발행 — {group_count}건 (거래처·판매일자별)")
+            try:
+                zip_bytes, ok_count, errors = _make_bulk_statement_zip_bytes(conn, selected_grid_df)
+                zip_file_name = "거래명세서_일괄.zip"
 
-    if not selected_rows:
-        st.info("수정/삭제 또는 거래명세서 출력을 위해 행을 하나 이상 선택해 주세요.")
+                st.download_button(
+                    f"📥 거래명세서 ZIP 다운로드 ({ok_count}건)",
+                    data=zip_bytes,
+                    file_name=zip_file_name,
+                    mime="application/zip",
+                    use_container_width=True,
+                    key="download_bulk_statement_zip",
+                )
+                if ok_count:
+                    st.success(f"{ok_count}건의 거래명세서가 ZIP으로 준비되었습니다.")
+                if errors:
+                    for err_msg in errors:
+                        st.warning(f"⚠️ 건너뜀: {err_msg}")
+            except Exception as e:
+                st.error(f"일괄 거래명세서 생성 중 오류가 발생했습니다: {e}")
+
+    if not select_all_filtered and not selected_rows:
+        st.info("수정/삭제 또는 거래명세서 출력을 위해 행을 하나 이상 선택하거나, 전체 선택 체크박스를 사용하세요.")
+        return
+
+    if select_all_filtered:
+        # 전체 선택 모드에서는 수정/삭제 패널을 표시하지 않음
         return
 
     selected_id = _safe_int(selected_rows[0].get("id"))

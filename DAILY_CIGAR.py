@@ -533,7 +533,7 @@ with st.sidebar:
     st.divider()
     st.page_link("pages/7_문서출력.py", label="문서출력")
     st.page_link("pages/8_매장운영.py", label="매장운영⭐")
-    st.page_link("pages/9_재고관리.py", label="재고관리📦")  # ← 추가
+    st.page_link("pages/9_재고관리.py", label="재고관리📦")
 
 conn = get_conn()
 

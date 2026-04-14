@@ -718,8 +718,8 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
         with col1:
             import_unit_qty = st.number_input(
                 "총 수입 개수",
-                min_value=1,
-                value=max(_i(detail_row.get("import_unit_qty"), package_qty), 1),
+                min_value=0,
+                value=max(_i(detail_row.get("import_unit_qty"), package_qty), 0),
                 step=1,
             )
 

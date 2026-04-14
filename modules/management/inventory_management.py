@@ -274,7 +274,10 @@ def _tab_stock_out():
                     default_product_label = label
                     break
 
-        default_partner_label = list(partner_map.keys())[0] if partner_map else None
+        # 신규 등록 및 partner_id=None인 수정 시 기본값을 "(없음)"으로 유지
+        # (첫 번째 거래처를 기본값으로 설정하면 Streamlit form submit 후 재실행 시
+        #  index가 재적용되어 사용자의 "(없음)" 선택이 무시되는 버그 발생)
+        default_partner_label = None
         if selected and selected.get("partner_id"):
             for label, pid in partner_map.items():
                 if pid == int(selected["partner_id"]):
