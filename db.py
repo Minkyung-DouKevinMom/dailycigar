@@ -1716,6 +1716,7 @@ def get_stock_detail(product_code: str):
     type 컬럼: 'import' | 'retail' | 'wholesale' | 'sample' | 'gift_set' | 'disposal' | 'etc'
     """
     sql = """
+    SELECT * FROM (
         -- 입고
         SELECT
             i.created_at AS event_date,
@@ -1767,17 +1768,17 @@ def get_stock_detail(product_code: str):
         SELECT
             so.out_date,
             so.out_type,
-            COALESCE(pm.partner_name, '-'),
+            COALESCE(p2.partner_name, '-'),
             0,
             so.qty,
-            pm.partner_name,
+            p2.partner_name,
             so.note
         FROM stock_out so
-        LEFT JOIN partner_mst pm ON so.partner_id = pm.id
+        LEFT JOIN partner_mst p2 ON so.partner_id = p2.id
         WHERE so.product_code = ?
-
-        ORDER BY event_date, rowid
-    """
+    )
+    ORDER BY event_date
+"""
     return run_query(sql, [product_code, product_code, product_code, product_code])
 
 
