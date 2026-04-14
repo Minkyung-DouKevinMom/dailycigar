@@ -174,10 +174,6 @@ def render_db_download_section():
 # 매출 로딩
 # =========================
 def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
-    """
-    - 시가는 기존 로직 유지
-    - 시가 외 상품만 purchase_price 기준으로 원가/이익 재계산
-    """
     empty_cols = [
         "dt", "sales_amount", "margin_amount", "customer_name",
         "sales_type", "product_code", "product_name", "qty", "unit_price"
@@ -186,7 +182,6 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     purchase_price_map = get_non_cigar_purchase_price_map(conn)
     product_name_map = get_product_name_map(conn)
 
-    # 1) 우선 v_retail_sales_enriched 사용
     if view_exists(conn, "v_retail_sales_enriched"):
         vcols = get_table_columns(conn, "v_retail_sales_enriched")
 
@@ -198,7 +193,6 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
         product_name_col = pick_col(vcols, ["mst_product_name", "product_name", "product_code_raw"])
         qty_col = pick_col(vcols, ["qty", "quantity"])
         unit_price_col = pick_col(vcols, ["unit_price"])
-
         name_col = pick_col(vcols, ["customer_name", "customer", "customer_nm", "buyer_name", "store_name"])
 
         if sale_date_col and sales_col:
@@ -235,9 +229,7 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
                     df.loc[missing_name_mask, "product_code"].map(product_name_map).fillna("")
                 )
 
-                # 시가 외 항목만 재계산
                 non_cigar_mask = df["product_code"].isin(purchase_price_map.keys())
-
                 df.loc[non_cigar_mask, "_purchase_price"] = (
                     df.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
                 )
@@ -260,7 +252,6 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
                      "sales_type", "product_code", "product_name", "qty", "unit_price"]
                 ]
 
-    # 2) 뷰가 없으면 retail_sales 직접 사용
     if not has_table(conn, "retail_sales"):
         return pd.DataFrame(columns=empty_cols)
 
@@ -310,8 +301,6 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
         df.loc[missing_name_mask, "product_code"].map(product_name_map).fillna("")
     )
 
-    # 기본은 기존 마진 유지
-    # 시가 외 상품만 재계산
     non_cigar_mask = df["product_code"].isin(purchase_price_map.keys())
     df.loc[non_cigar_mask, "_purchase_price"] = (
         df.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
@@ -392,7 +381,6 @@ def get_wholesale_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame
             missing_name_mask = df["product_name"].eq("") & df["product_code"].ne("")
             df.loc[missing_name_mask, "product_name"] = df.loc[missing_name_mask, "product_code"].map(product_name_map).fillna("")
             df["sales_type"] = "도매"
-
             df = df.dropna(subset=["dt"])
             df = df[df["sales_amount"] != 0].copy()
 
@@ -453,7 +441,6 @@ def get_wholesale_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame
         missing_name_mask = df["product_name"].eq("") & df["product_code"].ne("")
         df.loc[missing_name_mask, "product_name"] = df.loc[missing_name_mask, "product_code"].map(product_name_map).fillna("")
         df["sales_type"] = "도매"
-
         df = df.dropna(subset=["dt"])
         df = df[df["sales_amount"] != 0].copy()
 
@@ -532,23 +519,22 @@ def calc_insights(df: pd.DataFrame) -> list[str]:
 # 화면
 # =========================
 st.title("Daily Cigar 운영 관리 시스템")
-# app.py 또는 각 page 상단 공통 컴포넌트
+
 with st.sidebar:
     st.markdown("## DAILY CIGAR")
     st.page_link("DAILY_CIGAR.py", label="HOME")
     st.page_link("pages/1_대시보드.py", label="대시보드⭐")
     st.page_link("pages/2_기준정보.py", label="기준정보")
     st.divider()
-
     st.page_link("pages/3_수입관리.py", label="수입관리")
     st.page_link("pages/4_판매관리.py", label="판매관리")
-    
     st.page_link("pages/5_재무관리.py", label="재무관리")
     st.page_link("pages/6_분석.py", label="분석")
-    
+    st.divider()
     st.page_link("pages/7_문서출력.py", label="문서출력")
     st.page_link("pages/8_매장운영.py", label="매장운영⭐")
-    
+    st.page_link("pages/9_재고관리.py", label="재고관리📦")  # ← 추가
+
 conn = get_conn()
 
 try:
@@ -577,7 +563,7 @@ try:
 
     card_df = last_30_df.copy()
     st.caption(f"계산기간: {last_30_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')}")
-    
+
     card_sales = card_df["sales_amount"].sum() if not card_df.empty else 0
     card_margin = card_df["margin_amount"].sum() if not card_df.empty else 0
     deal_count = len(card_df)
