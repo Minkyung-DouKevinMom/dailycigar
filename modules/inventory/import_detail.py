@@ -11,6 +11,8 @@ from db import (
     get_import_batch_one,
     get_import_item_list_filtered,
     get_import_item_detail,
+    get_import_item_defaults_by_product_code,
+    get_import_item_defaults_by_name_size,
     delete_import_item,
     get_export_price_product_names,
     get_export_price_sizes_by_product,
@@ -463,10 +465,10 @@ def render():
         st.info("조회 결과가 없습니다.")
 
     st.divider()
-    render_editor(df, selected_batch_id, batch_row, tax_rule)
+    render_editor(df, selected_batch_id, batch_row, tax_rule, export_df)
 
 
-def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax_rule: dict):
+def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax_rule: dict, all_df: pd.DataFrame = None):
     edit_mode = st.radio("작업 구분", ["신규 추가", "기존 수정"], horizontal=True)
 
     detail_row = {}
@@ -712,6 +714,20 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
 
     st.divider()
 
+    # 신규 추가 모드에서 기존 저장된 항목이 있으면 전체 테이블에서 조회
+    # product_code 있으면 코드 우선, 없으면 product_name + size_name 으로 fallback
+    existing_item_row = {}
+    if edit_mode == "신규 추가":
+        _defaults_df = None
+        if str(product_code).strip():
+            _defaults_df = get_import_item_defaults_by_product_code(str(product_code).strip())
+        if (_defaults_df is None or _defaults_df.empty) and str(product_name).strip() and str(size_name).strip():
+            _defaults_df = get_import_item_defaults_by_name_size(
+                str(product_name).strip(), str(size_name).strip()
+            )
+        if _defaults_df is not None and not _defaults_df.empty:
+            existing_item_row = _defaults_df.iloc[0].to_dict()
+
     with st.form(f"import_item_form_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}", clear_on_submit=False):
         col1, col2, col3 = st.columns(3)
 
@@ -742,10 +758,14 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 disabled=True,
             )
 
+            # 기존 저장값이 있으면(같은 상품코드) 원본 행번호 디폴트로 표기
+            _src_base = detail_row if detail_row else existing_item_row
+            default_source_row = _i(_src_base.get("source_row_no"), 0)
+
             source_row_no = st.number_input(
                 "원본 행번호",
                 min_value=0,
-                value=_i(detail_row.get("source_row_no"), 0),
+                value=default_source_row,
                 step=1,
             )
 
@@ -763,17 +783,22 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
             st.number_input("달러환율", value=usd_to_krw_rate, disabled=True)
             st.number_input("페소환율", value=php_to_krw_rate, disabled=True)
 
+            # 기존 저장값이 있으면(같은 상품코드) 현지가격 디폴트로 표기
+            _php_base = detail_row if detail_row else existing_item_row
+            default_local_box_php = _n(_php_base.get("local_box_price_php"), 0.0)
+            default_local_unit_php = _n(_php_base.get("local_unit_price_php"), 0.0)
+
             local_box_price_php = st.number_input(
                 "현지 박스가격(PHP)",
                 min_value=0.0,
-                value=_n(detail_row.get("local_box_price_php"), 0.0),
+                value=default_local_box_php,
                 step=0.01,
             )
 
             local_unit_price_php = st.number_input(
                 "현지 유닛가격(PHP)",
                 min_value=0.0,
-                value=_n(detail_row.get("local_unit_price_php"), 0.0),
+                value=default_local_unit_php,
                 step=0.01,
             )
 

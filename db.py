@@ -1258,6 +1258,45 @@ def get_import_item_detail(item_id):
     return run_query(sql, [item_id])
 
 
+
+
+def get_import_item_defaults_by_product_code(product_code: str):
+    """
+    전체 import_item 테이블에서 동일 상품코드의 가장 최근 저장 항목을 조회.
+    신규 추가 시 source_row_no / local_box_price_php / local_unit_price_php 디폴트 참조용.
+    """
+    sql = """
+    SELECT
+        source_row_no,
+        local_box_price_php,
+        local_unit_price_php
+    FROM import_item
+    WHERE product_code = ?
+    ORDER BY id DESC
+    LIMIT 1
+    """
+    return run_query(sql, [product_code])
+
+
+
+def get_import_item_defaults_by_name_size(product_name: str, size_name: str):
+    """
+    전체 import_item 테이블에서 상품명+사이즈 기준 가장 최근 저장 항목을 조회.
+    product_code가 없을 때 fallback으로 사용.
+    """
+    sql = """
+    SELECT
+        source_row_no,
+        local_box_price_php,
+        local_unit_price_php
+    FROM import_item
+    WHERE product_name = ?
+      AND size_name = ?
+    ORDER BY id DESC
+    LIMIT 1
+    """
+    return run_query(sql, [product_name, size_name])
+
 def upsert_import_item_full(
     item_id=None,
     batch_id=None,
