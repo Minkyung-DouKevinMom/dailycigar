@@ -7,7 +7,6 @@ from io import BytesIO
 
 import pandas as pd
 import streamlit as st
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.cell.cell import MergedCell
@@ -1309,7 +1308,7 @@ def render_partner_registration(conn):
 
 def render_wholesale_management(conn):
     st.markdown("### 도매 판매 관리")
-    st.caption("상단에서 등록하고, 하단 AgGrid에서 검색/정렬/수정/삭제할 수 있습니다. 여러 줄 선택 시 거래명세서 미리보기/엑셀 다운로드도 가능합니다.")
+    st.caption("상단에서 등록하고, 하단 표에서 행을 선택하여 수정/삭제하거나 거래명세서를 출력할 수 있습니다.")
 
     partners = load_partners(conn)
     cigar_products = load_cigar_products_for_wholesale(conn)
@@ -1434,17 +1433,30 @@ def render_wholesale_management(conn):
         st.info("등록된 도매 판매 이력이 없습니다.")
         return
 
+    today = pd.Timestamp.today().date()
+
     with st.expander("검색 / 필터", expanded=True):
-        f1, f2, f3 = st.columns(3)
+        f1, f2 = st.columns(2)
         with f1:
             keyword = st.text_input("거래처 / 상품 / 코드 검색", key="manage_keyword")
-        with f2:
             item_type_filter = st.selectbox("상품구분", ["전체", "시가", "시가 외"], key="manage_item_type")
-        with f3:
+        with f2:
             partner_options = ["전체"] + sorted([str(x) for x in df["partner_name"].dropna().unique().tolist()])
             partner_filter = st.selectbox("거래처", partner_options, key="manage_partner")
+            d1, d2 = st.columns(2)
+            with d1:
+                date_from = st.date_input("판매일 시작", value=today, key="manage_date_from")
+            with d2:
+                date_to = st.date_input("판매일 종료", value=today, key="manage_date_to")
 
     filtered = df.copy()
+    filtered["sale_date"] = pd.to_datetime(filtered["sale_date"], errors="coerce")
+    filtered = filtered[
+        (filtered["sale_date"].dt.date >= date_from) &
+        (filtered["sale_date"].dt.date <= date_to)
+    ]
+    filtered["sale_date"] = filtered["sale_date"].dt.strftime("%Y-%m-%d")
+
     if keyword.strip():
         kw = keyword.strip().lower()
         mask = (
@@ -1473,58 +1485,50 @@ def render_wholesale_management(conn):
     with sel_col2:
         st.caption("※ 거래처·판매일자별로 각각 발행됩니다.")
 
-    grid_df = filtered[[
-        "id", "sale_date", "partner_name", "item_type_label", "product_code", "product_name",
-        "qty", "unit_price", "supply_price", "unit_cost", "supply_amount",
-        "vat_amount", "total_amount_vat", "profit_amount", "notes", "updated_at"
-    ]].copy()
+    # ── st.dataframe 기반 조회 테이블 ──
+    display_cols = {
+        "id": "ID",
+        "sale_date": "판매일자",
+        "partner_name": "거래처명",
+        "item_type_label": "상품구분",
+        "product_code": "상품코드",
+        "product_name": "상품명",
+        "qty": "수량",
+        "supply_price": "공급가(₩)",
+        "supply_amount": "공급가액(₩)",
+        "vat_amount": "부가세(₩)",
+        "total_amount_vat": "부가세포함(₩)",
+        "profit_amount": "예상마진(₩)",
+        "notes": "비고",
+    }
+    available_cols = [c for c in display_cols if c in filtered.columns]
+    grid_df = filtered[available_cols].rename(columns=display_cols).copy()
+    for col in ["공급가(₩)", "공급가액(₩)", "부가세(₩)", "부가세포함(₩)", "예상마진(₩)"]:
+        if col in grid_df.columns:
+            grid_df[col] = pd.to_numeric(grid_df[col], errors="coerce").map(
+                lambda x: f"{x:,.0f}" if pd.notna(x) else ""
+            )
+    st.dataframe(grid_df, use_container_width=True, hide_index=True, height=380)
 
-    gb = GridOptionsBuilder.from_dataframe(grid_df)
-    gb.configure_selection("multiple", use_checkbox=True)
-    gb.configure_default_column(sortable=True, filter=True, resizable=True)
-    gb.configure_column("id", header_name="ID", width=80)
-    gb.configure_column("sale_date", header_name="판매일자", width=110)
-    gb.configure_column("partner_name", header_name="거래처명", width=160)
-    gb.configure_column("item_type_label", header_name="상품구분", width=100)
-    gb.configure_column("product_code", header_name="상품코드", width=130)
-    gb.configure_column("product_name", header_name="상품명", width=180)
-    gb.configure_column("qty", header_name="수량", width=90, type=["numericColumn"])
-    gb.configure_column("unit_price", header_name="단가", width=120, type=["numericColumn"], valueFormatter="data.unit_price != null ? '₩' + Number(data.unit_price).toLocaleString() : ''")
-    gb.configure_column("supply_price", header_name="공급가", width=120, type=["numericColumn"], valueFormatter="data.supply_price != null ? '₩' + Number(data.supply_price).toLocaleString() : ''")
-    gb.configure_column("unit_cost", header_name="원가", width=120, type=["numericColumn"], valueFormatter="data.unit_cost != null ? '₩' + Number(data.unit_cost).toLocaleString() : ''")
-    gb.configure_column("supply_amount", header_name="공급가액", width=130, type=["numericColumn"], valueFormatter="data.supply_amount != null ? '₩' + Number(data.supply_amount).toLocaleString() : ''")
-    gb.configure_column("vat_amount", header_name="부가세", width=110, type=["numericColumn"], valueFormatter="data.vat_amount != null ? '₩' + Number(data.vat_amount).toLocaleString() : ''")
-    gb.configure_column("total_amount_vat", header_name="부가세포함금액", width=150, type=["numericColumn"], valueFormatter="data.total_amount_vat != null ? '₩' + Number(data.total_amount_vat).toLocaleString() : ''")
-    gb.configure_column("profit_amount", header_name="예상마진", width=120, type=["numericColumn"], valueFormatter="data.profit_amount != null ? '₩' + Number(data.profit_amount).toLocaleString() : ''")
-    gb.configure_column("notes", header_name="비고", width=200)
-    gb.configure_column("updated_at", header_name="수정일시", width=150)
+    # ── 행 선택: multiselect (ID 기준) ──
+    id_label_map = {
+        row["id"]: (
+            f"{row['id']} | {row.get('sale_date','')} | {row.get('partner_name','')} | "
+            f"{row.get('product_name','')} | {int(_safe_float(row.get('qty', 0)))}개"
+        )
+        for _, row in filtered.iterrows()
+    }
 
-    _grid_key = f"wholesale_aggrid_{keyword.strip()}_{item_type_filter}_{partner_filter}"
-
-    grid_response = AgGrid(
-        grid_df,
-        gridOptions=gb.build(),
-        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
-        update_mode=GridUpdateMode.SELECTION_CHANGED,
-        fit_columns_on_grid_load=False,
-        allow_unsafe_jscode=True,
-        enable_enterprise_modules=False,
-        height=420,
-        use_container_width=True,
-        key=_grid_key,
-    )
-
-    selected_rows = grid_response.get("selected_rows", [])
-    if isinstance(selected_rows, pd.DataFrame):
-        selected_rows = selected_rows.to_dict("records")
-
-    if select_all_filtered:
-        selected_grid_df = filtered.copy()
-    elif selected_rows:
-        selected_ids = [r.get("id") for r in selected_rows if r.get("id") is not None]
-        selected_grid_df = filtered[filtered["id"].isin(selected_ids)].copy()
+    if not select_all_filtered:
+        selected_labels = st.multiselect(
+            "거래명세서 발행 / 수정·삭제할 행 선택 (ID 기준)",
+            options=list(id_label_map.values()),
+            key="wholesale_row_select",
+        )
+        selected_ids = [k for k, v in id_label_map.items() if v in selected_labels]
+        selected_grid_df = filtered[filtered["id"].isin(selected_ids)].copy() if selected_ids else pd.DataFrame()
     else:
-        selected_grid_df = pd.DataFrame()
+        selected_grid_df = filtered.copy()
 
     if not selected_grid_df.empty:
         groups_for_stmt = selected_grid_df.groupby(["partner_name", "sale_date"], sort=False)
@@ -1591,14 +1595,19 @@ def render_wholesale_management(conn):
             except Exception as e:
                 st.error(f"일괄 거래명세서 생성 중 오류가 발생했습니다: {e}")
 
-    if not select_all_filtered and not selected_rows:
+    if not select_all_filtered and not selected_grid_df.empty is False and selected_grid_df.empty:
         st.info("수정/삭제 또는 거래명세서 출력을 위해 행을 하나 이상 선택하거나, 전체 선택 체크박스를 사용하세요.")
         return
 
-    if select_all_filtered:
+    if select_all_filtered or selected_grid_df.empty:
         return
 
-    selected_id = _safe_int(selected_rows[0].get("id"))
+    # 단건 수정/삭제는 multiselect에서 1개만 선택된 경우
+    if len(selected_grid_df) != 1:
+        st.info("수정/삭제는 행을 정확히 1개 선택하세요. 거래명세서 발행은 위에서 확인하세요.")
+        return
+
+    selected_id = _safe_int(selected_grid_df.iloc[0]["id"])
     base_row = load_wholesale_sales(conn)
     base_row = base_row.loc[base_row["id"] == selected_id]
     if base_row.empty:
