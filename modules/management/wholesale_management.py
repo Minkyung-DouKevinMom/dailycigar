@@ -44,18 +44,14 @@ def table_exists(conn, table_name: str) -> bool:
 
 def set_merged_cell_value(ws, cell_ref: str, value):
     cell = ws[cell_ref]
-
-    # 병합된 읽기전용 셀이면, 해당 병합영역의 좌상단 셀에 기록
     if isinstance(cell, MergedCell):
         for merged_range in ws.merged_cells.ranges:
             if cell_ref in merged_range:
                 ws[merged_range.start_cell.coordinate] = value
                 return
-
     ws[cell_ref] = value
 
 def _apply_alignment_safe(ws, cell_ref: str, alignment):
-    """병합 셀 여부와 관계없이 실제 쓰기 가능한 셀에 alignment를 적용합니다."""
     cell = ws[cell_ref]
     if isinstance(cell, MergedCell):
         for merged_range in ws.merged_cells.ranges:
@@ -704,7 +700,6 @@ def _make_statement_excel_bytes(header: dict, statement_df: pd.DataFrame, totals
 
     address_val = header.get("partner_address", "")
     set_merged_cell_value(ws, "J3", address_val)
-    # 실제 쓰여진 셀(병합 시 좌상단)에 alignment 적용
     _apply_alignment_safe(ws, "J3", Alignment(horizontal="right", vertical="center", wrap_text=True))
 
     owner = str(header.get("partner_contact", "") or "").strip()
@@ -725,23 +720,19 @@ def _make_statement_excel_bytes(header: dict, statement_df: pd.DataFrame, totals
     ws["H13"] = STATEMENT_BANK_ACCOUNT
     ws["H14"] = STATEMENT_ACCOUNT_HOLDER
 
-    # ── 비고: 상단(B44)과 하단(B56) 두 군데 모두 기록 → 행 삽입 시 자동으로 밀려남
-    # 하단 템플릿 기본값("비고를 입력해주세요.")을 덮어써서 중복 방지
-    notes_value = str(header.get("notes", "") or "")
-    ws["B44"] = notes_value
-    ws["B56"] = notes_value   # 원본 템플릿 하단 비고 기본값 덮어쓰기
-
     item_count = len(statement_df)
-    TEMPLATE_ITEM_ROWS = 20   # 템플릿 기본 품목 행 수 (18~37행)
-    start_row = 18
-    template_end_row = start_row + TEMPLATE_ITEM_ROWS  # 38 (exclusive)
 
-    # 품목 수가 20개 초과이면 행 삽입하여 템플릿 확장
+    # ── 템플릿 실제 구조 반영: 품목 행 18~49 = 32행 ──
+    TEMPLATE_ITEM_ROWS = 32   # 수정: 20 → 32
+    start_row = 18
+    template_end_row = start_row + TEMPLATE_ITEM_ROWS  # 50 (exclusive)
+
+    # 품목이 32개 초과일 때만 행 삽입
     extra_rows = max(0, item_count - TEMPLATE_ITEM_ROWS)
     if extra_rows > 0:
         ws.insert_rows(template_end_row, amount=extra_rows)
 
-    # 품목 영역 전체 초기화 (기본 20행 또는 확장된 행 전체)
+    # 품목 영역 전체 초기화
     total_item_rows = max(item_count, TEMPLATE_ITEM_ROWS)
     for row in range(start_row, start_row + total_item_rows):
         ws[f"B{row}"] = None
@@ -751,7 +742,7 @@ def _make_statement_excel_bytes(header: dict, statement_df: pd.DataFrame, totals
         ws[f"I{row}"] = 0
         ws[f"J{row}"] = 0
 
-    # 품목 입력 (B: 품목명, F: 단가, G: 수량, H: 공급가액, I: 세액, J: 합계)
+    # 품목 입력
     for idx, item in statement_df.reset_index(drop=True).iterrows():
         row = start_row + idx
         ws[f"B{row}"] = item.get("품목", "")
@@ -761,7 +752,7 @@ def _make_statement_excel_bytes(header: dict, statement_df: pd.DataFrame, totals
         ws[f"I{row}"] = _safe_float(item.get("세액", 0), 0)
         ws[f"J{row}"] = _safe_float(item.get("합계", 0), 0)
 
-    # 남은 줄 0 처리 (item_count < 20일 때)
+    # 남은 행 0 처리
     for row in range(start_row + item_count, start_row + TEMPLATE_ITEM_ROWS):
         ws[f"F{row}"] = 0
         ws[f"G{row}"] = 0
@@ -769,19 +760,23 @@ def _make_statement_excel_bytes(header: dict, statement_df: pd.DataFrame, totals
         ws[f"I{row}"] = 0
         ws[f"J{row}"] = 0
 
-    # 숫자 포맷 유지 (품목 행 전체)
+    # 숫자 포맷 유지
     for row in range(start_row, start_row + total_item_rows):
         for col in "FGHIJ":
             ws[f"{col}{row}"].number_format = '#,##0'
 
-    # ── 합계 셀: 템플릿 원본 기준 I51(공급가액), I52(세액), I53(합계) → 행 삽입 시 밀림
-    # SUM 수식을 직접 값으로 덮어써서 재계산 없이도 올바른 값이 표시되도록 함
+    # ── 합계 셀: 템플릿 기준 51~53행 (extra_rows만큼 밀림 반영) ──
     totals_base = 51 + extra_rows
-    ws[f"I{totals_base}"]     = totals.get("supply_amount", 0)   # 총 공급가액
-    ws[f"I{totals_base + 1}"] = totals.get("vat_amount", 0)      # 총 세액
-    ws[f"I{totals_base + 2}"] = totals.get("total_amount", 0)    # 총 합계
+    ws[f"I{totals_base}"]     = totals.get("supply_amount", 0)
+    ws[f"I{totals_base + 1}"] = totals.get("vat_amount", 0)
+    ws[f"I{totals_base + 2}"] = totals.get("total_amount", 0)
     for t_row in range(totals_base, totals_base + 3):
         ws[f"I{t_row}"].number_format = '#,##0'
+
+    # ── 비고: extra_rows 반영하여 정확한 행에 기록 ──
+    notes_value = str(header.get("notes", "") or "")
+    notes_content_row = 56 + extra_rows   # 템플릿 기준 56행
+    ws[f"B{notes_content_row}"] = notes_value
 
     output = BytesIO()
     wb.save(output)
@@ -790,15 +785,6 @@ def _make_statement_excel_bytes(header: dict, statement_df: pd.DataFrame, totals
 
 
 def _make_bulk_statement_zip_bytes(conn, selected_df: pd.DataFrame) -> tuple[bytes, int, list[str]]:
-    """
-    선택된 rows를 (partner_name, sale_date) 기준으로 그룹핑하여
-    각 그룹마다 거래명세서 Excel을 생성하고 하나의 ZIP으로 묶어 반환.
-
-    Returns:
-        zip_bytes: ZIP 파일 바이트
-        count: 생성된 거래명세서 수
-        errors: 오류가 발생한 그룹 설명 리스트
-    """
     zip_buf = BytesIO()
     count = 0
     errors: list[str] = []
@@ -1288,7 +1274,6 @@ def render_partner_registration(conn):
             "address": "주소",
         })
 
-        # 금액 컬럼 콤마 포맷
         if "등급업 이후 공급가합계" in view_df.columns:
             view_df["등급업 이후 공급가합계"] = (
                 pd.to_numeric(view_df["등급업 이후 공급가합계"], errors="coerce")
@@ -1296,7 +1281,6 @@ def render_partner_registration(conn):
                 .map(lambda x: f"{x:,.0f}")
             )
 
-        # 칼럼 순서 재배치
         preferred_order = [
             "거래처명",
             "유형",
@@ -1335,9 +1319,6 @@ def render_wholesale_management(conn):
         st.warning("먼저 거래처를 등록해 주세요.")
         return
 
-    # -----------------------------
-    # 등록 영역
-    # -----------------------------
     with st.expander("신규 도매 판매 등록", expanded=True):
         item_type_label = st.radio("상품 구분", ["시가", "시가 외"], horizontal=True, key="wh_item_type_label")
         item_type = "cigar" if item_type_label == "시가" else "non_cigar"
@@ -1408,7 +1389,6 @@ def render_wholesale_management(conn):
             unit_cost = st.number_input("원가 (₩)", min_value=0, step=100, format="%d", key="wh_unit_cost")
             notes = st.text_area("비고", key="wh_notes")
 
-        # 👇 추가 (중요)
         st.caption(
             f"단가: ₩{unit_price:,.0f} / "
             f"공급가: ₩{supply_price:,.0f} / "
@@ -1446,9 +1426,6 @@ def render_wholesale_management(conn):
             st.success("도매 판매 이력이 저장되었습니다.")
             st.rerun()
 
-    # -----------------------------
-    # 조회/관리 영역
-    # -----------------------------
     st.divider()
     st.markdown("#### 도매 판매 내역")
 
@@ -1487,7 +1464,6 @@ def render_wholesale_management(conn):
         st.warning("검색 결과가 없습니다.")
         return
 
-    # 전체 선택 옵션
     sel_col1, sel_col2 = st.columns([3, 1])
     with sel_col1:
         select_all_filtered = st.checkbox(
@@ -1523,7 +1499,6 @@ def render_wholesale_management(conn):
     gb.configure_column("notes", header_name="비고", width=200)
     gb.configure_column("updated_at", header_name="수정일시", width=150)
 
-    # 필터 값이 바뀔 때마다 AgGrid를 강제 리렌더하기 위해 key를 동적으로 생성
     _grid_key = f"wholesale_aggrid_{keyword.strip()}_{item_type_filter}_{partner_filter}"
 
     grid_response = AgGrid(
@@ -1543,7 +1518,6 @@ def render_wholesale_management(conn):
     if isinstance(selected_rows, pd.DataFrame):
         selected_rows = selected_rows.to_dict("records")
 
-    # 전체 선택 모드이면 filtered 전체를 사용, 아니면 그리드에서 체크된 항목만 사용
     if select_all_filtered:
         selected_grid_df = filtered.copy()
     elif selected_rows:
@@ -1557,7 +1531,6 @@ def render_wholesale_management(conn):
         group_count = groups_for_stmt.ngroups
 
         if group_count == 1:
-            # ── 단일 거래처·판매일자: 기존과 동일하게 단건 다운로드 ──
             ok, msg = _validate_statement_rows(selected_grid_df)
             if ok:
                 preview_header, statement_df, totals = _build_statement_from_rows(conn, selected_grid_df)
@@ -1596,7 +1569,6 @@ def render_wholesale_management(conn):
                 st.warning(msg)
 
         else:
-            # ── 복수 그룹: ZIP으로 일괄 다운로드 ──
             st.divider()
             st.markdown(f"#### 거래명세서 일괄 발행 — {group_count}건 (거래처·판매일자별)")
             try:
@@ -1624,7 +1596,6 @@ def render_wholesale_management(conn):
         return
 
     if select_all_filtered:
-        # 전체 선택 모드에서는 수정/삭제 패널을 표시하지 않음
         return
 
     selected_id = _safe_int(selected_rows[0].get("id"))
@@ -1737,9 +1708,9 @@ def render_wholesale_management(conn):
         unit_cost = st.number_input("원가 (₩)", min_value=0, step=100, format="%d", key=f"edit_{selected_id}_unit_cost")
 
     st.caption(
-    f"단가: ₩{unit_price:,.0f} / "
-    f"공급가: ₩{supply_price:,.0f} / "
-    f"원가: ₩{unit_cost:,.0f}"
+        f"단가: ₩{unit_price:,.0f} / "
+        f"공급가: ₩{supply_price:,.0f} / "
+        f"원가: ₩{unit_cost:,.0f}"
     )
 
     notes = st.text_area(
