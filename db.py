@@ -288,9 +288,11 @@ def get_import_item_detail(item_id):
         batch_id,
         product_code,
         product_name,
+        size_name,
         export_package_type,
         export_package_qty,
-        size_name,
+        discount_rate,
+        export_unit_price_usd,
         export_box_price_usd,
         discounted_box_price_usd,
         discount_rate,
@@ -312,15 +314,11 @@ def get_import_item_detail(item_id):
         local_unit_price_php,
         local_unit_price_krw,
         retail_price_krw,
-        supply_price_krw,
-        supply_vat_krw,
-        supply_total_krw,
-        retail_margin_rate,
-        wholesale_margin_rate,
         proposal_retail_price_krw,
-        store_retail_price_krw,
+        supply_price_krw,
         margin_krw,
         source_row_no,
+        notes,
         raw_row_json,
         raw_formula_json
     FROM import_item
@@ -508,7 +506,7 @@ def upsert_blend_profile(product_name, flavor, strength, guide, description=None
 
 
 def update_blend_profile(row_id, product_name, flavor, strength, guide,
-                          description=None, detail_description=None):  # ← 이게 있어야 함
+                          description=None, detail_description=None):
     sql = """
     UPDATE blend_profile_mst
     SET product_name=?, flavor=?, strength=?, guide=?,
@@ -613,7 +611,7 @@ def insert_product_mst(
     box_depth_cm,
     box_height_cm,
 ):
-    conn = get_conn()  
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         """
@@ -850,7 +848,6 @@ def delete_import_batch(batch_id: int):
     conn = get_conn()
     cur = conn.cursor()
 
-    # import_item이 연결되어 있으면 먼저 확인
     cnt = cur.execute(
         "SELECT COUNT(*) FROM import_item WHERE batch_id = ?",
         (batch_id,),
@@ -1099,9 +1096,6 @@ def get_latest_tax_rule_for_import_calc():
 
 
 def get_import_batch_one(batch_id):
-    """
-    import_version.py에서 실제 사용하는 import_batch 컬럼 기준 조회
-    """
     sql = """
     SELECT
         id,
@@ -1120,151 +1114,7 @@ def get_import_batch_one(batch_id):
     return df.iloc[0].to_dict() if not df.empty else {}
 
 
-def get_export_price_product_names():
-    sql = """
-    SELECT DISTINCT product_name
-    FROM export_price_item
-    WHERE COALESCE(product_name, '') <> ''
-    ORDER BY product_name
-    """
-    df = run_query(sql)
-    return df["product_name"].tolist() if not df.empty else []
-
-
-def get_export_price_sizes_by_product(product_name):
-    sql = """
-    SELECT DISTINCT size_name
-    FROM export_price_item
-    WHERE product_name = ?
-      AND COALESCE(size_name, '') <> ''
-    ORDER BY size_name
-    """
-    df = run_query(sql, [product_name])
-    return df["size_name"].tolist() if not df.empty else []
-
-
-def get_export_price_package_options(product_name, size_name):
-    sql = """
-    SELECT
-        id,
-        product_name,
-        size_name,
-        package_type,
-        package_qty,
-        export_price_usd,
-        created_at
-    FROM export_price_item
-    WHERE product_name = ?
-      AND size_name = ?
-    ORDER BY package_type, package_qty
-    """
-    return run_query(sql, [product_name, size_name])
-
-
-def get_product_mst_one(product_name, size_name):
-    sql = """
-    SELECT
-        id,
-        product_name,
-        size_name,
-        product_code,
-        use_yn,
-        length_mm,
-        ring_gauge,
-        smoking_time_text,
-        unit_weight_g
-    FROM product_mst
-    WHERE product_name = ?
-      AND size_name = ?
-    ORDER BY id DESC
-    LIMIT 1
-    """
-    df = run_query(sql, [product_name, size_name])
-    return df.iloc[0].to_dict() if not df.empty else {}
-
-
-def get_latest_tax_rule_for_import_calc():
-    sql = """
-    SELECT
-        id,
-        rule_name,
-        effective_from,
-        effective_to,
-        individual_tax_per_g,
-        tobacco_tax_per_g,
-        local_education_rate,
-        health_charge_per_g,
-        import_vat_rate,
-        notes
-    FROM tax_rule
-    ORDER BY effective_from DESC, id DESC
-    LIMIT 1
-    """
-    df = run_query(sql)
-    return df.iloc[0].to_dict() if not df.empty else {
-        "id": None,
-        "rule_name": "",
-        "individual_tax_per_g": 0,
-        "tobacco_tax_per_g": 0,
-        "local_education_rate": 0,
-        "health_charge_per_g": 0,
-        "import_vat_rate": 0,
-    }
-
-
-def get_import_item_detail(item_id):
-    sql = """
-    SELECT
-        id,
-        batch_id,
-        product_code,
-        product_name,
-        size_name,
-        export_package_type,
-        export_package_qty,
-        discount_rate,
-        export_unit_price_usd,
-        export_box_price_usd,
-        discounted_box_price_usd,
-        discount_rate,
-        import_unit_qty,
-        export_unit_price_usd,
-        import_unit_cost_krw,
-        import_total_cost_krw,
-        unit_weight_g,
-        total_weight_g,
-        individual_tax_krw,
-        tobacco_tax_krw,
-        local_education_tax_krw,
-        health_charge_krw,
-        import_vat_krw,
-        tax_total_krw,
-        tax_total_all_krw,
-        korea_cost_krw,
-        local_box_price_php,
-        local_unit_price_php,
-        local_unit_price_krw,
-        retail_price_krw,
-        proposal_retail_price_krw,
-        supply_price_krw,
-        margin_krw,
-        source_row_no,
-        notes,
-        raw_row_json,
-        raw_formula_json
-    FROM import_item
-    WHERE id = ?
-    """
-    return run_query(sql, [item_id])
-
-
-
-
 def get_import_item_defaults_by_product_code(product_code: str):
-    """
-    전체 import_item 테이블에서 동일 상품코드의 가장 최근 저장 항목을 조회.
-    신규 추가 시 source_row_no / local_box_price_php / local_unit_price_php 디폴트 참조용.
-    """
     sql = """
     SELECT
         source_row_no,
@@ -1278,12 +1128,7 @@ def get_import_item_defaults_by_product_code(product_code: str):
     return run_query(sql, [product_code])
 
 
-
 def get_import_item_defaults_by_name_size(product_name: str, size_name: str):
-    """
-    전체 import_item 테이블에서 상품명+사이즈 기준 가장 최근 저장 항목을 조회.
-    product_code가 없을 때 fallback으로 사용.
-    """
     sql = """
     SELECT
         source_row_no,
@@ -1426,11 +1271,6 @@ def upsert_import_item_full(
             refresh_import_batch_totals(batch_id)
 
 def refresh_import_batch_totals(batch_id):
-    """
-    import_item 기준으로 import_batch 집계 컬럼 갱신
-    import_batch 테이블에 실제 존재하는 컬럼만 UPDATE
-    """
-
     item_df = run_query(
         """
         SELECT
@@ -1673,7 +1513,7 @@ def init_stock_out_table():
 def get_stock_summary(keyword: str = "", include_inactive: bool = False):
     """
     상품별 현재고 요약
-      total_in       : import_item 입고 합계
+      total_in       : import_item 입고 합계 (import_date <= 오늘인 배치만)
       retail_out     : retail_sales (CIGAR) 차감
       wholesale_out  : wholesale_sales (cigar) 차감
       other_out      : stock_out (샘플/선물세트/폐기/기타) 차감
@@ -1710,13 +1550,13 @@ def get_stock_summary(keyword: str = "", include_inactive: bool = False):
             - COALESCE(so.other_out,     0) AS current_stock
         FROM product_mst p
 
-        -- 입고 (import_batch.import_date가 오늘 이하인 것만 포함)
+        -- 입고 (오늘 이전 수입날짜만)
         LEFT JOIN (
-            SELECT ii.product_code, SUM(ii.import_unit_qty) AS total_in
-            FROM import_item ii
-            JOIN import_batch ib ON ii.batch_id = ib.id
-            WHERE ib.import_date <= date('now')
-            GROUP BY ii.product_code
+            SELECT i.product_code, SUM(i.import_unit_qty) AS total_in
+            FROM import_item i
+            JOIN import_batch b ON i.batch_id = b.id
+            WHERE b.import_date <= date('now')
+            GROUP BY i.product_code
         ) si ON p.product_code = si.product_code
 
         -- 소매 판매
@@ -1754,14 +1594,15 @@ def get_stock_summary(keyword: str = "", include_inactive: bool = False):
 def get_stock_detail(product_code: str):
     """
     특정 상품의 입출고 이벤트 전체 이력 (날짜 오름차순)
+    입고는 import_date <= 오늘인 배치만 포함
     type 컬럼: 'import' | 'retail' | 'wholesale' | 'sample' | 'gift_set' | 'disposal' | 'etc'
     """
     sql = """
     SELECT * FROM (
-        -- 입고 (import_batch.import_date가 오늘 이하인 것만 포함)
+        -- 입고 (오늘 이전 수입날짜만)
         SELECT
-            b.import_date  AS event_date,
-            'import'       AS event_type,
+            i.created_at AS event_date,
+            'import'     AS event_type,
             b.version_name AS ref_name,
             i.import_unit_qty AS qty_in,
             0                 AS qty_out,
@@ -1820,7 +1661,7 @@ def get_stock_detail(product_code: str):
         WHERE so.product_code = ?
     )
     ORDER BY event_date
-"""
+    """
     return run_query(sql, [product_code, product_code, product_code, product_code])
 
 
