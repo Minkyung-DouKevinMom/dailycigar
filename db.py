@@ -1710,11 +1710,13 @@ def get_stock_summary(keyword: str = "", include_inactive: bool = False):
             - COALESCE(so.other_out,     0) AS current_stock
         FROM product_mst p
 
-        -- 입고
+        -- 입고 (import_batch.import_date가 오늘 이하인 것만 포함)
         LEFT JOIN (
-            SELECT product_code, SUM(import_unit_qty) AS total_in
-            FROM import_item
-            GROUP BY product_code
+            SELECT ii.product_code, SUM(ii.import_unit_qty) AS total_in
+            FROM import_item ii
+            JOIN import_batch ib ON ii.batch_id = ib.id
+            WHERE ib.import_date <= date('now')
+            GROUP BY ii.product_code
         ) si ON p.product_code = si.product_code
 
         -- 소매 판매
@@ -1756,10 +1758,10 @@ def get_stock_detail(product_code: str):
     """
     sql = """
     SELECT * FROM (
-        -- 입고
+        -- 입고 (import_batch.import_date가 오늘 이하인 것만 포함)
         SELECT
-            i.created_at AS event_date,
-            'import'     AS event_type,
+            b.import_date  AS event_date,
+            'import'       AS event_type,
             b.version_name AS ref_name,
             i.import_unit_qty AS qty_in,
             0                 AS qty_out,
@@ -1768,6 +1770,7 @@ def get_stock_detail(product_code: str):
         FROM import_item i
         JOIN import_batch b ON i.batch_id = b.id
         WHERE i.product_code = ?
+          AND b.import_date <= date('now')
 
         UNION ALL
 
