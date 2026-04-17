@@ -560,6 +560,7 @@ def _sort_estimate_editor_df(df: pd.DataFrame, is_non_cigar: bool = False) -> pd
 
     work = df.copy()
 
+    # 시가 외: source_row_no 기준 정렬
     if is_non_cigar:
         if "source_row_no" in work.columns:
             work["source_row_no"] = pd.to_numeric(work["source_row_no"], errors="coerce")
@@ -571,14 +572,24 @@ def _sort_estimate_editor_df(df: pd.DataFrame, is_non_cigar: bool = False) -> pd
             )
         return work
 
-    sort_cols = [c for c in ["product_name", "size_name", "product_code"] if c in work.columns]
-    if sort_cols:
+    # 시가: source_row_no 기준 정렬 (없으면 product_name → size_name → product_code 순)
+    if "source_row_no" in work.columns:
+        work["source_row_no"] = pd.to_numeric(work["source_row_no"], errors="coerce")
         work = work.sort_values(
-            by=sort_cols,
-            ascending=[True] * len(sort_cols),
+            by=["source_row_no"],
+            ascending=[True],
             kind="stable",
             na_position="last",
         )
+    else:
+        sort_cols = [c for c in ["product_name", "size_name", "product_code"] if c in work.columns]
+        if sort_cols:
+            work = work.sort_values(
+                by=sort_cols,
+                ascending=[True] * len(sort_cols),
+                kind="stable",
+                na_position="last",
+            )
     return work
 
 
@@ -651,7 +662,13 @@ def render_estimate_export():
         help="체크 시 엑셀 H8 셀에 Grade: 등급(할인율: 5%) 형식으로 표시합니다."
     )
 
-    cigar_master_df = get_estimate_cigar_items()
+    only_in_stock = st.checkbox(
+        "재고 있는 시가만 표시",
+        value=True,
+        help="체크 시 현재고가 1개 이상인 품목만 목록에 표시합니다. 미래 수입 예정 재고는 제외됩니다.",
+    )
+
+    cigar_master_df = get_estimate_cigar_items(only_in_stock=only_in_stock)
     non_cigar_master_df = get_estimate_non_cigar_items()
 
     st.markdown("### 시가")
@@ -682,6 +699,7 @@ def render_estimate_export():
                 "product_code",
                 "product_name",
                 "size_name",
+                "current_stock",
                 "retail_price_krw",
                 "proposal_retail_price_krw",
                 "supply_price_krw",
@@ -692,12 +710,17 @@ def render_estimate_export():
             if c in cigar_edit_df.columns
         ]
 
+        cigar_column_config = _get_estimate_editor_column_config(is_non_cigar=False)
+        cigar_column_config["current_stock"] = st.column_config.NumberColumn(
+            "현재고", disabled=True, format="%d개"
+        )
+
         edited_cigar_df = st.data_editor(
             cigar_edit_df,
             use_container_width=True,
             hide_index=True,
             num_rows="fixed",
-            column_config=_get_estimate_editor_column_config(is_non_cigar=False),
+            column_config=cigar_column_config,
             column_order=cigar_column_order,
         )
         cigar_df = edited_cigar_df[edited_cigar_df["qty"] > 0].copy()

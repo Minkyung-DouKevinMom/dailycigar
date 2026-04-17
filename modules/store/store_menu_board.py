@@ -55,12 +55,9 @@ def build_size_table_df(group_df: pd.DataFrame) -> pd.DataFrame:
     if "profile_id" not in temp_df.columns:
         temp_df["profile_id"] = 999999
 
-    sort_cols = ["profile_id", "__size_sort", "size_name"]
+    # ★ 가격 오름차순 정렬 (같은 가격이면 사이즈명 순)
+    sort_cols = ["store_retail_price_krw", "__size_sort", "size_name"]
     asc = [True, True, True]
-
-    if "source_row_no" in temp_df.columns:
-        sort_cols.append("source_row_no")
-        asc.append(True)
 
     temp_df = temp_df.sort_values(by=sort_cols, ascending=asc)
 

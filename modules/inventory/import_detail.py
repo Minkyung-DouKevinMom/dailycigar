@@ -123,9 +123,11 @@ def _calc_values(
     retail_margin_rate = ((retail_price_krw - korea_cost_krw) / retail_price_krw) if retail_price_krw else 0.0
     wholesale_margin_rate = ((supply_price_krw - korea_cost_krw) / supply_price_krw) if supply_price_krw else 0.0
 
-    # 매장 소매가는 기본적으로 소비자가와 동일하게 시작
-    if store_retail_price_krw in (None, ""):
+    # 매장 소매가: None/"" 인 경우만 소비자가로 대체 (0은 0으로 유지)
+    if store_retail_price_krw is None or store_retail_price_krw == "":
         store_retail_price_krw = retail_price_krw
+    else:
+        store_retail_price_krw = float(store_retail_price_krw)
 
     return {
         "discount_factor": discount_factor,
@@ -739,23 +741,28 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 step=1,
             )
 
-            saved_discount_factor = _n(detail_row.get("discount_rate"), 1.0)
-            default_discount_percent = (1 - saved_discount_factor) * 100 if detail_row else 0.0
+            # DB discount_rate = discount_factor (남는 비율): 20% 할인 → 0.8 저장
+            # NULL이면 할인 없음(0%)
+            _raw_dr = detail_row.get("discount_rate") if detail_row else None
+            if _raw_dr is None or _raw_dr == "":
+                default_discount_percent = 0.0
+            else:
+                default_discount_percent = round((1.0 - _n(_raw_dr, 1.0)) * 100, 4)
 
             discount_rate = st.number_input(
                 "할인율(%)",
                 min_value=0.0,
                 max_value=100.0,
-                value=default_discount_percent,
+                value=float(default_discount_percent),
                 step=0.1,
+                help="20 입력 → 20% 할인. DB에는 할인계수(0.8)로 저장됩니다.",
             )
 
-            discounted_box_price_usd_manual = st.number_input(
+            # 최종 수출가격: discount_rate 위젯 현재값 기준으로 즉시 계산해서 표시
+            _preview_discounted = export_box_price_usd * (1 - discount_rate / 100.0)
+            st.metric(
                 "최종 수출가격(USD, 박스기준)",
-                min_value=0.0,
-                value=export_box_price_usd * (1 - discount_rate / 100.0),
-                step=0.01,
-                disabled=True,
+                f"{_preview_discounted:,.4f}",
             )
 
             # 기존 저장값이 있으면(같은 상품코드) 원본 행번호 디폴트로 표기
@@ -831,12 +838,10 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 format="%d",
             )
 
-            proposal_retail_default = _n(
-                detail_row.get("proposal_retail_price_krw"),
-                _n(detail_row.get("retail_price_krw"), 0.0)
-            )
-            if proposal_retail_default == 0 and retail_price_krw > 0:
-                proposal_retail_default = retail_price_krw
+            if edit_mode == "기존 수정" and detail_row:
+                proposal_retail_default = _n(detail_row.get("proposal_retail_price_krw"), 0.0)
+            else:
+                proposal_retail_default = retail_price_krw if retail_price_krw > 0 else 0.0
 
             supply_price_krw = st.number_input(
                 "공급가",
@@ -846,12 +851,12 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 format="%d",
             )
 
-            store_retail_default = _n(
-                detail_row.get("store_retail_price_krw"),
-                _n(detail_row.get("retail_price_krw"), 0.0)
-            )
-            if store_retail_default == 0 and retail_price_krw > 0:
-                store_retail_default = retail_price_krw
+            if edit_mode == "기존 수정" and detail_row:
+                # 저장된 값을 그대로 사용 (0이어도 0으로 표시)
+                store_retail_default = _n(detail_row.get("store_retail_price_krw"), 0.0)
+            else:
+                # 신규 추가: 소매가를 기본값으로
+                store_retail_default = retail_price_krw if retail_price_krw > 0 else 0.0
 
             store_retail_price_krw = st.number_input(
                 "매장 소매가",
@@ -1011,7 +1016,7 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 supply_total_krw=_none_if_zero_num(calc["supply_total_krw"]),
                 retail_margin_rate=_none_if_zero_num(calc["retail_margin_rate"]),
                 wholesale_margin_rate=_none_if_zero_num(calc["wholesale_margin_rate"]),
-                store_retail_price_krw=_none_if_zero_num(calc["store_retail_price_krw"]),
+                store_retail_price_krw=int(store_retail_price_krw) if store_retail_price_krw else None,
                 margin_krw=_none_if_zero_num(margin_krw),
                 source_row_no=None if source_row_no == 0 else source_row_no,
                 notes=_none_if_blank_text(item_notes),

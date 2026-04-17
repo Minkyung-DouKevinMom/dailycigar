@@ -315,6 +315,7 @@ def get_import_item_detail(item_id):
         local_unit_price_krw,
         retail_price_krw,
         proposal_retail_price_krw,
+        store_retail_price_krw,
         supply_price_krw,
         margin_krw,
         source_row_no,
@@ -1384,30 +1385,87 @@ def get_partner_detail_by_id(partner_id):
     return df.iloc[0].to_dict() if not df.empty else {}
 
 
-def get_estimate_cigar_items():
-    sql = """
+def get_estimate_cigar_items(only_in_stock: bool = False):
+    """
+    견적서용 시가 목록.
+    - product_mst.use_yn = 'Y' 인 상품만 포함
+    - 가격은 import_date <= 오늘인 배치 중 가장 최신 import_item의 값 사용
+    - current_stock: 오늘 이전 입고 - 소매출고 - 도매출고 - 기타출고
+    - source_row_no: 최신 배치 기준 값을 가져와 정렬에 사용
+    - only_in_stock=True 이면 current_stock > 0 인 상품만 반환
+    """
+    stock_filter = (
+        """  AND (
+            COALESCE(si.total_in,      0)
+          - COALESCE(rs.retail_out,    0)
+          - COALESCE(ws.wholesale_out, 0)
+          - COALESCE(so.other_out,     0)
+      ) > 0"""
+        if only_in_stock
+        else ""
+    )
+
+    sql = f"""
     SELECT
-        i.product_code,
-        i.product_name,
-        i.size_name,
-        COALESCE(i.retail_price_krw, 0) AS retail_price_krw,
-        COALESCE(i.proposal_retail_price_krw, retail_price_krw) AS proposal_retail_price_krw,
-        COALESCE(i.supply_price_krw, 0) AS supply_price_krw
-    FROM import_item i
-    INNER JOIN (
-        SELECT
-            product_name,
-            size_name,
-            MAX(id) AS max_id
-        FROM import_item
-        GROUP BY product_name, size_name
-    ) x
-        ON i.id = x.max_id
-    LEFT JOIN product_mst p
-        ON i.product_name = p.product_name
-       AND COALESCE(i.size_name, '') = COALESCE(p.size_name, '')
+        p.product_code,
+        p.product_name,
+        p.size_name,
+        COALESCE(i.retail_price_krw, 0)                                    AS retail_price_krw,
+        COALESCE(i.proposal_retail_price_krw, i.retail_price_krw, 0)       AS proposal_retail_price_krw,
+        COALESCE(i.supply_price_krw, 0)                                    AS supply_price_krw,
+        COALESCE(i.source_row_no, 999999)                                  AS source_row_no,
+        COALESCE(si.total_in,      0)
+        - COALESCE(rs.retail_out,    0)
+        - COALESCE(ws.wholesale_out, 0)
+        - COALESCE(so.other_out,     0)                                    AS current_stock
+
+    FROM product_mst p
+
+    LEFT JOIN import_item i
+        ON i.id = (
+            SELECT ii.id
+            FROM import_item ii
+            JOIN import_batch ib ON ii.batch_id = ib.id
+            WHERE ii.product_name = p.product_name
+              AND COALESCE(ii.size_name, '') = COALESCE(p.size_name, '')
+              AND ib.import_date <= date('now')
+            ORDER BY ib.import_date DESC, ii.id DESC
+            LIMIT 1
+        )
+
+    LEFT JOIN (
+        SELECT ii.product_code, SUM(ii.import_unit_qty) AS total_in
+        FROM import_item ii
+        JOIN import_batch ib ON ii.batch_id = ib.id
+        WHERE ib.import_date <= date('now')
+        GROUP BY ii.product_code
+    ) si ON p.product_code = si.product_code
+
+    LEFT JOIN (
+        SELECT product_code, SUM(qty) AS retail_out
+        FROM retail_sales
+        WHERE category = 'CIGAR'
+        GROUP BY product_code
+    ) rs ON p.product_code = rs.product_code
+
+    LEFT JOIN (
+        SELECT pm2.product_code, SUM(ws.qty) AS wholesale_out
+        FROM wholesale_sales ws
+        JOIN product_mst pm2 ON ws.cigar_product_id = pm2.id
+        WHERE ws.item_type = 'cigar'
+        GROUP BY pm2.product_code
+    ) ws ON p.product_code = ws.product_code
+
+    LEFT JOIN (
+        SELECT product_code, SUM(qty) AS other_out
+        FROM stock_out
+        GROUP BY product_code
+    ) so ON p.product_code = so.product_code
+
     WHERE COALESCE(p.use_yn, 'Y') = 'Y'
-    ORDER BY i.source_row_no, i.product_name, i.size_name
+    {stock_filter}
+
+    ORDER BY COALESCE(i.source_row_no, 999999), p.product_name, p.size_name
     """
     return run_query(sql)
 
@@ -1434,14 +1492,15 @@ def get_store_menu_view(batch_id=None, keyword=""):
         ii.product_code,
         ii.product_name,
         ii.size_name,
-        length_mm,
-        ring_gauge,
+        pm.length_mm,
+        pm.ring_gauge,
         COALESCE(ii.store_retail_price_krw, 0) AS store_retail_price_krw,
         COALESCE(bp.flavor, '') AS flavor,
         COALESCE(bp.strength, '') AS strength,
         COALESCE(bp.guide, '') AS guide,
         COALESCE(bp.id, 999999) AS profile_id,
-        COALESCE(ii.source_row_no, 999999) AS source_row_no
+        COALESCE(ii.source_row_no, 999999) AS source_row_no,
+        ib.import_date
     FROM import_item ii
     LEFT JOIN import_batch ib
         ON ii.batch_id = ib.id
@@ -1449,8 +1508,20 @@ def get_store_menu_view(batch_id=None, keyword=""):
         ON TRIM(ii.product_name) = TRIM(bp.product_name)
     LEFT JOIN product_mst pm
         ON ii.product_code = pm.product_code
-    WHERE 1=1
-    and pm.use_yn = 'Y'
+    -- ★ 핵심: 동일 product_name+size_name 중 import_date 최신 배치만
+    INNER JOIN (
+        SELECT
+            i2.product_name,
+            i2.size_name,
+            MAX(ib2.import_date) AS max_import_date
+        FROM import_item i2
+        JOIN import_batch ib2 ON i2.batch_id = ib2.id
+        GROUP BY i2.product_name, i2.size_name
+    ) latest
+        ON  ii.product_name = latest.product_name
+        AND ii.size_name     = latest.size_name
+        AND ib.import_date   = latest.max_import_date
+    WHERE pm.use_yn = 'Y'
     """
 
     params = []
