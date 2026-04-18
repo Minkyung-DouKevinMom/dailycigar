@@ -516,6 +516,187 @@ def calc_insights(df: pd.DataFrame) -> list[str]:
 
 
 # =========================
+# 할 일 / 공지사항 관리
+# =========================
+STATUS_OPTIONS = ["대기", "진행중", "완료", "보류"]
+STATUS_EMOJI = {"대기": "🔵", "진행중": "🟡", "완료": "✅", "보류": "⚫"}
+PRIORITY_OPTIONS = ["낮음", "보통", "높음", "긴급"]
+PRIORITY_EMOJI = {"낮음": "🟢", "보통": "🔵", "높음": "🟠", "긴급": "🔴"}
+
+
+def init_tasks_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            title       TEXT    NOT NULL,
+            assignee    TEXT    DEFAULT '',
+            due_date    TEXT    DEFAULT '',
+            status      TEXT    DEFAULT '대기',
+            priority    TEXT    DEFAULT '보통',
+            note        TEXT    DEFAULT '',
+            created_at  TEXT    DEFAULT (DATE('now','localtime')),
+            updated_at  TEXT    DEFAULT (DATE('now','localtime'))
+        )
+    """)
+    conn.commit()
+
+
+def get_tasks(conn) -> pd.DataFrame:
+    try:
+        df = pd.read_sql_query(
+            "SELECT * FROM tasks ORDER BY CASE status WHEN '진행중' THEN 1 WHEN '대기' THEN 2 WHEN '보류' THEN 3 ELSE 4 END, due_date ASC",
+            conn,
+        )
+    except Exception:
+        df = pd.DataFrame()
+    return df
+
+
+def add_task(conn, title, assignee, due_date, status, priority, note):
+    conn.execute(
+        """INSERT INTO tasks (title, assignee, due_date, status, priority, note, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, DATE('now','localtime'))""",
+        (title, assignee, due_date, status, priority, note),
+    )
+    conn.commit()
+
+
+def update_task(conn, task_id, title, assignee, due_date, status, priority, note):
+    conn.execute(
+        """UPDATE tasks
+           SET title=?, assignee=?, due_date=?, status=?, priority=?, note=?,
+               updated_at=DATE('now','localtime')
+           WHERE id=?""",
+        (title, assignee, due_date, status, priority, note, task_id),
+    )
+    conn.commit()
+
+
+def delete_task(conn, task_id):
+    conn.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+    conn.commit()
+
+
+def render_tasks_section(conn):
+    init_tasks_table(conn)
+
+    st.subheader("📋 할 일 / 공지사항")
+
+    tasks_df = get_tasks(conn)
+
+    # ── 현황 요약 카드 ──
+    if not tasks_df.empty:
+        total = len(tasks_df)
+        in_progress = int((tasks_df["status"] == "진행중").sum())
+        waiting = int((tasks_df["status"] == "대기").sum())
+        done = int((tasks_df["status"] == "완료").sum())
+        urgent = int((tasks_df["priority"] == "긴급").sum())
+
+        sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+        sc1.metric("전체", f"{total}건")
+        sc2.metric("🟡 진행중", f"{in_progress}건")
+        sc3.metric("🔵 대기", f"{waiting}건")
+        sc4.metric("✅ 완료", f"{done}건")
+        sc5.metric("🔴 긴급", f"{urgent}건")
+        st.divider()
+
+    # ── 필터 ──
+    col_f1, col_f2, col_f3 = st.columns([2, 2, 2])
+    with col_f1:
+        filter_status = st.multiselect(
+            "상태 필터",
+            STATUS_OPTIONS,
+            default=["대기", "진행중", "보류"],
+            key="task_filter_status",
+        )
+    with col_f2:
+        filter_priority = st.multiselect(
+            "우선순위 필터",
+            PRIORITY_OPTIONS,
+            default=PRIORITY_OPTIONS,
+            key="task_filter_priority",
+        )
+    with col_f3:
+        filter_assignee = st.text_input("담당자 검색", key="task_filter_assignee")
+
+    # ── 할 일 목록 ──
+    if tasks_df.empty:
+        st.info("등록된 할 일이 없습니다. 아래에서 새 항목을 추가해보세요.")
+    else:
+        view_df = tasks_df.copy()
+        if filter_status:
+            view_df = view_df[view_df["status"].isin(filter_status)]
+        if filter_priority:
+            view_df = view_df[view_df["priority"].isin(filter_priority)]
+        if filter_assignee.strip():
+            view_df = view_df[view_df["assignee"].str.contains(filter_assignee.strip(), na=False)]
+
+        if view_df.empty:
+            st.info("필터 조건에 해당하는 항목이 없습니다.")
+        else:
+            for _, row in view_df.iterrows():
+                task_id = int(row["id"])
+                s_emoji = STATUS_EMOJI.get(row["status"], "")
+                p_emoji = PRIORITY_EMOJI.get(row["priority"], "")
+                due_str = f"📅 {row['due_date']}" if row["due_date"] else ""
+                assignee_str = f"👤 {row['assignee']}" if row["assignee"] else ""
+
+                with st.expander(
+                    f"{p_emoji} {s_emoji} [{row['priority']}] {row['title']}　　{assignee_str}　{due_str}",
+                    expanded=False,
+                ):
+                    e1, e2, e3, e4, e5 = st.columns([3, 2, 2, 2, 1])
+                    new_title = e1.text_input("제목", value=row["title"], key=f"t_{task_id}")
+                    new_assignee = e2.text_input("담당자", value=row["assignee"] or "", key=f"a_{task_id}")
+                    new_due = e3.text_input("납기 (YYYY-MM-DD)", value=row["due_date"] or "", key=f"d_{task_id}")
+                    new_status = e4.selectbox(
+                        "현재 상태",
+                        STATUS_OPTIONS,
+                        index=STATUS_OPTIONS.index(row["status"]) if row["status"] in STATUS_OPTIONS else 0,
+                        key=f"s_{task_id}",
+                    )
+                    new_priority = e5.selectbox(
+                        "우선순위",
+                        PRIORITY_OPTIONS,
+                        index=PRIORITY_OPTIONS.index(row["priority"]) if row["priority"] in PRIORITY_OPTIONS else 1,
+                        key=f"p_{task_id}",
+                    )
+                    new_note = st.text_area("비고", value=row["note"] or "", key=f"n_{task_id}", height=80)
+
+                    btn1, btn2, _ = st.columns([1, 1, 6])
+                    if btn1.button("💾 저장", key=f"save_{task_id}"):
+                        update_task(conn, task_id, new_title, new_assignee, new_due, new_status, new_priority, new_note)
+                        st.success("저장되었습니다.")
+                        st.rerun()
+                    if btn2.button("🗑️ 삭제", key=f"del_{task_id}"):
+                        delete_task(conn, task_id)
+                        st.success("삭제되었습니다.")
+                        st.rerun()
+
+                    st.caption(f"등록일: {row.get('created_at', '')}　최종수정: {row.get('updated_at', '')}")
+
+    st.divider()
+
+    # ── 새 항목 추가 ──
+    with st.expander("➕ 새 할 일 / 공지사항 추가", expanded=False):
+        n1, n2, n3, n4, n5 = st.columns([3, 2, 2, 2, 1])
+        new_title_in = n1.text_input("제목 *", key="new_task_title")
+        new_assignee_in = n2.text_input("담당자", key="new_task_assignee")
+        new_due_in = n3.text_input("납기 (YYYY-MM-DD)", key="new_task_due")
+        new_status_in = n4.selectbox("현재 상태", STATUS_OPTIONS, key="new_task_status")
+        new_priority_in = n5.selectbox("우선순위", PRIORITY_OPTIONS, index=1, key="new_task_priority")
+        new_note_in = st.text_area("비고", key="new_task_note", height=80)
+
+        if st.button("✅ 등록", use_container_width=False, key="add_task_btn"):
+            if new_title_in.strip():
+                add_task(conn, new_title_in.strip(), new_assignee_in, new_due_in, new_status_in, new_priority_in, new_note_in)
+                st.success("등록되었습니다.")
+                st.rerun()
+            else:
+                st.warning("제목을 입력해주세요.")
+
+
+# =========================
 # 화면
 # =========================
 st.title("Daily Cigar 운영 관리 시스템")
@@ -672,70 +853,12 @@ try:
 
     st.divider()
 
-    st.subheader("최근 판매 내역")
-    if sales_df.empty:
-        st.info("최근 판매 데이터가 없습니다.")
-    else:
-        recent_df = sales_df.sort_values("dt", ascending=False).head(15).copy()
-        recent_df["dt"] = recent_df["dt"].dt.strftime("%Y-%m-%d")
-
-        recent_df = recent_df.rename(
-            columns={
-                "dt": "일자",
-                "sales_type": "구분",
-                "customer_name": "거래처/고객",
-                "product_code": "상품코드",
-                "product_name": "상품명",
-                "qty": "수량",
-                "unit_price": "단가",
-                "sales_amount": "매출액",
-                "margin_amount": "마진",
-            }
-        )
-
-        recent_df["상품명"] = recent_df["상품명"].fillna("").astype(str).str.strip()
-        recent_df.loc[recent_df["상품명"].eq(""), "상품명"] = "-"
-
-        for col in ["단가", "매출액", "마진"]:
-            recent_df[col] = recent_df[col].apply(fmt_krw)
-
-        st.dataframe(
-            recent_df[["일자", "구분", "거래처/고객", "상품코드", "상품명", "수량", "단가", "매출액", "마진"]],
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        st.caption("※ 소매 시가 외 상품 마진은 판매금액 - (매입가 × 수량) 기준으로 계산합니다.")
-        st.caption(f"계산기간: {recent_period_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')}")
-
+    # ── 할 일 / 공지사항 관리 ──────────────────────────────────────
+    render_tasks_section(conn)
+    
     st.divider()
 
     render_db_download_section()
-
-    st.divider()
-
-    with st.expander("DB 상태 보기"):
-        tables = [
-            "product_mst",
-            "import_batch",
-            "import_item",
-            "tax_rule",
-            "export_price_item",
-            "blend_profile_mst",
-            "retail_sales",
-            "wholesale_sales",
-        ]
-
-        cols = st.columns(4)
-        for idx, table_name in enumerate(tables):
-            with cols[idx % 4]:
-                exists = table_exists(table_name)
-                count = get_table_count(table_name) if exists else 0
-                st.metric(
-                    label=table_name,
-                    value=count,
-                    delta="OK" if exists else "없음",
-                )
 
     st.caption("왼쪽 사이드바에서 상세 페이지를 선택하세요.")
 
