@@ -923,6 +923,10 @@ def _pick_expr(alias: str, columns: set, candidates: list, default_sql: str = "'
     return default_sql
 
 def get_product_intro_export_data(brand_keyword="", use_yn="전체"):
+    """
+    product_name + size_name 기준으로 최신 배치(import_date MAX) 1건만 조회.
+    source_row_no 오름차순 정렬, use_yn 필터 적용.
+    """
     sql = """
     SELECT
         A.product_name,
@@ -934,14 +938,33 @@ def get_product_intro_export_data(brand_keyword="", use_yn="전체"):
         C.smoking_time_text AS time_text,
         B.guide AS guide_text,
         A.retail_price_krw,
+        A.proposal_retail_price_krw,
         A.supply_price_krw,
-        A.supply_total_krw
+        A.supply_total_krw,
+        COALESCE(A.source_row_no, 999999) AS source_row_no
     FROM import_item A
+    -- 최신 배치만: product_name + size_name 기준 import_date MAX 배치로 제한
+    INNER JOIN (
+        SELECT
+            i2.product_name,
+            i2.size_name,
+            MAX(ib2.import_date) AS max_import_date
+        FROM import_item i2
+        JOIN import_batch ib2 ON i2.batch_id = ib2.id
+        GROUP BY i2.product_name, i2.size_name
+    ) latest
+        ON  A.product_name  = latest.product_name
+        AND A.size_name     = latest.size_name
+        AND EXISTS (
+            SELECT 1 FROM import_batch ib3
+            WHERE ib3.id = A.batch_id
+              AND ib3.import_date = latest.max_import_date
+        )
     LEFT JOIN blend_profile_mst B
         ON A.product_name = B.product_name
     LEFT JOIN product_mst C
-        ON A.product_name = C.product_name
-        AND A.SIZE_NAME = C.SIZE_NAME
+        ON  A.product_name = C.product_name
+        AND A.size_name    = C.size_name
     WHERE 1=1
     """
     params = []
@@ -960,7 +983,7 @@ def get_product_intro_export_data(brand_keyword="", use_yn="전체"):
         sql += " AND COALESCE(C.use_yn, 'Y') = ? "
         params.append(use_yn)
 
-    sql += " ORDER BY A.source_row_no, C.id "
+    sql += " ORDER BY COALESCE(A.source_row_no, 999999), C.id "
 
     return run_query(sql, params)
 
@@ -1495,7 +1518,6 @@ def get_store_menu_view(batch_id=None, keyword=""):
         pm.length_mm,
         pm.ring_gauge,
         COALESCE(ii.store_retail_price_krw, 0) AS store_retail_price_krw,
-        COALESCE(ii.proposal_retail_price_krw, ii.retail_price_krw, 0) AS proposal_retail_price_krw,
         COALESCE(bp.flavor, '') AS flavor,
         COALESCE(bp.strength, '') AS strength,
         COALESCE(bp.guide, '') AS guide,

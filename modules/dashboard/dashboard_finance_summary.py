@@ -453,7 +453,11 @@ def get_monthly_trend(conn, months: int = 12) -> pd.DataFrame:
             }
         )
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    # 총매출·지출 모두 0인 달은 데이터 없는 달로 간주하여 제거
+    if not df.empty:
+        df = df[(df["총매출"] != 0) | (df["지출"] != 0)].reset_index(drop=True)
+    return df
 
 
 def get_recent_expenses(conn, limit: int = 10) -> pd.DataFrame:
@@ -735,6 +739,11 @@ def render():
             if current["total_sales"]
             else 0
         )
+        prev_op_margin = (
+            previous["operating_profit"] / previous["total_sales"] * 100
+            if previous["total_sales"]
+            else 0
+        )
         sales_mix_retail = (
             current["retail_sales"] / current["total_sales"] * 100
             if current["total_sales"]
@@ -746,9 +755,32 @@ def render():
             else 0
         )
 
-        c5.metric("소매매출", fmt_krw(current["retail_sales"]))
-        c6.metric("도매매출", fmt_krw(current["wholesale_sales"]))
-        c7.metric("영업이익률", fmt_pct(op_margin))
+        def fmt_delta_pct(curr_val, prev_val) -> str:
+            try:
+                diff = float(curr_val) - float(prev_val)
+                if diff > 0:
+                    return f"+{diff:.1f}%p"
+                if diff < 0:
+                    return f"{diff:.1f}%p"
+                return "0.0%p"
+            except Exception:
+                return "0.0%p"
+
+        c5.metric(
+            "소매매출",
+            fmt_krw(current["retail_sales"]),
+            fmt_delta_krw(current["retail_sales"], previous["retail_sales"]),
+        )
+        c6.metric(
+            "도매매출",
+            fmt_krw(current["wholesale_sales"]),
+            fmt_delta_krw(current["wholesale_sales"], previous["wholesale_sales"]),
+        )
+        c7.metric(
+            "영업이익률",
+            fmt_pct(op_margin),
+            fmt_delta_pct(op_margin, prev_op_margin),
+        )
         c8.metric("소매/도매 비중", f"{sales_mix_retail:.0f}% / {sales_mix_wholesale:.0f}%")
 
         st.caption(
@@ -774,15 +806,50 @@ def render():
                     height=360,
                 )
 
+                import altair as alt
+
                 st.markdown("###### 월별 매출 추이")
-                st.line_chart(
-                    trend_df.set_index("월")[["소매매출", "도매매출", "총매출"]]
+                sales_melt = trend_df[["월", "소매매출", "도매매출", "총매출"]].melt(
+                    id_vars="월", var_name="구분", value_name="금액"
                 )
+                sales_chart = (
+                    alt.Chart(sales_melt)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X("월:N", title=None, sort=trend_df["월"].tolist()),
+                        y=alt.Y("금액:Q", title="금액(원)", axis=alt.Axis(format=",.0f")),
+                        color=alt.Color("구분:N", title=None),
+                        tooltip=[
+                            alt.Tooltip("월:N", title="월"),
+                            alt.Tooltip("구분:N", title="구분"),
+                            alt.Tooltip("금액:Q", title="금액", format=",.0f"),
+                        ],
+                    )
+                    .properties(height=300)
+                )
+                # use_container_width=True + altair 기본(non-interactive)으로 휠 줌 비활성화
+                st.altair_chart(sales_chart, use_container_width=True)
 
                 st.markdown("###### 월별 손익 추이")
-                st.line_chart(
-                    trend_df.set_index("월")[["매출총이익", "지출", "영업이익"]]
+                profit_melt = trend_df[["월", "매출총이익", "지출", "영업이익"]].melt(
+                    id_vars="월", var_name="구분", value_name="금액"
                 )
+                profit_chart = (
+                    alt.Chart(profit_melt)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X("월:N", title=None, sort=trend_df["월"].tolist()),
+                        y=alt.Y("금액:Q", title="금액(원)", axis=alt.Axis(format=",.0f")),
+                        color=alt.Color("구분:N", title=None),
+                        tooltip=[
+                            alt.Tooltip("월:N", title="월"),
+                            alt.Tooltip("구분:N", title="구분"),
+                            alt.Tooltip("금액:Q", title="금액", format=",.0f"),
+                        ],
+                    )
+                    .properties(height=300)
+                )
+                st.altair_chart(profit_chart, use_container_width=True)
             else:
                 st.info("월별 추이 데이터가 없습니다.")
 

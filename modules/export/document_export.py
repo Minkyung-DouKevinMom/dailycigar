@@ -30,7 +30,7 @@ HEADER_MAPPING = {
     "RG": "rg",
     "Time": "time_text",
     "Guide": "guide_text",
-    "소비자가(KRW)": "retail_price_krw",
+    "소비자가(KRW)": "proposal_retail_price_krw",
     "공급가(KRW)": "supply_price_krw",
     "공급가합계(KRW)": "supply_total_krw",
 }
@@ -44,7 +44,7 @@ DISPLAY_RENAME = {
     "rg": "RG",
     "time_text": "Time",
     "guide_text": "Guide",
-    "retail_price_krw": "소비자가(KRW)",
+    "proposal_retail_price_krw": "소비자가(KRW)",
     "supply_price_krw": "공급가(KRW)",
     "supply_total_krw": "공급가합계(KRW)",
 }
@@ -246,7 +246,7 @@ def render_product_intro_export():
         keyword = st.text_input("상품명 검색", "")
 
     with c2:
-        use_yn = st.selectbox("사용여부", ["전체", "Y", "N"], index=0)
+        use_yn = st.selectbox("사용여부", ["전체", "Y", "N"], index=1)
 
     with c3:
         include_retail_price = st.checkbox("소비자가 포함", value=True)
@@ -271,8 +271,8 @@ def render_product_intro_export():
 
     drop_cols = []
 
-    if not include_retail_price and "retail_price_krw" in export_df.columns:
-        drop_cols.append("retail_price_krw")
+    if not include_retail_price and "proposal_retail_price_krw" in export_df.columns:
+        drop_cols.append("proposal_retail_price_krw")
 
     if not include_supply_price:
         if "supply_price_krw" in export_df.columns:
