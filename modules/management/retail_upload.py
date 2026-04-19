@@ -524,6 +524,253 @@ def render_manual_input(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
         conn.rollback()
         st.error(f"직접 입력 저장 중 오류 발생: {e}")
 
+def render_edit_delete(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
+    st.markdown("---")
+    st.subheader("소매 매출 조회 / 수정 / 삭제")
+
+    # ── 검색 필터 ──────────────────────────────────────────────────────────────
+    f1, f2, f3 = st.columns(3)
+    today = pd.Timestamp.today().date()
+    search_from = f1.date_input("조회 시작일", value=today.replace(day=1), key="ed_from")
+    search_to = f2.date_input("조회 종료일", value=today, key="ed_to")
+    search_code = f3.text_input("상품코드 (일부 입력 가능)", value="", key="ed_code")
+
+    if st.button("조회", key="ed_search"):
+        st.session_state["ed_searched"] = True
+
+    if not st.session_state.get("ed_searched"):
+        st.info("날짜 범위를 선택하고 '조회' 버튼을 눌러주세요.")
+        return
+
+    # ── 데이터 조회 ────────────────────────────────────────────────────────────
+    cols_lower = {c.lower(): c for c in retail_sales_cols}
+
+    select_cols = []
+    for candidate, alias in [
+        ("id", "id"),
+        ("sale_date", "sale_date"),
+        ("sale_datetime", "sale_datetime"),
+        ("order_no", "order_no"),
+        ("order_channel", "order_channel"),
+        ("payment_status", "payment_status"),
+        ("product_code_raw", "product_code_raw"),
+        ("product_code", "product_code"),
+        ("category", "category"),
+        ("option_name", "option_name"),
+        ("qty", "qty"),
+        ("unit_price", "unit_price"),
+        ("product_discount_name", "product_discount_name"),
+        ("order_discount_name", "order_discount_name"),
+        ("product_discount_amt", "product_discount_amt"),
+        ("order_discount_amt", "order_discount_amt"),
+        ("net_sales_amount", "net_sales_amount"),
+        ("vat_amount", "vat_amount"),
+        ("taxable_yn", "taxable_yn"),
+    ]:
+        actual = cols_lower.get(candidate)
+        if actual:
+            select_cols.append(f'"{actual}" AS {alias}')
+
+    if not select_cols or "id" not in [s.split(" AS ")[-1] for s in select_cols]:
+        st.error("retail_sales 테이블에 'id' 컬럼이 없어 수정/삭제를 사용할 수 없습니다.")
+        return
+
+    code_filter = f"AND UPPER(product_code_raw) LIKE UPPER('%{search_code.strip()}%')" if search_code.strip() else ""
+
+    sql = f"""
+        SELECT {', '.join(select_cols)}
+        FROM retail_sales
+        WHERE sale_date BETWEEN ? AND ?
+        {code_filter}
+        ORDER BY sale_date DESC, id DESC
+        LIMIT 200
+    """
+    try:
+        df = pd.read_sql_query(sql, conn, params=[str(search_from), str(search_to)])
+    except Exception as e:
+        st.error(f"조회 오류: {e}")
+        return
+
+    if df.empty:
+        st.warning("조회된 데이터가 없습니다.")
+        return
+
+    st.caption(f"조회 결과: {len(df):,}건 (최대 200건)")
+
+    # ── 행 선택 ────────────────────────────────────────────────────────────────
+    display_cols = [c for c in [
+        "id", "sale_date", "order_no", "product_code_raw", "product_code",
+        "qty", "unit_price", "net_sales_amount", "payment_status", "order_channel"
+    ] if c in df.columns]
+
+    st.dataframe(df[display_cols], use_container_width=True, hide_index=True, height=280)
+
+    row_ids = df["id"].tolist()
+    selected_id = st.selectbox(
+        "수정 또는 삭제할 행의 ID 선택",
+        options=row_ids,
+        format_func=lambda x: f"ID {x}  |  {df.loc[df['id']==x, 'sale_date'].values[0]}  |  "
+                               f"{df.loc[df['id']==x, 'product_code_raw'].values[0]}  |  "
+                               f"수량 {df.loc[df['id']==x, 'qty'].values[0]}  |  "
+                               f"금액 {df.loc[df['id']==x, 'net_sales_amount'].values[0]:,.0f}원",
+        key="ed_select_id",
+    )
+
+    sel = df[df["id"] == selected_id].iloc[0]
+
+    action = st.radio("작업 선택", ["수정", "삭제"], horizontal=True, key="ed_action")
+
+    # ── 삭제 ───────────────────────────────────────────────────────────────────
+    if action == "삭제":
+        st.warning(f"ID {selected_id} 행을 삭제합니다. 이 작업은 되돌릴 수 없습니다.")
+        if st.button("삭제 확인", type="primary", key="ed_delete_btn"):
+            try:
+                conn.execute("DELETE FROM retail_sales WHERE id = ?", (int(selected_id),))
+                conn.commit()
+                st.success(f"ID {selected_id} 삭제 완료.")
+                st.session_state["ed_searched"] = False
+                st.rerun()
+            except Exception as e:
+                conn.rollback()
+                st.error(f"삭제 오류: {e}")
+        return
+
+    # ── 수정 폼 ────────────────────────────────────────────────────────────────
+    def _val(col, default=""):
+        v = sel.get(col, default)
+        return default if pd.isna(v) else v
+
+    with st.form("ed_edit_form", clear_on_submit=False):
+        st.markdown(f"**ID {selected_id} 수정**")
+
+        e1, e2, e3 = st.columns(3)
+        ed_sale_date = e1.date_input(
+            "주문기준일자",
+            value=pd.to_datetime(_val("sale_date", str(today))).date(),
+            key="ed_sale_date",
+        )
+        ed_sale_datetime_str = e2.text_input(
+            "주문시작시각 (YYYY-MM-DD HH:MM:SS)",
+            value=str(_val("sale_datetime", "")),
+            key="ed_sale_datetime",
+        )
+        ed_payment_status = e3.selectbox(
+            "결제상태",
+            ["완료", "취소", "대기", "환불", "기타"],
+            index=["완료", "취소", "대기", "환불", "기타"].index(_val("payment_status", "완료"))
+            if _val("payment_status", "완료") in ["완료", "취소", "대기", "환불", "기타"]
+            else 0,
+            key="ed_payment_status",
+        )
+
+        e4, e5, e6 = st.columns(3)
+        ed_order_channel = e4.text_input("주문채널", value=str(_val("order_channel", "")), key="ed_order_channel")
+        ed_order_no = e5.text_input("주문번호", value=str(_val("order_no", "")), key="ed_order_no")
+        ed_category = e6.text_input("카테고리", value=str(_val("category", "")), key="ed_category")
+
+        e7, e8, e9 = st.columns(3)
+        ed_product_code_raw = e7.text_input("상품코드", value=str(_val("product_code_raw", "")), key="ed_product_code_raw")
+        ed_option_name = e8.text_input("옵션", value=str(_val("option_name", "")), key="ed_option_name")
+        ed_taxable_yn = e9.selectbox(
+            "과세여부",
+            ["과세", "면세", "비과세", ""],
+            index=["과세", "면세", "비과세", ""].index(_val("taxable_yn", "과세"))
+            if _val("taxable_yn", "과세") in ["과세", "면세", "비과세", ""]
+            else 0,
+            key="ed_taxable_yn",
+        )
+
+        e10, e11, e12 = st.columns(3)
+        ed_qty = e10.number_input("수량", min_value=0, value=int(_val("qty", 1)), step=1, key="ed_qty")
+        ed_unit_price = e11.number_input("상품가격", min_value=0, value=int(_val("unit_price", 0)), step=1000, key="ed_unit_price")
+        ed_option_price = e12.number_input("옵션가격", min_value=0, value=0, step=1000, key="ed_option_price")
+
+        e13, e14, e15 = st.columns(3)
+        ed_product_discount_amt = e13.number_input("상품할인 금액", min_value=0, value=int(_val("product_discount_amt", 0)), step=1000, key="ed_prod_disc_amt")
+        ed_order_discount_amt = e14.number_input("주문할인 금액", min_value=0, value=int(_val("order_discount_amt", 0)), step=1000, key="ed_ord_disc_amt")
+        ed_vat_amount = e15.number_input("부가세액", min_value=0, value=int(_val("vat_amount", 0)), step=100, key="ed_vat")
+
+        e16, e17 = st.columns(2)
+        ed_product_discount_name = e16.text_input("상품할인명", value=str(_val("product_discount_name", "")), key="ed_prod_disc_name")
+        ed_order_discount_name = e17.text_input("주문할인명", value=str(_val("order_discount_name", "")), key="ed_ord_disc_name")
+
+        ed_auto_calc = st.checkbox("실판매금액 자동계산", value=True, key="ed_auto_calc")
+        if ed_auto_calc:
+            ed_net = max(
+                0.0,
+                float(ed_qty) * (float(ed_unit_price) + float(ed_option_price))
+                - float(ed_product_discount_amt)
+                - float(ed_order_discount_amt),
+            )
+            st.info(f"실판매금액: {ed_net:,.0f}원")
+        else:
+            ed_net = st.number_input(
+                "실판매금액 (할인, 옵션 포함)",
+                min_value=0.0,
+                value=float(_val("net_sales_amount", 0)),
+                step=1000.0,
+                key="ed_net_sales",
+            )
+
+        submitted = st.form_submit_button("수정 저장", type="primary")
+
+    if submitted:
+        # 날짜/시각 파싱
+        try:
+            ed_sale_datetime = pd.to_datetime(ed_sale_datetime_str, errors="coerce")
+            sale_datetime_val = (
+                ed_sale_datetime.strftime("%Y-%m-%d %H:%M:%S")
+                if pd.notna(ed_sale_datetime)
+                else None
+            )
+        except Exception:
+            sale_datetime_val = None
+
+        ed_product_code = normalize_product_code(ed_product_code_raw)
+
+        update_payload = {
+            "sale_date": str(ed_sale_date),
+            "sale_datetime": sale_datetime_val,
+            "payment_status": ed_payment_status,
+            "order_channel": ed_order_channel,
+            "order_no": ed_order_no,
+            "category": ed_category,
+            "product_code_raw": ed_product_code_raw,
+            "product_code": ed_product_code,
+            "option_name": ed_option_name,
+            "taxable_yn": ed_taxable_yn,
+            "qty": float(ed_qty),
+            "unit_price": float(ed_unit_price),
+            "option_price": float(ed_option_price),
+            "product_discount_amt": float(ed_product_discount_amt),
+            "order_discount_amt": float(ed_order_discount_amt),
+            "product_discount_name": ed_product_discount_name,
+            "order_discount_name": ed_order_discount_name,
+            "net_sales_amount": float(ed_net),
+            "vat_amount": float(ed_vat_amount),
+        }
+
+        # DB에 존재하는 컬럼만 업데이트
+        update_payload = {k: v for k, v in update_payload.items() if k in retail_sales_cols}
+
+        if not update_payload:
+            st.error("업데이트할 컬럼이 없습니다.")
+            return
+
+        set_clause = ", ".join([f'"{k}" = ?' for k in update_payload.keys()])
+        params = list(update_payload.values()) + [int(selected_id)]
+
+        try:
+            conn.execute(f"UPDATE retail_sales SET {set_clause} WHERE id = ?", params)
+            conn.commit()
+            st.success(f"ID {selected_id} 수정 완료.")
+            st.session_state["ed_searched"] = False
+            st.rerun()
+        except Exception as e:
+            conn.rollback()
+            st.error(f"수정 오류: {e}")
+
+
 def render():
     st.subheader("소매 매출 업로드")
 
@@ -703,6 +950,7 @@ def render():
                     st.error(f"업로드 중 오류 발생: {e}")
 
         render_manual_input(conn, retail_sales_cols)
+        render_edit_delete(conn, retail_sales_cols)
 
     finally:
         conn.close()

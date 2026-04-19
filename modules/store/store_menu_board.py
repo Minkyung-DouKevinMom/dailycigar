@@ -23,7 +23,6 @@ def safe_text(value, default="-"):
 
 def get_size_sort_key(size_name: str) -> int:
     name = safe_text(size_name, "").strip().lower()
-
     order_map = {
         "puritos": 1,
         "cigarillo": 2,
@@ -52,14 +51,18 @@ def build_size_table_df(group_df: pd.DataFrame) -> pd.DataFrame:
         temp_df["store_retail_price_krw"], errors="coerce"
     ).fillna(0)
 
+    if "proposal_retail_price_krw" in temp_df.columns:
+        temp_df["proposal_retail_price_krw"] = pd.to_numeric(
+            temp_df["proposal_retail_price_krw"], errors="coerce"
+        ).fillna(0)
+    else:
+        temp_df["proposal_retail_price_krw"] = 0
+
     if "profile_id" not in temp_df.columns:
         temp_df["profile_id"] = 999999
 
-    # ★ 가격 오름차순 정렬 (같은 가격이면 사이즈명 순)
     sort_cols = ["store_retail_price_krw", "__size_sort", "size_name"]
-    asc = [True, True, True]
-
-    temp_df = temp_df.sort_values(by=sort_cols, ascending=asc)
+    temp_df = temp_df.sort_values(by=sort_cols, ascending=[True, True, True])
 
     out_df = pd.DataFrame({
         "사이즈": temp_df["size_name"].apply(lambda x: safe_text(x)),
@@ -70,17 +73,113 @@ def build_size_table_df(group_df: pd.DataFrame) -> pd.DataFrame:
         "링게이지": temp_df["ring_gauge"].apply(
             lambda x: f"{int(float(x))}" if pd.notna(x) and str(x).strip() != "" else "-"
         ) if "ring_gauge" in temp_df.columns else "-",
-        "가격": temp_df["store_retail_price_krw"],
+        "가격": temp_df["store_retail_price_krw"].tolist(),
+        "제안가": temp_df["proposal_retail_price_krw"].tolist(),
     })
 
     return out_df
+
+
+def render_price_html_table(size_df: pd.DataFrame, card_no: int):
+    """가격 셀에 제안가 대비 색상 강조 + hover 툴팁을 적용한 HTML 테이블"""
+
+    header_cells = "".join(
+        f'<th style="padding:6px 12px;text-align:left;border-bottom:2px solid #e0e0e0;'
+        f'font-size:12px;color:#888;font-weight:600;white-space:nowrap;">{col}</th>'
+        for col in ["사이즈", "강도", "길이", "링게이지", "가격"]
+    )
+
+    rows_html = ""
+    for _, row in size_df.iterrows():
+        store_price = float(row["가격"])
+        proposal_price = float(row["제안가"])
+
+        price_differs = (
+            proposal_price > 0
+            and store_price > 0
+            and abs(store_price - proposal_price) > 0.5
+        )
+
+        if price_differs:
+            proposal_str = f"₩{proposal_price:,.0f}"
+            if store_price < proposal_price:
+                price_bg    = "#e8f4fd"
+                price_color = "#1565c0"
+                price_border= "#90caf9"
+                badge_bg    = "#bbdefb"
+                badge_color = "#0d47a1"
+                tooltip_label = f"소비자 제안가: {proposal_str} (매장가 낮음)"
+            else:
+                price_bg    = "#fff8e1"
+                price_color = "#e65100"
+                price_border= "#ffcc02"
+                badge_bg    = "#ffe0b2"
+                badge_color = "#bf360c"
+                tooltip_label = f"소비자 제안가: {proposal_str} (매장가 높음)"
+
+            price_cell = (
+                f'<td style="padding:6px 12px;">'
+                f'<span style="display:inline-block;background:{price_bg};color:{price_color};'
+                f'border:1px solid {price_border};border-radius:6px;padding:3px 8px;'
+                f'font-weight:700;font-size:13px;cursor:default;white-space:nowrap;" '
+                f'title="{tooltip_label}">'
+                f'₩{store_price:,.0f}'
+                f'<span style="display:inline-block;background:{badge_bg};color:{badge_color};'
+                f'border-radius:4px;padding:1px 5px;font-size:10px;margin-left:4px;font-weight:600;">'
+                f'제안가 상이</span>'
+                f'</span></td>'
+            )
+        else:
+            # 제안가와 일치하는 경우 초록색, 제안가 없는 경우 기본
+            if proposal_price > 0 and store_price > 0:
+                price_cell = (
+                    f'<td style="padding:6px 12px;">'
+                    f'<span style="display:inline-block;background:#e8f5e9;color:#2e7d32;'
+                    f'border:1px solid #a5d6a7;border-radius:6px;padding:3px 8px;'
+                    f'font-weight:700;font-size:13px;cursor:default;white-space:nowrap;" '
+                    f'title="소비자 제안가와 일치: \u20a9{store_price:,.0f}">'
+                    f'\u20a9{store_price:,.0f}'
+                    f'<span style="display:inline-block;background:#c8e6c9;color:#1b5e20;'
+                    f'border-radius:4px;padding:1px 5px;font-size:10px;margin-left:4px;font-weight:600;">'
+                    f'제안가 일치</span>'
+                    f'</span></td>'
+                )
+            else:
+                price_str = f"\u20a9{store_price:,.0f}" if store_price > 0 else "-"
+                price_cell = f'<td style="padding:6px 12px;font-size:13px;">{price_str}</td>'
+
+        def plain_td(val):
+            return f'<td style="padding:6px 12px;font-size:13px;color:#444;">{val}</td>'
+
+        rows_html += (
+            f'<tr style="border-bottom:1px solid #f0f0f0;">'
+            f'{plain_td(row["사이즈"])}'
+            f'{plain_td(row["강도"])}'
+            f'{plain_td(row["길이"])}'
+            f'{plain_td(row["링게이지"])}'
+            f'{price_cell}'
+            f'</tr>'
+        )
+
+    html = (
+        f'<style>'
+        f'.menu-table-{card_no}{{border-collapse:collapse;width:100%;}}'
+        f'.menu-table-{card_no} tr:hover{{background:#fafafa;}}'
+        f'</style>'
+        f'<table class="menu-table-{card_no}">'
+        f'<thead><tr style="background:#f8f8f8;">{header_cells}</tr></thead>'
+        f'<tbody>{rows_html}</tbody>'
+        f'</table>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
 
 def draw_grouped_menu_card(group_df: pd.DataFrame, card_no: int):
     first_row = group_df.iloc[0].to_dict()
 
     product_name = safe_text(first_row.get("product_name"))
     flavor = safe_text(first_row.get("flavor"), "")
-    guide = safe_text(first_row.get("guide"), "")
+    guide  = safe_text(first_row.get("guide"), "")
 
     if not flavor:
         flavor = "등록된 특징 정보가 없습니다."
@@ -99,15 +198,23 @@ def draw_grouped_menu_card(group_df: pd.DataFrame, card_no: int):
         st.write(guide)
 
         st.caption("사이즈별 정보")
-        st.dataframe(
-            size_df,
-            use_container_width=True,
-            hide_index=True,
-            key=f"menu_size_df_{card_no}",
-            column_config={
-                "가격": st.column_config.NumberColumn("가격", format="₩ %d")
-            }
+
+        has_price_legend = any(
+            float(row["제안가"]) > 0 and float(row["가격"]) > 0
+            for _, row in size_df.iterrows()
         )
+        if has_price_legend:
+            st.markdown(
+                '<span style="font-size:11px;color:#888;">'
+                '🟢 초록색: 제안가 일치 &nbsp;|&nbsp; '
+                '🔵 파란색: 매장가가 제안가보다 낮음 &nbsp;|&nbsp; '
+                '🟠 주황색: 매장가가 제안가보다 높음 &nbsp;|&nbsp; '
+                '마우스를 올리면 제안가 확인'
+                '</span>',
+                unsafe_allow_html=True,
+            )
+
+        render_price_html_table(size_df, card_no)
 
 
 def render():
@@ -145,6 +252,13 @@ def render():
         df["store_retail_price_krw"], errors="coerce"
     ).fillna(0)
 
+    if "proposal_retail_price_krw" in df.columns:
+        df["proposal_retail_price_krw"] = pd.to_numeric(
+            df["proposal_retail_price_krw"], errors="coerce"
+        ).fillna(0)
+    else:
+        df["proposal_retail_price_krw"] = 0
+
     if hide_zero_price:
         df = df[df["store_retail_price_krw"] > 0].copy()
 
@@ -154,7 +268,6 @@ def render():
 
     if "source_row_no" not in df.columns:
         df["source_row_no"] = 999999
-
     if "profile_id" not in df.columns:
         df["profile_id"] = 999999
 
@@ -178,53 +291,44 @@ def render():
         )
 
     product_count = len(df["product_name"].dropna().unique())
-    size_count = len(df)
+    size_count    = len(df)
     st.caption(f"{product_count}개 제품 / {size_count}개 사이즈가 조회되었습니다.")
 
     with st.expander("목록형으로 보기", expanded=False):
-        list_df = df[
-            [
-                "product_name",
-                "size_name",
-                "strength",
-                "length_mm",
-                "ring_gauge",
-                "store_retail_price_krw",
-                "flavor",
-                "guide",
-                "profile_id",
-                "source_row_no",
-            ]
-        ].copy()
-
-        list_df = list_df.rename(
-            columns={
-                "product_name": "상품명",
-                "size_name": "사이즈",
-                "strength": "강도",
-                "length_mm": "길이(mm)",
-                "ring_gauge": "링게이지",
-                "store_retail_price_krw": "매장운영가",
-                "flavor": "특징",
-                "guide": "가이드",
-                "profile_id": "프로파일ID",
-                "source_row_no": "원본행순서",
-            }
-        )
+        list_cols = [
+            "product_name", "size_name", "strength", "length_mm", "ring_gauge",
+            "store_retail_price_krw", "proposal_retail_price_krw",
+            "flavor", "guide", "profile_id", "source_row_no",
+        ]
+        list_df = df[[c for c in list_cols if c in df.columns]].copy()
+        list_df = list_df.rename(columns={
+            "product_name":             "상품명",
+            "size_name":                "사이즈",
+            "strength":                 "강도",
+            "length_mm":                "길이(mm)",
+            "ring_gauge":               "링게이지",
+            "store_retail_price_krw":   "매장운영가",
+            "proposal_retail_price_krw":"소비자제안가",
+            "flavor":                   "특징",
+            "guide":                    "가이드",
+            "profile_id":               "프로파일ID",
+            "source_row_no":            "원본행순서",
+        })
 
         st.dataframe(
             list_df,
             use_container_width=True,
             hide_index=True,
             column_config={
-                "매장운영가": st.column_config.NumberColumn(format="₩ %d")
+                "매장운영가":   st.column_config.NumberColumn(format="₩ %d"),
+                "소비자제안가": st.column_config.NumberColumn(format="₩ %d"),
             }
         )
 
     grouped = [g for _, g in df.groupby("product_name", sort=False)]
 
     card_per_row = 2
-    total_rows = math.ceil(len(grouped) / card_per_row)
+    total_rows   = math.ceil(len(grouped) / card_per_row)
 
     card_no = 0
     for r in range(total_rows):

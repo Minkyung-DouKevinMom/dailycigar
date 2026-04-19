@@ -1495,6 +1495,7 @@ def get_store_menu_view(batch_id=None, keyword=""):
         pm.length_mm,
         pm.ring_gauge,
         COALESCE(ii.store_retail_price_krw, 0) AS store_retail_price_krw,
+        COALESCE(ii.proposal_retail_price_krw, ii.retail_price_krw, 0) AS proposal_retail_price_krw,
         COALESCE(bp.flavor, '') AS flavor,
         COALESCE(bp.strength, '') AS strength,
         COALESCE(bp.guide, '') AS guide,

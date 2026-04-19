@@ -482,35 +482,42 @@ def calc_insights(df: pd.DataFrame) -> list[str]:
         return ["매출 데이터가 아직 없습니다."]
 
     today = pd.Timestamp.today().normalize()
-    month_start = today.replace(day=1)
 
-    prev_month_end = month_start - pd.Timedelta(days=1)
-    prev_month_start = prev_month_end.replace(day=1)
+    # 최근 30일: today-29 ~ today
+    recent_start = today - pd.Timedelta(days=29)
+    # 이전 30일: today-59 ~ today-30
+    prior_end = today - pd.Timedelta(days=30)
+    prior_start = today - pd.Timedelta(days=59)
 
-    this_month = df[(df["dt"] >= month_start) & (df["dt"] <= today)]
-    prev_month = df[(df["dt"] >= prev_month_start) & (df["dt"] <= prev_month_end)]
+    recent = df[(df["dt"] >= recent_start) & (df["dt"] <= today)]
+    prior  = df[(df["dt"] >= prior_start)  & (df["dt"] <= prior_end)]
 
     messages = []
 
-    this_sales = this_month["sales_amount"].sum()
-    prev_sales = prev_month["sales_amount"].sum()
+    recent_sales = recent["sales_amount"].sum()
+    prior_sales  = prior["sales_amount"].sum()
 
-    if prev_sales > 0:
-        diff_pct = (this_sales - prev_sales) / prev_sales * 100
+    if prior_sales > 0:
+        diff_pct = (recent_sales - prior_sales) / prior_sales * 100
         direction = "증가" if diff_pct >= 0 else "감소"
-        messages.append(f"이번달 매출은 전월 대비 {abs(diff_pct):.1f}% {direction}했습니다.")
+        messages.append(
+            f"최근 30일 매출({recent_start.strftime('%m/%d')}\u2013{today.strftime('%m/%d')})은 "
+            f"이전 30일({prior_start.strftime('%m/%d')}\u2013{prior_end.strftime('%m/%d')}) 대비 "
+            f"{abs(diff_pct):.1f}% {direction}했습니다. "
+            f"({fmt_krw(prior_sales)} → {fmt_krw(recent_sales)})"
+        )
     else:
-        messages.append("전월 비교를 위한 데이터가 아직 충분하지 않습니다.")
+        messages.append("이전 30일 비교를 위한 데이터가 아직 충분하지 않습니다.")
 
-    if this_sales > 0:
-        this_margin = this_month["margin_amount"].sum()
-        margin_rate = (this_margin / this_sales * 100) if this_sales else 0
-        messages.append(f"이번달 마진율은 {margin_rate:.1f}%입니다.")
+    if recent_sales > 0:
+        recent_margin = recent["margin_amount"].sum()
+        margin_rate = (recent_margin / recent_sales * 100) if recent_sales else 0
+        messages.append(f"최근 30일 마진율은 {margin_rate:.1f}%입니다.")
 
-    wholesale_sales = this_month.loc[this_month["sales_type"] == "도매", "sales_amount"].sum()
-    wholesale_ratio = (wholesale_sales / this_sales * 100) if this_sales else 0
-    retail_ratio = 100 - wholesale_ratio if this_sales else 0
-    messages.append(f"이번달 매출 비중은 소매 {retail_ratio:.1f}% / 도매 {wholesale_ratio:.1f}%입니다.")
+    wholesale_sales = recent.loc[recent["sales_type"] == "도매", "sales_amount"].sum()
+    wholesale_ratio = (wholesale_sales / recent_sales * 100) if recent_sales else 0
+    retail_ratio = 100 - wholesale_ratio if recent_sales else 0
+    messages.append(f"최근 30일 매출 비중은 소매 {retail_ratio:.1f}% / 도매 {wholesale_ratio:.1f}%입니다.")
 
     return messages[:3]
 
@@ -722,13 +729,7 @@ try:
     today = pd.Timestamp.today().normalize()
     month_start = today.replace(day=1)
     last_30_start = today - pd.Timedelta(days=29)
-    recent_period_start = today - pd.Timedelta(days=90)
-
-    month_df = load_period_sales(
-        conn,
-        month_start.strftime("%Y-%m-%d"),
-        today.strftime("%Y-%m-%d"),
-    )
+    insight_period_start = today - pd.Timedelta(days=59)  # 최근 30일 + 이전 30일
 
     last_30_df = load_period_sales(
         conn,
@@ -738,7 +739,7 @@ try:
 
     sales_df = load_period_sales(
         conn,
-        recent_period_start.strftime("%Y-%m-%d"),
+        insight_period_start.strftime("%Y-%m-%d"),
         today.strftime("%Y-%m-%d"),
     )
 
@@ -848,8 +849,8 @@ try:
 
     st.subheader("인사이트")
     for msg in calc_insights(sales_df):
-        st.write(f"- {msg}")
-    st.caption(f"계산기간: {recent_period_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')}")
+        st.text(f"• {msg}")
+    st.caption(f"비교기간: 최근 30일 vs 이전 30일  |  {insight_period_start.strftime('%Y-%m-%d')} ~ {today.strftime('%Y-%m-%d')}")
 
     st.divider()
 
