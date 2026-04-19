@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -255,22 +254,34 @@ def render():
 
     batch_df = get_all_import_batch()
 
-    batch_options = {"전체": None}
-    for _, row in batch_df.iterrows():
-        batch_options[f'{row["id"]} | {row["version_name"]}'] = row["id"]
+    batch_options = {}
+    if batch_df is not None and not batch_df.empty:
+        for _, row in batch_df.iterrows():
+            batch_options[f'{row["id"]} | {row["version_name"]}'] = row["id"]
 
     c1, c2 = st.columns([2, 3])
 
     with c1:
-        selected = st.selectbox("버전 선택", list(batch_options.keys()))
-        batch_id = batch_options[selected]
+        selected_labels = st.multiselect(
+            "버전 선택 (복수 선택 가능)",
+            options=list(batch_options.keys()),
+            default=[],
+            placeholder="선택하지 않으면 전체 조회",
+        )
+        selected_batch_ids = [batch_options[lbl] for lbl in selected_labels] if selected_labels else None
 
     with c2:
         keyword = st.text_input("검색", placeholder="상품명 / 사이즈 / 코드")
 
-    df = get_price_analysis_view(batch_id, keyword)
+    # 버전이 여러 개 선택된 경우 각각 조회 후 합산
+    if selected_batch_ids:
+        frames = [get_price_analysis_view(bid, keyword) for bid in selected_batch_ids]
+        frames = [f for f in frames if f is not None and not f.empty]
+        df = pd.concat(frames, ignore_index=True).drop_duplicates() if frames else pd.DataFrame()
+    else:
+        df = get_price_analysis_view(None, keyword)
 
-    if df.empty:
+    if df is None or df.empty:
         st.info("조회된 데이터가 없습니다.")
         st.stop()
 
@@ -411,6 +422,7 @@ def render():
         "retail_margin_rate",
         "wholesale_margin_rate",
         "store_retail_price_krw",
+        "proposal_retail_price_krw",
     ]
 
     existing_preferred = [c for c in preferred_order if c in table_df.columns]
@@ -462,8 +474,7 @@ def render():
     )
     st.subheader("제안소비자가와 매장운영가 차이 목록")
 
-    diff_df = df.copy()
-
+    # ★ 가격 분석 테이블(table_df)과 완전히 동일한 행 기준으로 추출
     price_compare_cols = [
         "product_code",
         "product_name",
@@ -474,8 +485,8 @@ def render():
         "retail_price_krw",
         "proposal_retail_price_krw",
     ]
-    existing_cols = [c for c in price_compare_cols if c in diff_df.columns]
-    diff_df = diff_df[existing_cols].copy()
+    existing_cols = [c for c in price_compare_cols if c in table_df.columns]
+    diff_df = table_df[existing_cols].copy()
 
     for col in [
         "korea_cost_krw",
@@ -543,11 +554,13 @@ def render():
     product_name = chart_df["product_name"].astype(str).fillna("") if "product_name" in chart_df.columns else ""
     size_name = chart_df["size_name"].astype(str).fillna("") if "size_name" in chart_df.columns else ""
 
-    chart_df["label"] = product_code
-    empty_mask = chart_df["label"].str.strip().eq("")
-
-    chart_df.loc[empty_mask, "label"] = (
-        product_name[empty_mask].str.strip() + "\n" + size_name[empty_mask].str.strip()
+    # label = 코드가 있으면 "코드 | 사이즈", 없으면 "상품명 | 사이즈" → 중복 방지
+    chart_df["label"] = product_code.str.strip()
+    empty_mask = chart_df["label"].eq("")
+    chart_df.loc[empty_mask, "label"] = product_name[empty_mask].str.strip()
+    has_size = size_name.str.strip().ne("")
+    chart_df["label"] = chart_df["label"] + chart_df.apply(
+        lambda r: (" | " + size_name[r.name].strip()) if has_size[r.name] else "", axis=1
     )
 
     sort_map = {
@@ -566,8 +579,12 @@ def render():
     }
 
     sort_col = sort_map.get(sort_by)
-    if sort_col in chart_df.columns:
-        chart_df = chart_df.sort_values(sort_col, ascending=False)
+    if sort_col and sort_col in chart_df.columns:
+        chart_df = chart_df.sort_values(
+            sort_col, ascending=False, na_position="last"
+        ).reset_index(drop=True)
+    else:
+        chart_df = chart_df.reset_index(drop=True)
 
     if top10_only:
         chart_df = chart_df.head(10)
@@ -715,17 +732,24 @@ def render_pretty_stacked_bar_chart(
 
     sort_col = sort_map.get(sort_by)
 
+    # ★ chart_df(work)가 이미 정렬된 채로 전달되므로 순서 그대로 사용
+    # → Altair sort에 명시적 list로 전달해야 막대 순서가 보장됨
     if sort_col and sort_col in work.columns:
-        order_df = (
-            work[["label", sort_col]]
-            .copy()
-            .assign(_sort_value=lambda x: pd.to_numeric(x[sort_col], errors="coerce").fillna(0))
-            .sort_values("_sort_value", ascending=False)
+        label_order = (
+            work.assign(_sv=pd.to_numeric(work[sort_col], errors="coerce").fillna(0))
+            .sort_values("_sv", ascending=False)["label"]
+            .tolist()
         )
-        label_order = order_df["label"].tolist()
     else:
-        order_df = plot_df.groupby("label", as_index=False)["금액"].sum().sort_values("금액", ascending=False)
-        label_order = order_df["label"].tolist()
+        label_order = (
+            plot_df.groupby("label", as_index=False)["금액"]
+            .sum()
+            .sort_values("금액", ascending=False)["label"]
+            .tolist()
+        )
+    # 중복 제거 (순서 유지)
+    seen = set()
+    label_order = [x for x in label_order if not (x in seen or seen.add(x))]
 
     chart = (
         alt.Chart(plot_df)

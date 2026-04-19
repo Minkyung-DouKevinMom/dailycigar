@@ -743,6 +743,9 @@ try:
         today.strftime("%Y-%m-%d"),
     )
 
+    # 전체 기간 그래프용 데이터
+    all_time_df = load_period_sales(conn, "2000-01-01", today.strftime("%Y-%m-%d"))
+
     card_df = last_30_df.copy()
     st.caption(f"계산기간: {last_30_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')}")
 
@@ -794,13 +797,17 @@ try:
     left, right = st.columns([2, 1])
 
     with left:
-        st.subheader("최근 30일 매출 추이")
+        st.subheader("전체 기간 매출 추이")
 
-        if last_30_df.empty:
+        if all_time_df.empty:
             st.info("표시할 매출 데이터가 없습니다.")
         else:
-            daily_sales = (
-                last_30_df.assign(date=last_30_df["dt"].dt.normalize())
+            import numpy as np
+            import altair as alt
+
+            # 일별 집계
+            daily_all = (
+                all_time_df.assign(date=all_time_df["dt"].dt.normalize())
                 .pivot_table(
                     index="date",
                     columns="sales_type",
@@ -809,33 +816,70 @@ try:
                     fill_value=0,
                 )
                 .sort_index()
+                .reset_index()
             )
-
-            date_index = pd.date_range(
-                start=pd.Timestamp(last_30_start).normalize(),
-                end=pd.Timestamp(today).normalize(),
-                freq="D",
-            )
-            daily_sales = daily_sales.reindex(date_index, fill_value=0)
-            daily_sales.index.name = "date"
-
+            daily_all.columns.name = None
             for col in ["소매", "도매"]:
-                if col not in daily_sales.columns:
-                    daily_sales[col] = 0
-            daily_sales = daily_sales[["소매", "도매"]]
+                if col not in daily_all.columns:
+                    daily_all[col] = 0
 
-            retail_avg = daily_sales["소매"].mean()
-            wholesale_avg = daily_sales["도매"].mean()
-            daily_sales["소매평균선"] = retail_avg
-            daily_sales["도매평균선"] = wholesale_avg
+            # 추세선 계산 (선형회귀)
+            def calc_trend(series: pd.Series) -> pd.Series:
+                x = np.arange(len(series))
+                mask = series > 0
+                if mask.sum() < 2:
+                    return pd.Series([float("nan")] * len(series), index=series.index)
+                coeffs = np.polyfit(x[mask], series[mask], 1)
+                return pd.Series(np.polyval(coeffs, x), index=series.index)
 
-            st.line_chart(
-                daily_sales[["소매", "도매", "소매평균선", "도매평균선"]],
-                use_container_width=True,
+            daily_all["소매추세"] = calc_trend(daily_all["소매"])
+            daily_all["도매추세"] = calc_trend(daily_all["도매"])
+
+            # Altair 차트 (실적 바 + 추세선)
+            base = alt.Chart(daily_all).encode(
+                x=alt.X("date:T", title="날짜", axis=alt.Axis(format="%y-%m"))
             )
+
+            bar_retail = base.mark_bar(opacity=0.5, color="#4C72B0").encode(
+                y=alt.Y("소매:Q", title="매출액", stack=None),
+                tooltip=[
+                    alt.Tooltip("date:T", title="날짜", format="%Y-%m-%d"),
+                    alt.Tooltip("소매:Q", title="소매", format=",.0f"),
+                ],
+            )
+            bar_wholesale = base.mark_bar(opacity=0.5, color="#DD8452").encode(
+                y=alt.Y("도매:Q", title="매출액", stack=None),
+                tooltip=[
+                    alt.Tooltip("date:T", title="날짜", format="%Y-%m-%d"),
+                    alt.Tooltip("도매:Q", title="도매", format=",.0f"),
+                ],
+            )
+            line_retail = base.mark_line(
+                color="#1a4f9e", strokeWidth=2, strokeDash=[4, 2]
+            ).encode(
+                y=alt.Y("소매추세:Q"),
+                tooltip=[alt.Tooltip("소매추세:Q", title="소매 추세", format=",.0f")],
+            )
+            line_wholesale = base.mark_line(
+                color="#b05a1a", strokeWidth=2, strokeDash=[4, 2]
+            ).encode(
+                y=alt.Y("도매추세:Q"),
+                tooltip=[alt.Tooltip("도매추세:Q", title="도매 추세", format=",.0f")],
+            )
+
+            chart = (
+                (bar_retail + bar_wholesale + line_retail + line_wholesale)
+                .properties(height=320)
+                .configure_view(strokeWidth=0)
+            )
+
+            st.altair_chart(chart, use_container_width=True)
+
+            chart_start = daily_all["date"].min()
+            chart_end   = daily_all["date"].max()
             st.caption(
-                f"계산기간: {last_30_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')} | "
-                f"소매 일평균: {fmt_krw(retail_avg)} | 도매 일평균: {fmt_krw(wholesale_avg)}"
+                f"전체 기간: {chart_start.strftime('%Y-%m-%d')} - {chart_end.strftime('%Y-%m-%d')} | "
+                f"점선: 소매/도매 추세선"
             )
 
     with right:

@@ -691,8 +691,8 @@ def render():
         with y1:
             year = st.selectbox(
                 "연도",
-                options=list(range(current_year - 2, current_year + 1)),
-                index=2,
+                options=list(range(current_year - 1, current_year + 1)),
+                index=1,
             )
         with y2:
             month = st.selectbox(
