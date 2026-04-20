@@ -2,6 +2,7 @@ import os
 import sqlite3
 from typing import Optional, Tuple
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -54,14 +55,22 @@ def calc_delta(curr: float, prev: float) -> Tuple[float, float]:
 
 def fmt_delta_krw(curr: float, prev: float) -> str:
     diff, pct = calc_delta(curr, prev)
-    sign = "+" if diff > 0 else ""
-    return f"{sign}{fmt_krw(diff)} / {pct:+.1f}%"
+    if diff > 0:
+        return f"+₩{diff:,.0f} / {pct:+.1f}%"
+    elif diff < 0:
+        return f"-₩{abs(diff):,.0f} / {pct:+.1f}%"
+    else:
+        return f"₩0 / 0.0%"
 
 
 def fmt_delta_count(curr: float, prev: float) -> str:
     diff, pct = calc_delta(curr, prev)
-    sign = "+" if diff > 0 else ""
-    return f"{sign}{int(diff):,}건 / {pct:+.1f}%"
+    if diff > 0:
+        return f"+{int(diff):,}건 / {pct:+.1f}%"
+    elif diff < 0:
+        return f"-{int(abs(diff)):,}건 / {pct:+.1f}%"
+    else:
+        return f"0건 / 0.0%"
 
 
 # =========================
@@ -314,7 +323,7 @@ def render():
 
         with c2:
             st.markdown("#### 비교 차트")
-            chart_df = pd.DataFrame(
+            chart_raw = pd.DataFrame(
                 {
                     "항목": ["매출", "이익", "소매매출", "도매매출"],
                     "기간 A": [
@@ -330,8 +339,25 @@ def render():
                         sum_b["wholesale_sales"],
                     ],
                 }
-            ).set_index("항목")
-            st.bar_chart(chart_df, use_container_width=True)
+            )
+            chart_melt = chart_raw.melt(id_vars="항목", var_name="기간", value_name="금액")
+            bar_chart = (
+                alt.Chart(chart_melt)
+                .mark_bar()
+                .encode(
+                    x=alt.X("항목:N", title=None, axis=alt.Axis(labelAngle=0)),
+                    y=alt.Y("금액:Q", title="금액(원)", axis=alt.Axis(format=",.0f")),
+                    color=alt.Color("기간:N", title=None),
+                    xOffset="기간:N",
+                    tooltip=[
+                        alt.Tooltip("항목:N", title="항목"),
+                        alt.Tooltip("기간:N", title="기간"),
+                        alt.Tooltip("금액:Q", title="금액", format=",.0f"),
+                    ],
+                )
+                .properties(height=320)
+            )
+            st.altair_chart(bar_chart, use_container_width=True)
 
         st.divider()
 
@@ -342,11 +368,25 @@ def render():
                 st.info("기간 A 데이터가 없습니다.")
             else:
                 daily_a = (
-                    df_a.groupby(df_a["sale_date"].dt.strftime("%Y-%m-%d"), as_index=True)["sales_amount"]
+                    df_a.groupby(df_a["sale_date"].dt.strftime("%Y-%m-%d"))["sales_amount"]
                     .sum()
-                    .to_frame("매출액")
+                    .reset_index()
+                    .rename(columns={"sale_date": "날짜", "sales_amount": "매출액"})
                 )
-                st.line_chart(daily_a, use_container_width=True)
+                line_a = (
+                    alt.Chart(daily_a)
+                    .mark_line(point=True, color="#4C72B0")
+                    .encode(
+                        x=alt.X("날짜:N", title=None, axis=alt.Axis(labelAngle=-45, labelOverlap=True)),
+                        y=alt.Y("매출액:Q", title="금액(원)", axis=alt.Axis(format=",.0f")),
+                        tooltip=[
+                            alt.Tooltip("날짜:N", title="날짜"),
+                            alt.Tooltip("매출액:Q", title="매출액", format=",.0f"),
+                        ],
+                    )
+                    .properties(height=280)
+                )
+                st.altair_chart(line_a, use_container_width=True)
 
         with d2:
             st.markdown("#### 기간 B 일별 추이")
@@ -354,11 +394,25 @@ def render():
                 st.info("기간 B 데이터가 없습니다.")
             else:
                 daily_b = (
-                    df_b.groupby(df_b["sale_date"].dt.strftime("%Y-%m-%d"), as_index=True)["sales_amount"]
+                    df_b.groupby(df_b["sale_date"].dt.strftime("%Y-%m-%d"))["sales_amount"]
                     .sum()
-                    .to_frame("매출액")
+                    .reset_index()
+                    .rename(columns={"sale_date": "날짜", "sales_amount": "매출액"})
                 )
-                st.line_chart(daily_b, use_container_width=True)
+                line_b = (
+                    alt.Chart(daily_b)
+                    .mark_line(point=True, color="#DD8452")
+                    .encode(
+                        x=alt.X("날짜:N", title=None, axis=alt.Axis(labelAngle=-45, labelOverlap=True)),
+                        y=alt.Y("매출액:Q", title="금액(원)", axis=alt.Axis(format=",.0f")),
+                        tooltip=[
+                            alt.Tooltip("날짜:N", title="날짜"),
+                            alt.Tooltip("매출액:Q", title="매출액", format=",.0f"),
+                        ],
+                    )
+                    .properties(height=280)
+                )
+                st.altair_chart(line_b, use_container_width=True)
 
     finally:
         conn.close()

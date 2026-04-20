@@ -1,6 +1,7 @@
 import os
 import sqlite3
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -167,9 +168,30 @@ def render():
         )
 
         metric = "매출" if basis == "매출 기준" else "이익"
-        top_df = grouped.sort_values(metric, ascending=False).head(10)
-        chart_df = top_df.set_index("partner_name")[[metric]]
-        st.bar_chart(chart_df)
+        top_df = grouped.sort_values(metric, ascending=False).head(10).copy()
+        top_df = top_df.rename(columns={"partner_name": "거래처"})
+        label_order = top_df["거래처"].tolist()
+
+        bar_chart = (
+            alt.Chart(top_df)
+            .mark_bar()
+            .encode(
+                x=alt.X(
+                    "거래처:N",
+                    sort=label_order,
+                    title=None,
+                    axis=alt.Axis(labelAngle=-30, labelLimit=200),
+                ),
+                y=alt.Y(f"{metric}:Q", title="금액(원)", axis=alt.Axis(format=",.0f")),
+                color=alt.value("#4C72B0"),
+                tooltip=[
+                    alt.Tooltip("거래처:N", title="거래처"),
+                    alt.Tooltip(f"{metric}:Q", title=metric, format=",.0f"),
+                ],
+            )
+            .properties(height=340)
+        )
+        st.altair_chart(bar_chart, use_container_width=True)
 
         st.markdown("### 일자별 거래처 구매금액 비교")
 
@@ -212,7 +234,27 @@ def render():
         pivot_df.index.name = "date"
 
         st.caption("거래가 없는 날짜는 0으로 표시하여 거래처별 구매 주기를 비교합니다.")
-        st.line_chart(pivot_df, use_container_width=True)
+
+        # pivot → long format으로 변환
+        long_df = pivot_df.reset_index().melt(id_vars="date", var_name="거래처", value_name="매출")
+        long_df["date"] = pd.to_datetime(long_df["date"])
+
+        line_chart = (
+            alt.Chart(long_df)
+            .mark_line(point=True, strokeWidth=2)
+            .encode(
+                x=alt.X("date:T", title="날짜", axis=alt.Axis(format="%Y-%m-%d", labelAngle=-30)),
+                y=alt.Y("매출:Q", title="금액(원)", axis=alt.Axis(format=",.0f")),
+                color=alt.Color("거래처:N", title="거래처"),
+                tooltip=[
+                    alt.Tooltip("date:T", title="날짜", format="%Y-%m-%d"),
+                    alt.Tooltip("거래처:N", title="거래처"),
+                    alt.Tooltip("매출:Q", title="금액", format=",.0f"),
+                ],
+            )
+            .properties(height=380)
+        )
+        st.altair_chart(line_chart, use_container_width=True)
 
         st.markdown("### 거래처별 구매주기 요약")
 
