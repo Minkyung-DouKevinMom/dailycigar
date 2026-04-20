@@ -1,6 +1,7 @@
 import math
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from db import get_all_import_batch, get_store_menu_view
 
@@ -81,10 +82,10 @@ def build_size_table_df(group_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_price_html_table(size_df: pd.DataFrame, card_no: int):
-    """가격 셀에 제안가 대비 색상 강조 + hover 툴팁을 적용한 HTML 테이블"""
+    """가격 셀에 제안가 대비 색상 강조 + hover 툴팁을 적용한 HTML 테이블 (components.html로 렌더링)"""
 
     header_cells = "".join(
-        f'<th style="padding:6px 12px;text-align:left;border-bottom:2px solid #e0e0e0;'
+        f'<th style="padding:8px 14px;text-align:left;border-bottom:2px solid #e0e0e0;'
         f'font-size:12px;color:#888;font-weight:600;white-space:nowrap;">{col}</th>'
         for col in ["사이즈", "강도", "길이", "링게이지", "가격"]
     )
@@ -103,56 +104,38 @@ def render_price_html_table(size_df: pd.DataFrame, card_no: int):
         if price_differs:
             proposal_str = f"₩{proposal_price:,.0f}"
             if store_price < proposal_price:
-                price_bg    = "#e8f4fd"
-                price_color = "#1565c0"
-                price_border= "#90caf9"
-                badge_bg    = "#bbdefb"
-                badge_color = "#0d47a1"
-                tooltip_label = f"소비자 제안가: {proposal_str} (매장가 낮음)"
+                bg, color, border = "#e8f4fd", "#1565c0", "#90caf9"
+                tooltip = f"소비자 제안가: {proposal_str}"
             else:
-                price_bg    = "#fff8e1"
-                price_color = "#e65100"
-                price_border= "#ffcc02"
-                badge_bg    = "#ffe0b2"
-                badge_color = "#bf360c"
-                tooltip_label = f"소비자 제안가: {proposal_str} (매장가 높음)"
+                bg, color, border = "#fff8e1", "#e65100", "#ffcc02"
+                tooltip = f"소비자 제안가: {proposal_str}"
 
             price_cell = (
-                f'<td style="padding:6px 12px;">'
-                f'<span style="display:inline-block;background:{price_bg};color:{price_color};'
-                f'border:1px solid {price_border};border-radius:6px;padding:3px 8px;'
-                f'font-weight:700;font-size:13px;cursor:default;white-space:nowrap;" '
-                f'title="{tooltip_label}">'
+                f'<td style="padding:6px 14px;">'
+                f'<span class="price-badge" style="background:{bg};color:{color};'
+                f'border:1.5px solid {border};" data-tip="{tooltip}">'
                 f'₩{store_price:,.0f}'
-                f'<span style="display:inline-block;background:{badge_bg};color:{badge_color};'
-                f'border-radius:4px;padding:1px 5px;font-size:10px;margin-left:4px;font-weight:600;">'
-                f'제안가 상이</span>'
+                f'<span class="tip-box">{tooltip}</span>'
                 f'</span></td>'
             )
         else:
-            # 제안가와 일치하는 경우 초록색, 제안가 없는 경우 기본
             if proposal_price > 0 and store_price > 0:
                 price_cell = (
-                    f'<td style="padding:6px 12px;">'
-                    f'<span style="display:inline-block;background:#e8f5e9;color:#2e7d32;'
-                    f'border:1px solid #a5d6a7;border-radius:6px;padding:3px 8px;'
-                    f'font-weight:700;font-size:13px;cursor:default;white-space:nowrap;" '
-                    f'title="소비자 제안가와 일치: \u20a9{store_price:,.0f}">'
-                    f'\u20a9{store_price:,.0f}'
-                    f'<span style="display:inline-block;background:#c8e6c9;color:#1b5e20;'
-                    f'border-radius:4px;padding:1px 5px;font-size:10px;margin-left:4px;font-weight:600;">'
-                    f'제안가 일치</span>'
+                    f'<td style="padding:6px 14px;">'
+                    f'<span class="price-badge" style="background:#e8f5e9;color:#2e7d32;'
+                    f'border:1.5px solid #a5d6a7;">'
+                    f'₩{store_price:,.0f}'
                     f'</span></td>'
                 )
             else:
-                price_str = f"\u20a9{store_price:,.0f}" if store_price > 0 else "-"
-                price_cell = f'<td style="padding:6px 12px;font-size:13px;">{price_str}</td>'
+                price_str = f"₩{store_price:,.0f}" if store_price > 0 else "-"
+                price_cell = f'<td style="padding:6px 14px;font-size:13px;color:#333;">{price_str}</td>'
 
         def plain_td(val):
-            return f'<td style="padding:6px 12px;font-size:13px;color:#444;">{val}</td>'
+            return f'<td style="padding:6px 14px;font-size:13px;color:#444;">{val}</td>'
 
         rows_html += (
-            f'<tr style="border-bottom:1px solid #f0f0f0;">'
+            f'<tr class="data-row">'
             f'{plain_td(row["사이즈"])}'
             f'{plain_td(row["강도"])}'
             f'{plain_td(row["길이"])}'
@@ -161,17 +144,70 @@ def render_price_html_table(size_df: pd.DataFrame, card_no: int):
             f'</tr>'
         )
 
-    html = (
-        f'<style>'
-        f'.menu-table-{card_no}{{border-collapse:collapse;width:100%;}}'
-        f'.menu-table-{card_no} tr:hover{{background:#fafafa;}}'
-        f'</style>'
-        f'<table class="menu-table-{card_no}">'
-        f'<thead><tr style="background:#f8f8f8;">{header_cells}</tr></thead>'
-        f'<tbody>{rows_html}</tbody>'
-        f'</table>'
-    )
-    st.markdown(html, unsafe_allow_html=True)
+    row_count = len(size_df)
+    table_height = max(80, row_count * 42 + 50)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {{ margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  th {{ padding:8px 14px; text-align:left; border-bottom:2px solid #e0e0e0;
+        font-size:12px; color:#888; font-weight:600; white-space:nowrap;
+        background:#f8f8f8; }}
+  .data-row {{ border-bottom:1px solid #f0f0f0; }}
+  .data-row:hover {{ background:#fafafa; }}
+  .price-badge {{
+    display: inline-block;
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-weight: 700;
+    font-size: 13px;
+    white-space: nowrap;
+    cursor: default;
+    position: relative;
+  }}
+  .tip-box {{
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #333;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 4px 8px;
+    border-radius: 4px;
+    white-space: nowrap;
+    z-index: 9999;
+    pointer-events: none;
+  }}
+  .tip-box::after {{
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: #333;
+  }}
+  .price-badge:hover .tip-box {{
+    display: block;
+  }}
+</style>
+</head>
+<body>
+<table>
+  <thead><tr>{header_cells}</tr></thead>
+  <tbody>{rows_html}</tbody>
+</table>
+</body>
+</html>"""
+
+    components.html(html, height=table_height, scrolling=False)
 
 
 def draw_grouped_menu_card(group_df: pd.DataFrame, card_no: int):
@@ -207,9 +243,8 @@ def draw_grouped_menu_card(group_df: pd.DataFrame, card_no: int):
             st.markdown(
                 '<span style="font-size:11px;color:#888;">'
                 '🟢 초록색: 제안가 일치 &nbsp;|&nbsp; '
-                '🔵 파란색: 매장가가 제안가보다 낮음 &nbsp;|&nbsp; '
-                '🟠 주황색: 매장가가 제안가보다 높음 &nbsp;|&nbsp; '
-                '마우스를 올리면 제안가 확인'
+                '🔵 파란색: 매장가 낮음 (마우스 오버 시 제안가 확인) &nbsp;|&nbsp; '
+                '🟠 주황색: 매장가 높음 (마우스 오버 시 제안가 확인)'
                 '</span>',
                 unsafe_allow_html=True,
             )
