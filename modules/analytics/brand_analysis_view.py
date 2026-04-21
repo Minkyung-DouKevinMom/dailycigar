@@ -349,12 +349,12 @@ def render():
 
         total_sales = brand_grouped["매출"].sum()
         total_profit = brand_grouped["이익"].sum()
-        brand_count = len(brand_grouped)
+        cigar_product_count = cigar_df["product_code"].nunique() if not cigar_df.empty else 0
 
         k1, k2, k3 = st.columns(3)
         k1.metric("총매출", fmt_krw(total_sales))
         k2.metric("총이익", fmt_krw(total_profit))
-        k3.metric("브랜드 수", f"{brand_count:,}")
+        k3.metric("시가 제품 수", f"{cigar_product_count:,}")
 
         st.caption(f"기준월: {year}-{month:02d}")
         st.divider()
