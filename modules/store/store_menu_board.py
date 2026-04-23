@@ -67,6 +67,8 @@ def build_size_table_df(group_df: pd.DataFrame) -> pd.DataFrame:
 
     out_df = pd.DataFrame({
         "사이즈": temp_df["size_name"].apply(lambda x: safe_text(x)),
+        "가격": temp_df["store_retail_price_krw"].tolist(),
+        "제안가": temp_df["proposal_retail_price_krw"].tolist(),
         "강도": temp_df["strength"].apply(normalize_strength),
         "길이": temp_df["length_mm"].apply(
             lambda x: f"{int(float(x))}mm" if pd.notna(x) and str(x).strip() != "" else "-"
@@ -74,8 +76,6 @@ def build_size_table_df(group_df: pd.DataFrame) -> pd.DataFrame:
         "링게이지": temp_df["ring_gauge"].apply(
             lambda x: f"{int(float(x))}" if pd.notna(x) and str(x).strip() != "" else "-"
         ) if "ring_gauge" in temp_df.columns else "-",
-        "가격": temp_df["store_retail_price_krw"].tolist(),
-        "제안가": temp_df["proposal_retail_price_krw"].tolist(),
     })
 
     return out_df
@@ -87,7 +87,7 @@ def render_price_html_table(size_df: pd.DataFrame, card_no: int):
     header_cells = "".join(
         f'<th style="padding:8px 14px;text-align:left;border-bottom:2px solid #e0e0e0;'
         f'font-size:12px;color:#888;font-weight:600;white-space:nowrap;">{col}</th>'
-        for col in ["사이즈", "강도", "길이", "링게이지", "가격"]
+        for col in ["사이즈", "가격", "강도", "길이", "링게이지"]
     )
 
     rows_html = ""
@@ -137,10 +137,10 @@ def render_price_html_table(size_df: pd.DataFrame, card_no: int):
         rows_html += (
             f'<tr class="data-row">'
             f'{plain_td(row["사이즈"])}'
+            f'{price_cell}'
             f'{plain_td(row["강도"])}'
             f'{plain_td(row["길이"])}'
             f'{plain_td(row["링게이지"])}'
-            f'{price_cell}'
             f'</tr>'
         )
 
