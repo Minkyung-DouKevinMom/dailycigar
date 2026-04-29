@@ -444,6 +444,7 @@ def get_export_price_item_filtered(keyword=None, package_type=None, package_qty=
         package_type,
         package_qty,
         export_price_usd,
+        note,
         created_at
     FROM export_price_item
     {where_sql}

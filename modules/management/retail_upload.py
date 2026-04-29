@@ -792,7 +792,12 @@ def render():
 
         uploaded_file = st.file_uploader("엑셀 파일 업로드", type=["xlsx"])
 
-        only_completed = st.checkbox("결제상태가 '완료'인 데이터만 업로드", value=True)
+        only_completed = st.checkbox(
+            "결제상태가 '완료'인 주문만 업로드 (완료 후 취소된 내역 포함)",
+            value=True,
+            help="체크 시: '완료' 상태 행과, 완료된 주문번호에 연결된 '취소' 행을 모두 포함합니다. "
+                 "취소 행을 제외하면 취소된 매출이 차감되지 않아 매출이 과계상됩니다.",
+        )
         skip_duplicates = st.checkbox("중복 데이터는 건너뛰기", value=True)
         replace_period = st.checkbox("같은 기간 기존 데이터를 삭제 후 재업로드", value=False)
 
@@ -814,7 +819,19 @@ def render():
             df = clean_item_df(df_item_raw)
 
             if only_completed:
-                df = df[df["payment_status"] == "완료"].copy()
+                # '완료' 상태인 주문번호 집합을 먼저 추출
+                completed_order_nos = set(
+                    df.loc[df["payment_status"] == "완료", "order_no"]
+                )
+                # '완료' 행 + 완료된 주문에 속하는 '취소' 행을 모두 포함
+                # (대기·환불 등 무관한 상태의 행은 제외)
+                df = df[
+                    (df["payment_status"] == "완료")
+                    | (
+                        (df["payment_status"] == "취소")
+                        & (df["order_no"].isin(completed_order_nos))
+                    )
+                ].copy()
 
             if df.empty:
                 st.warning("업로드 가능한 데이터가 없습니다.")

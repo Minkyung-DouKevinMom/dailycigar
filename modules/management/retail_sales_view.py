@@ -341,7 +341,7 @@ def render():
         with col3:
             selected_channels = st.multiselect("주문채널", channels)
         with col4:
-            selected_statuses = st.multiselect("결제상태", statuses, default=["완료"] if "완료" in statuses else [])
+            selected_statuses = st.multiselect("결제상태", statuses)
 
         col5, col6, col7 = st.columns(3)
         with col5:
