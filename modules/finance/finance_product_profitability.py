@@ -3,6 +3,7 @@ import sqlite3
 from typing import List, Optional, Tuple
 import pandas as pd
 import streamlit as st
+import plotly.express as px
 
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
@@ -162,11 +163,32 @@ def render():
 
         metric = "매출액" if basis == "매출 기준" else "이익"
 
-        top_df = grouped.sort_values(metric, ascending=False).head(20)
+        top_df = grouped.sort_values("마진율(%)", ascending=False).head(20)
 
-        chart_df = top_df.set_index("product_code")[[metric]]
+        fig = px.bar(
+            top_df,
+            x="product_code",
+            y=metric,
+            text=top_df["마진율(%)"].apply(lambda v: f"{v}%"),
+            labels={"product_code": "상품코드", metric: metric},
+            color="마진율(%)",
+            color_continuous_scale="RdYlGn",
+        )
+        fig.update_traces(textposition="outside")
+        fig.update_layout(
+            xaxis_title="상품코드",
+            yaxis_title=metric,
+            coloraxis_colorbar_title="마진율(%)",
+        )
 
-        st.bar_chart(chart_df)
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={
+                "scrollZoom": False,
+                "displayModeBar": False,
+            },
+        )
 
         # ======================
         # 다운로드

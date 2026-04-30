@@ -300,7 +300,6 @@ def render():
 
             achieved_date_preview = st.date_input(
                 "달성일자",
-                value=st.session_state[achieved_key],
                 key=achieved_key,
             )
 
