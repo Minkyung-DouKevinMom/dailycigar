@@ -1891,3 +1891,151 @@ def get_sample_summary_by_partner():
         ORDER BY pm.partner_name, so.product_code
     """
     return run_query(sql)
+
+# ───────────────────────────────────────────
+# product_price_mst
+# ───────────────────────────────────────────
+
+def get_all_product_price_mst() -> pd.DataFrame:
+    """가격 마스터 전체 조회"""
+    conn = get_conn()
+    try:
+        return pd.read_sql_query(
+            """
+            SELECT id, product_name, size_name, product_code,
+                   supply_price_krw, retail_price_krw,
+                   store_retail_price_krw, proposal_retail_price_krw,
+                   korea_cost_krw, is_active, ref_batch_id, notes,
+                   created_at, updated_at
+            FROM product_price_mst
+            ORDER BY product_name, size_name
+            """,
+            conn,
+        )
+    finally:
+        conn.close()
+
+
+def get_product_price_by_code(product_code: str) -> pd.DataFrame:
+    """상품코드로 가격 마스터 조회"""
+    conn = get_conn()
+    try:
+        return pd.read_sql_query(
+            """
+            SELECT * FROM product_price_mst
+            WHERE product_code = ? AND is_active = 1
+            LIMIT 1
+            """,
+            conn,
+            params=[product_code.strip()],
+        )
+    finally:
+        conn.close()
+
+
+def get_product_price_by_name_size(product_name: str, size_name: str) -> pd.DataFrame:
+    """상품명+사이즈로 가격 마스터 조회"""
+    conn = get_conn()
+    try:
+        return pd.read_sql_query(
+            """
+            SELECT * FROM product_price_mst
+            WHERE product_name = ? AND size_name = ? AND is_active = 1
+            LIMIT 1
+            """,
+            conn,
+            params=[product_name.strip(), size_name.strip()],
+        )
+    finally:
+        conn.close()
+
+
+def upsert_product_price_mst(
+    product_name: str,
+    size_name: str,
+    product_code: str | None,
+    supply_price_krw: float,
+    retail_price_krw: float,
+    store_retail_price_krw: float,
+    proposal_retail_price_krw: float,
+    korea_cost_krw: float,
+    batch_id: int | None = None,
+    notes: str | None = None,
+):
+    """수입제품 저장 시 가격 마스터 UPSERT (product_name+size_name 기준)"""
+    conn = get_conn()
+    try:
+        conn.execute(
+            """
+            INSERT INTO product_price_mst (
+                product_name, size_name, product_code,
+                supply_price_krw, retail_price_krw,
+                store_retail_price_krw, proposal_retail_price_krw,
+                korea_cost_krw, ref_batch_id, notes,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now','localtime'))
+            ON CONFLICT(product_name, size_name) DO UPDATE SET
+                product_code              = excluded.product_code,
+                supply_price_krw          = excluded.supply_price_krw,
+                retail_price_krw          = excluded.retail_price_krw,
+                store_retail_price_krw    = excluded.store_retail_price_krw,
+                proposal_retail_price_krw = excluded.proposal_retail_price_krw,
+                korea_cost_krw            = excluded.korea_cost_krw,
+                ref_batch_id              = excluded.ref_batch_id,
+                notes                     = excluded.notes,
+                updated_at                = DATETIME('now','localtime')
+            """,
+            (
+                product_name, size_name, product_code,
+                supply_price_krw, retail_price_krw,
+                store_retail_price_krw, proposal_retail_price_krw,
+                korea_cost_krw, batch_id, notes,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_product_price_mst(
+    price_id: int,
+    supply_price_krw: float,
+    retail_price_krw: float,
+    store_retail_price_krw: float,
+    proposal_retail_price_krw: float,
+    is_active: int,
+    notes: str | None,
+):
+    """기준정보 화면에서 직접 수정"""
+    conn = get_conn()
+    try:
+        conn.execute(
+            """
+            UPDATE product_price_mst
+            SET supply_price_krw          = ?,
+                retail_price_krw          = ?,
+                store_retail_price_krw    = ?,
+                proposal_retail_price_krw = ?,
+                is_active                 = ?,
+                notes                     = ?,
+                updated_at                = DATETIME('now','localtime')
+            WHERE id = ?
+            """,
+            (
+                supply_price_krw, retail_price_krw,
+                store_retail_price_krw, proposal_retail_price_krw,
+                is_active, notes, price_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_product_price_mst(price_id: int):
+    conn = get_conn()
+    try:
+        conn.execute("DELETE FROM product_price_mst WHERE id = ?", (price_id,))
+        conn.commit()
+    finally:
+        conn.close()

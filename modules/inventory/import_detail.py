@@ -21,6 +21,9 @@ from db import (
     get_latest_tax_rule_for_import_calc,
     get_import_batch_tax_rule,
     upsert_import_item_full,
+    upsert_product_price_mst,       # ← 추가
+    get_product_price_by_code,      # ← 추가
+    get_product_price_by_name_size, # ← 추가
 )
 
 USD_TO_KRW_DEFAULT = 1500.0
@@ -716,19 +719,36 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
 
     st.divider()
 
-    # 신규 추가 모드에서 기존 저장된 항목이 있으면 전체 테이블에서 조회
-    # product_code 있으면 코드 우선, 없으면 product_name + size_name 으로 fallback
+    # ──────────────────────────────────────────────────────────────────
+    # 신규 추가 모드: 기본값 로딩
+    #   1순위) product_price_mst (가격 마스터) — 가장 최신 확정 가격
+    #   2순위) import_item 테이블 — 이전 수입 이력 fallback
+    # ──────────────────────────────────────────────────────────────────
     existing_item_row = {}
     if edit_mode == "신규 추가":
-        _defaults_df = None
+        _price_df = None
+
+        # 1순위: product_price_mst 조회
         if str(product_code).strip():
-            _defaults_df = get_import_item_defaults_by_product_code(str(product_code).strip())
-        if (_defaults_df is None or _defaults_df.empty) and str(product_name).strip() and str(size_name).strip():
-            _defaults_df = get_import_item_defaults_by_name_size(
+            _price_df = get_product_price_by_code(str(product_code).strip())
+        if (_price_df is None or _price_df.empty) and str(product_name).strip() and str(size_name).strip():
+            _price_df = get_product_price_by_name_size(
                 str(product_name).strip(), str(size_name).strip()
             )
-        if _defaults_df is not None and not _defaults_df.empty:
-            existing_item_row = _defaults_df.iloc[0].to_dict()
+
+        if _price_df is not None and not _price_df.empty:
+            existing_item_row = _price_df.iloc[0].to_dict()
+        else:
+            # 2순위 fallback: import_item 테이블 (기존 로직)
+            _defaults_df = None
+            if str(product_code).strip():
+                _defaults_df = get_import_item_defaults_by_product_code(str(product_code).strip())
+            if (_defaults_df is None or _defaults_df.empty) and str(product_name).strip() and str(size_name).strip():
+                _defaults_df = get_import_item_defaults_by_name_size(
+                    str(product_name).strip(), str(size_name).strip()
+                )
+            if _defaults_df is not None and not _defaults_df.empty:
+                existing_item_row = _defaults_df.iloc[0].to_dict()
 
     with st.form(f"import_item_form_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}", clear_on_submit=False):
         col1, col2, col3 = st.columns(3)
@@ -830,10 +850,13 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 step=0.1,
             )
 
+            # 신규 추가 시 product_price_mst에서 가져온 값을 기본값으로 표시
+            _price_base = detail_row if detail_row else existing_item_row
+
             retail_price_krw = st.number_input(
                 "소비자가",
                 min_value=0,
-                value=int(round(_n(detail_row.get("retail_price_krw"), 0.0))),
+                value=int(round(_n(_price_base.get("retail_price_krw"), 0.0))),
                 step=100,
                 format="%d",
             )
@@ -841,22 +864,26 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
             if edit_mode == "기존 수정" and detail_row:
                 proposal_retail_default = _n(detail_row.get("proposal_retail_price_krw"), 0.0)
             else:
-                proposal_retail_default = retail_price_krw if retail_price_krw > 0 else 0.0
+                proposal_retail_default = _n(
+                    _price_base.get("proposal_retail_price_krw"),
+                    retail_price_krw if retail_price_krw > 0 else 0.0,
+                )
 
             supply_price_krw = st.number_input(
                 "공급가",
                 min_value=0,
-                value=int(round(_n(detail_row.get("supply_price_krw"), 0.0))),
+                value=int(round(_n(_price_base.get("supply_price_krw"), 0.0))),
                 step=100,
                 format="%d",
             )
 
             if edit_mode == "기존 수정" and detail_row:
-                # 저장된 값을 그대로 사용 (0이어도 0으로 표시)
                 store_retail_default = _n(detail_row.get("store_retail_price_krw"), 0.0)
             else:
-                # 신규 추가: 소매가를 기본값으로
-                store_retail_default = retail_price_krw if retail_price_krw > 0 else 0.0
+                store_retail_default = _n(
+                    _price_base.get("store_retail_price_krw"),
+                    retail_price_krw if retail_price_krw > 0 else 0.0,
+                )
 
             store_retail_price_krw = st.number_input(
                 "매장 소매가",
@@ -1023,6 +1050,22 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 raw_row_json=raw_row_json,
                 raw_formula_json=raw_formula_json,
             )
+
+            # ── product_price_mst 자동 갱신 ──────────────────────────
+            upsert_product_price_mst(
+                product_name=product_name,
+                size_name=size_name,
+                product_code=_none_if_blank_text(product_code),
+                supply_price_krw=float(supply_price_krw or 0),
+                retail_price_krw=float(retail_price_krw or 0),
+                store_retail_price_krw=float(store_retail_price_krw or 0),
+                proposal_retail_price_krw=float(proposal_retail_price_krw or 0),
+                korea_cost_krw=float(calc["korea_cost_krw"] or 0),
+                batch_id=selected_batch_id,
+                notes=_none_if_blank_text(item_notes),
+            )
+            # ─────────────────────────────────────────────────────────
+
             st.success("저장되었습니다.")
             st.rerun()
 

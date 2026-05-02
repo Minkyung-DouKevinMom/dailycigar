@@ -5,6 +5,7 @@ from modules.master.tax_rule import render as render_tax_rule
 from modules.master.brand_profile import render as render_brand_profile
 from modules.master.partner_grade_mst import render as render_partner_grade
 from modules.master.non_cigar_product_mst import render as render_non_cigar_product_mst
+from modules.master.product_price_mst import render as render_product_price_mst  # ← 추가
 
 st.set_page_config(page_title="기준정보", layout="wide")
 
@@ -23,10 +24,10 @@ with st.sidebar:
     st.page_link("pages/7_문서출력.py", label="문서출력")
     st.page_link("pages/8_매장운영.py", label="매장운영⭐")
     st.page_link("pages/9_재고관리.py", label="재고관리📦")
-    
+
 menu = st.radio(
     "메뉴 선택",
-    ["상품 마스터", "시가 외 상품", "세금 규칙", "브랜드 프로파일", "파트너 등급관리"],
+    ["상품 마스터", "시가 외 상품", "세금 규칙", "브랜드 프로파일", "파트너 등급관리", "가격 마스터"],  # ← 추가
     horizontal=True
 )
 
@@ -40,3 +41,5 @@ elif menu == "브랜드 프로파일":
     render_brand_profile()
 elif menu == "파트너 등급관리":
     render_partner_grade()
+elif menu == "가격 마스터":          # ← 추가
+    render_product_price_mst()
