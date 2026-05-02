@@ -102,6 +102,9 @@ def _tab_stock_summary():
 
     st.divider()
 
+    # 전체 출고 합계 컬럼 추가
+    df["total_out"] = df["retail_out"] + df["wholesale_out"] + df["other_out"]
+
     # 컬럼 한글화
     display = df.rename(columns={
         "product_code":   "상품코드",
@@ -112,8 +115,16 @@ def _tab_stock_summary():
         "retail_out":     "소매출고",
         "wholesale_out":  "도매출고",
         "other_out":      "기타출고",
+        "total_out":      "전체출고",
         "current_stock":  "현재고",
     })
+
+    # 컬럼 순서 재정렬 (전체출고를 기타출고 바로 뒤에 배치)
+    col_order = [c for c in [
+        "상품코드", "상품명", "사이즈", "사용",
+        "입고", "소매출고", "도매출고", "기타출고", "전체출고", "현재고",
+    ] if c in display.columns]
+    display = display[col_order]
 
     # 현재고 0 이하 강조
     styled = display.style.map(
@@ -123,6 +134,7 @@ def _tab_stock_summary():
         "소매출고": "{:,.0f}",
         "도매출고": "{:,.0f}",
         "기타출고": "{:,.0f}",
+        "전체출고": "{:,.0f}",
         "현재고": "{:,.0f}",
     })
 
