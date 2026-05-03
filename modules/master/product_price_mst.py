@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import plotly.graph_objects as go
 from db import (
     get_all_product_price_mst,
     update_product_price_mst,
@@ -12,6 +13,96 @@ def _fmt(v) -> str:
         return f"₩{float(v):,.0f}"
     except Exception:
         return "₩0"
+
+
+def _render_margin_chart(
+    df: pd.DataFrame,
+    price_col: str,
+    price_label: str,
+    chart_key: str,
+    top_n: int = 20,
+):
+    """활성 품목(is_active=1)의 한국원가 + 마진 누적 막대그래프 렌더링."""
+    chart_df = df[df["is_active"] == 1][
+        ["product_name", "size_name", price_col, "korea_cost_krw"]
+    ].copy()
+    chart_df = chart_df.dropna(subset=[price_col, "korea_cost_krw"])
+    chart_df = chart_df[chart_df[price_col] > 0]
+
+    chart_df["마진"] = chart_df[price_col] - chart_df["korea_cost_krw"]
+    chart_df = chart_df[chart_df["마진"] > 0]  # 마진 양수인 항목만
+    chart_df = chart_df.sort_values("마진", ascending=False).head(top_n)
+
+    if chart_df.empty:
+        st.info(f"{price_label} 기준 마진 데이터가 없습니다.")
+        return
+
+    chart_df["라벨"] = chart_df["product_name"] + "\n" + chart_df["size_name"].fillna("")
+
+    n = len(chart_df)
+    # x축을 숫자 인덱스로 사용 → 막대가 절대 겹치지 않음
+    x_idx = list(range(n))
+    chart_height = max(560, 380 + n * 14)
+    tick_font   = max(8, min(11, 150 // n))
+    inner_font  = max(7, min(10, 130 // n))
+
+    hover_labels = chart_df["라벨"].tolist()
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        name="한국원가",
+        x=x_idx,
+        y=chart_df["korea_cost_krw"].tolist(),
+        marker_color="#4C78A8",
+        text=chart_df["korea_cost_krw"].apply(lambda v: f"₩{v:,.0f}").tolist(),
+        textposition="inside",
+        insidetextanchor="middle",
+        textfont=dict(size=inner_font, color="white"),
+        customdata=hover_labels,
+        hovertemplate="<b>%{customdata}</b><br>한국원가: ₩%{y:,.0f}<extra></extra>",
+    ))
+
+    fig.add_trace(go.Bar(
+        name="마진",
+        x=x_idx,
+        y=chart_df["마진"].tolist(),
+        marker_color="#F58518",
+        text=chart_df["마진"].apply(lambda v: f"₩{v:,.0f}").tolist(),
+        textposition="inside",
+        insidetextanchor="middle",
+        textfont=dict(size=inner_font, color="white"),
+        customdata=hover_labels,
+        hovertemplate="<b>%{customdata}</b><br>마진: ₩%{y:,.0f}<extra></extra>",
+    ))
+
+    fig.update_layout(
+        barmode="stack",
+        bargap=0.25,           # 막대 사이 간격 (0~1) — 값 낮출수록 막대 굵어짐
+        bargroupgap=0.05,
+        title=dict(
+            text=f"📊 {price_label} 기준 마진 상위 {n}개 품목 (활성 품목)",
+            font=dict(size=15),
+        ),
+        xaxis=dict(
+            title="상품명 / 사이즈",
+            tickmode="array",
+            tickvals=x_idx,
+            ticktext=chart_df["라벨"].tolist(),
+            tickangle=-45,
+            tickfont=dict(size=tick_font),
+        ),
+        yaxis=dict(
+            title="금액 (₩)",
+            tickformat=",",
+        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=chart_height,
+        margin=dict(b=160),
+        hovermode="x unified",
+    )
+
+    st.plotly_chart(fig, use_container_width=True, key=chart_key)
 
 
 def render():
@@ -92,6 +183,33 @@ def render():
 
     st.dataframe(show_df, use_container_width=True, hide_index=True, height=340)
     st.caption(f"{len(show_df):,}건 조회")
+
+    st.divider()
+
+    # ── 마진 분석 그래프 ───────────────────────────
+    st.markdown("### 📈 마진 분석")
+
+    top_n = st.slider("상위 품목 수", min_value=5, max_value=50, value=20, step=5, key="ppm_topn")
+
+    tab1, tab2 = st.tabs(["소비자제안가 기준 마진", "매장운영가 기준 마진"])
+
+    with tab1:
+        _render_margin_chart(
+            df=df,
+            price_col="proposal_retail_price_krw",
+            price_label="소비자제안가",
+            chart_key="chart_proposal",
+            top_n=top_n,
+        )
+
+    with tab2:
+        _render_margin_chart(
+            df=df,
+            price_col="store_retail_price_krw",
+            price_label="매장운영가",
+            chart_key="chart_store",
+            top_n=top_n,
+        )
 
     st.divider()
 
