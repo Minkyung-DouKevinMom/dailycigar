@@ -1501,7 +1501,9 @@ def get_estimate_non_cigar_items():
         product_name,
         '' AS size_name,
         COALESCE(retail_price, 0) AS retail_price_krw,
-        COALESCE(wholesale_price, 0) AS supply_price_krw
+        COALESCE(wholesale_price, 0) AS wholesale_price,
+        COALESCE(wholesale_price, 0) AS supply_price_krw,
+        COALESCE(source_row_no, 999999) AS source_row_no
     FROM non_cigar_product_mst
     WHERE COALESCE(is_active, 1) = 1
     ORDER BY COALESCE(source_row_no, 999999), product_name, id
