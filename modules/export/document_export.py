@@ -16,7 +16,70 @@ from db import (
 )
 
 TEMPLATE_PATH = "templates/견적서_template.xlsx"
+TEMPLATE_PATH_A3 = "templates/견적서_template_A3.xlsx"
 PRODUCT_INTRO_TEMPLATE_PATH = "templates/상품소개서_template.xlsx"
+
+# -----------------------------
+# 견적서 템플릿별 레이아웃 정의
+# -----------------------------
+# A4: 데이터 영역이 B~I열, 10~64행
+# A3: 데이터 영역이 D~K열, 10~51행
+ESTIMATE_LAYOUTS = {
+    "A4": {
+        "sheet_cigar": "견적서_기본",
+        "sheet_non_cigar": "시가 외",
+        # 헤더 셀
+        "date_cell": "A3",
+        "partner_name_cell_1": "G3",
+        "partner_name_cell_2": "G4",
+        "address_cell": "G5",
+        "contact_cell": "G6",
+        "phone_cell": "G7",
+        "amount_text_cell": "A8",
+        "grade_discount_cell": "H8",
+        "label_cell": "A10",
+        # 데이터 영역
+        "data_start_row": 10,
+        "data_end_row": 64,
+        "total_row": 65,
+        # 컬럼 (display_name은 B:D 병합되어 B에 입력)
+        "col_display": "B",
+        "col_qty": "E",
+        "col_retail": "F",
+        "col_supply": "G",
+        "col_vat": "H",
+        "col_total": "I",
+        # 그룹 외곽 테두리에 사용할 컬럼 범위
+        "border_columns": ["B", "C", "D", "E", "F", "G", "H", "I"],
+    },
+    "A3": {
+        "sheet_cigar": "견적서_기본",
+        "sheet_non_cigar": "견적서_시가 외",
+        # 헤더 셀
+        "date_cell": "C3",
+        "partner_name_cell_1": "I3",
+        "partner_name_cell_2": "I4",
+        "address_cell": "I5",
+        "contact_cell": "I6",
+        "phone_cell": "I7",
+        "amount_text_cell": "C8",
+        "grade_discount_cell": "J8",
+        "label_cell": "C10",
+        # 데이터 영역
+        "data_start_row": 10,
+        "data_end_row": 51,
+        "total_row": 52,
+        # 컬럼 (display_name은 D:F 병합되어 D에 입력)
+        "col_display": "D",
+        "col_qty": "G",
+        "col_retail": "H",
+        "col_supply": "I",
+        "col_vat": "J",
+        "col_total": "K",
+        # 그룹 외곽 테두리에 사용할 컬럼 범위
+        "border_columns": ["D", "E", "F", "G", "H", "I", "J", "K"],
+    },
+}
 
 # -----------------------------
 # 상품소개서 기존 설정
@@ -325,76 +388,59 @@ def render_product_intro_export():
 # =========================================================
 # 견적서 기능
 # =========================================================
-def _load_estimate_template_workbook():
-    if not os.path.exists(TEMPLATE_PATH):
+def _load_estimate_template_workbook(template_type: str = "A4"):
+    path = TEMPLATE_PATH_A3 if template_type == "A3" else TEMPLATE_PATH
+    if not os.path.exists(path):
         raise FileNotFoundError(
-            f"템플릿 파일이 없습니다: {TEMPLATE_PATH}\n"
+            f"템플릿 파일이 없습니다: {path}\n"
             "프로젝트 폴더의 templates 아래에 파일을 넣어주세요."
         )
-    return load_workbook(TEMPLATE_PATH)
+    return load_workbook(path)
 
 
-def _fill_estimate_header(ws, partner_info: dict):
-    today_str = datetime.now().strftime("%Y.%m.%d")
-    ws["A3"] = today_str
-
-    partner_name = str(partner_info.get("partner_name", "") or "").strip()
-    address = str(partner_info.get("address", "") or "").strip()
-    owner_name = str(partner_info.get("owner_name", "") or "").strip()
-    contact_name = str(partner_info.get("contact_name", "") or "").strip()
-    phone = str(partner_info.get("phone", "") or "").strip()
-
-    ws["G3"] = partner_name
-    ws["G4"] = partner_name
-    ws["G5"] = address
-
-    if owner_name:
-        ws["G6"] = f"{owner_name} 대표님"
-    elif contact_name:
-        ws["G6"] = contact_name
-    else:
-        ws["G6"] = f"{partner_name} 담당자"
-
-    ws["G7"] = phone
-
-
-def _clear_estimate_detail_rows(ws, start_row=10, end_row=64):
+def _clear_estimate_detail_rows(ws, layout: dict):
+    """데이터 영역의 셀 값을 모두 비운다 (병합셀 좌상단 대표셀만 초기화)."""
+    start_row = layout["data_start_row"]
+    end_row = layout["data_end_row"]
+    cols = [
+        layout["col_display"],   # 품명/사이즈 병합영역 대표셀
+        layout["col_qty"],
+        layout["col_retail"],
+        layout["col_supply"],
+        layout["col_vat"],
+        layout["col_total"],
+    ]
     for row_idx in range(start_row, end_row + 1):
-        # 병합셀의 좌상단 셀만 초기화
-        ws[f"B{row_idx}"] = None   # B:D 병합영역 대표셀
-        ws[f"E{row_idx}"] = None
-        ws[f"F{row_idx}"] = None
-        ws[f"G{row_idx}"] = None
-        ws[f"H{row_idx}"] = None
-        ws[f"I{row_idx}"] = None
+        for col in cols:
+            ws[f"{col}{row_idx}"] = None
 
 
-def _apply_estimate_row_style(ws, row_idx):
-    # B열(품명/사이즈), E열(수량): 가운데 정렬
-    for addr in [f"B{row_idx}", f"E{row_idx}"]:
+def _apply_estimate_row_style(ws, row_idx, layout: dict):
+    # 품명/사이즈, 수량 컬럼: 가운데 정렬
+    for addr in [f"{layout['col_display']}{row_idx}", f"{layout['col_qty']}{row_idx}"]:
         cell = ws[addr]
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         cell.font = Font(name="맑은 고딕", size=10)
 
-    # F~H열(금액): 오른쪽 정렬
-    for addr in [f"F{row_idx}", f"G{row_idx}", f"H{row_idx}"]:
-        cell = ws[addr]
+    # 소비자가 / 공급단가 / 부가세: 오른쪽 정렬
+    for col in [layout["col_retail"], layout["col_supply"], layout["col_vat"]]:
+        cell = ws[f"{col}{row_idx}"]
         cell.alignment = Alignment(horizontal="right", vertical="center", wrap_text=False)
         cell.font = Font(name="맑은 고딕", size=10)
 
-    # I열(합계): 오른쪽 정렬 + 굵게
-    cell_i = ws[f"I{row_idx}"]
-    cell_i.alignment = Alignment(horizontal="right", vertical="center", wrap_text=False)
-    cell_i.font = Font(name="맑은 고딕", size=10, bold=True)
+    # 합계 컬럼: 오른쪽 정렬 + 굵게
+    cell_total = ws[f"{layout['col_total']}{row_idx}"]
+    cell_total.alignment = Alignment(horizontal="right", vertical="center", wrap_text=False)
+    cell_total.font = Font(name="맑은 고딕", size=10, bold=True)
 
 
-def _apply_group_outer_border(ws, group_ranges):
+def _apply_group_outer_border(ws, group_ranges, layout: dict):
     """같은 product_name 그룹의 외곽에 굵은 테두리를 적용한다.
 
-    그룹 영역은 B열~I열까지(견적 행의 표시 영역). 내부 행 사이는 기존 테두리 유지.
+    그룹 영역은 layout["border_columns"] 범위(견적 행의 표시 영역). 내부 행 사이는 기존 테두리 유지.
     """
     thick = Side(style="medium", color="000000")
-    columns = ["B", "C", "D", "E", "F", "G", "H", "I"]  # B~I 모두 (B는 D까지 병합되어 있을 수 있음)
+    columns = layout["border_columns"]
 
     for group_start, group_end in group_ranges:
         for row_idx in range(group_start, group_end + 1):
@@ -420,7 +466,16 @@ def _apply_group_outer_border(ws, group_ranges):
                 cell.border = Border(left=left, right=right, top=top, bottom=bottom)
 
 
-def _write_estimate_rows(ws, df: pd.DataFrame, start_row=10, end_row=64, use_proposal_retail_price=False):
+def _write_estimate_rows(ws, df: pd.DataFrame, layout: dict, use_proposal_retail_price=False):
+    start_row = layout["data_start_row"]
+    end_row = layout["data_end_row"]
+    col_display = layout["col_display"]
+    col_qty = layout["col_qty"]
+    col_retail = layout["col_retail"]
+    col_supply = layout["col_supply"]
+    col_vat = layout["col_vat"]
+    col_total = layout["col_total"]
+
     records = df.to_dict("records")
     max_count = end_row - start_row + 1
 
@@ -475,17 +530,17 @@ def _write_estimate_rows(ws, df: pd.DataFrame, start_row=10, end_row=64, use_pro
 
         display_name = f"{product_name} / {size_name}" if str(size_name).strip() else str(product_name)
 
-        ws[f"B{row_idx}"] = display_name
-        ws[f"E{row_idx}"] = qty
-        ws[f"F{row_idx}"] = retail_price
-        ws[f"G{row_idx}"] = supply_price
-        ws[f"H{row_idx}"] = f"=ROUND(E{row_idx}*G{row_idx}*0.1,0)"
-        ws[f"I{row_idx}"] = f"=E{row_idx}*G{row_idx}+H{row_idx}"
+        ws[f"{col_display}{row_idx}"] = display_name
+        ws[f"{col_qty}{row_idx}"] = qty
+        ws[f"{col_retail}{row_idx}"] = retail_price
+        ws[f"{col_supply}{row_idx}"] = supply_price
+        ws[f"{col_vat}{row_idx}"] = f"=ROUND({col_qty}{row_idx}*{col_supply}{row_idx}*0.1,0)"
+        ws[f"{col_total}{row_idx}"] = f"={col_qty}{row_idx}*{col_supply}{row_idx}+{col_vat}{row_idx}"
 
-        for col in ["F", "G", "H", "I"]:
+        for col in [col_retail, col_supply, col_vat, col_total]:
             ws[f"{col}{row_idx}"].number_format = '₩#,##0'
 
-        _apply_estimate_row_style(ws, row_idx)
+        _apply_estimate_row_style(ws, row_idx, layout)
 
         # 그룹 추적: source_row_no의 가장 앞자리가 바뀌면 이전 그룹 종료
         group_key = _first_digit(row.get("source_row_no"))
@@ -510,15 +565,26 @@ def _write_estimate_rows(ws, df: pd.DataFrame, start_row=10, end_row=64, use_pro
                 valid_group_ranges.append((gs, ge))
 
     if valid_group_ranges:
-        _apply_group_outer_border(ws, valid_group_ranges)
+        _apply_group_outer_border(ws, valid_group_ranges, layout)
 
 
-def _set_estimate_total_formulas(ws, start_row=10, end_row=64, total_row=65):
-    ws[f"G{total_row}"] = f"=SUMPRODUCT(E{start_row}:E{end_row},G{start_row}:G{end_row})"
-    ws[f"H{total_row}"] = f"=SUM(H{start_row}:H{end_row})"
-    ws[f"I{total_row}"] = f"=SUM(I{start_row}:I{end_row})"
+def _set_estimate_total_formulas(ws, layout: dict):
+    start_row = layout["data_start_row"]
+    end_row = layout["data_end_row"]
+    total_row = layout["total_row"]
+    col_qty = layout["col_qty"]
+    col_supply = layout["col_supply"]
+    col_vat = layout["col_vat"]
+    col_total = layout["col_total"]
 
-    for col in ("G", "H", "I"):
+    ws[f"{col_supply}{total_row}"] = (
+        f"=SUMPRODUCT({col_qty}{start_row}:{col_qty}{end_row},"
+        f"{col_supply}{start_row}:{col_supply}{end_row})"
+    )
+    ws[f"{col_vat}{total_row}"] = f"=SUM({col_vat}{start_row}:{col_vat}{end_row})"
+    ws[f"{col_total}{total_row}"] = f"=SUM({col_total}{start_row}:{col_total}{end_row})"
+
+    for col in (col_supply, col_vat, col_total):
         cell = ws[f"{col}{total_row}"]
         cell.number_format = '₩#,##0'
         # 합계 굵게 (기존 폰트 속성 유지하면서 bold만 추가)
@@ -531,7 +597,7 @@ def _set_estimate_total_formulas(ws, start_row=10, end_row=64, total_row=65):
         )
 
 
-def _update_estimate_amount_text(ws, df: pd.DataFrame):
+def _update_estimate_amount_text(ws, df: pd.DataFrame, layout: dict):
     total_supply = 0
     if not df.empty:
         qty = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
@@ -543,11 +609,14 @@ def _update_estimate_amount_text(ws, df: pd.DataFrame):
 
         total_supply = int((qty * supply).sum())
 
-    ws["A8"] = f" 금 액 (견적금액) : {total_supply:,.0f} 원 (V.A.T. 제외)"
+    ws[layout["amount_text_cell"]] = (
+        f" 금 액 (견적금액) : {total_supply:,.0f} 원 (V.A.T. 제외)"
+    )
 
-def _fill_estimate_header(ws, partner_info: dict, show_grade_discount: bool = False):
+
+def _fill_estimate_header(ws, partner_info: dict, layout: dict, show_grade_discount: bool = False):
     today_str = datetime.now().strftime("%Y.%m.%d")
-    ws["A3"] = today_str
+    ws[layout["date_cell"]] = today_str
 
     partner_name = str(partner_info.get("partner_name", "") or "").strip()
     address = str(partner_info.get("address", "") or "").strip()
@@ -555,27 +624,27 @@ def _fill_estimate_header(ws, partner_info: dict, show_grade_discount: bool = Fa
     contact_name = str(partner_info.get("contact_name", "") or "").strip()
     phone = str(partner_info.get("phone", "") or "").strip()
 
-    ws["G3"] = partner_name
-    ws["G4"] = partner_name
-    ws["G5"] = address
+    ws[layout["partner_name_cell_1"]] = partner_name
+    ws[layout["partner_name_cell_2"]] = partner_name
+    ws[layout["address_cell"]] = address
 
     if owner_name:
-        ws["G6"] = f"{owner_name} 대표님"
+        ws[layout["contact_cell"]] = f"{owner_name} 대표님"
     elif contact_name:
-        ws["G6"] = contact_name
+        ws[layout["contact_cell"]] = contact_name
     else:
-        ws["G6"] = f"{partner_name} 담당자"
+        ws[layout["contact_cell"]] = f"{partner_name} 담당자"
 
-    ws["G7"] = phone
+    ws[layout["phone_cell"]] = phone
 
-    # H8 옵션 표기
+    # 등급/할인율 옵션 표기
     if show_grade_discount:
         grade_code = str(partner_info.get("grade_code", "") or "-").strip()
         discount_rate = float(partner_info.get("estimate_discount_rate", 0) or 0)
         discount_pct = int(round(discount_rate * 100))
-        ws["H8"] = f"Grade: {grade_code}(할인율: {discount_pct}%)"
+        ws[layout["grade_discount_cell"]] = f"Grade: {grade_code}(할인율: {discount_pct}%)"
     else:
-        ws["H8"] = None
+        ws[layout["grade_discount_cell"]] = None
 
 def build_estimate_workbook(
     cigar_df: pd.DataFrame,
@@ -583,32 +652,46 @@ def build_estimate_workbook(
     partner_info: dict,
     use_proposal_retail_price: bool = False,
     show_grade_discount: bool = False,
+    template_type: str = "A4",
 ) -> io.BytesIO:
-    wb = _load_estimate_template_workbook()
+    if template_type not in ESTIMATE_LAYOUTS:
+        raise ValueError(f"지원하지 않는 견적서 템플릿 종류: {template_type}")
 
-    ws_cigar = wb["견적서_기본"]
+    layout = ESTIMATE_LAYOUTS[template_type]
+    wb = _load_estimate_template_workbook(template_type=template_type)
 
-    if "시가 외" in wb.sheetnames:
-        ws_non_cigar = wb["시가 외"]
+    sheet_cigar_name = layout["sheet_cigar"]
+    sheet_non_cigar_name = layout["sheet_non_cigar"]
+
+    if sheet_cigar_name not in wb.sheetnames:
+        raise ValueError(
+            f"템플릿에 '{sheet_cigar_name}' 시트가 없습니다. (template_type={template_type})"
+        )
+    ws_cigar = wb[sheet_cigar_name]
+
+    if sheet_non_cigar_name in wb.sheetnames:
+        ws_non_cigar = wb[sheet_non_cigar_name]
     else:
+        # 시가 외 시트가 없는 경우에만 시가 시트를 복사해서 만들고, 라벨을 OTHERS로 설정
         ws_non_cigar = wb.copy_worksheet(ws_cigar)
-        ws_non_cigar.title = "시가 외"
+        ws_non_cigar.title = sheet_non_cigar_name
+        ws_non_cigar[layout["label_cell"]] = "OTHERS"
 
-    ws_cigar["A10"] = "CIGAR"
-    ws_non_cigar["A10"] = "NON CIGAR"
+    # 시가 시트 라벨은 항상 CIGAR로 통일 (템플릿 원본도 CIGAR)
+    ws_cigar[layout["label_cell"]] = "CIGAR"
+    # 시가 외 시트 라벨은 템플릿 원본('OTHERS')을 그대로 유지하므로 덮어쓰지 않음
 
     for ws, df in [(ws_cigar, cigar_df), (ws_non_cigar, non_cigar_df)]:
-        _fill_estimate_header(ws, partner_info, show_grade_discount=show_grade_discount)
-        _clear_estimate_detail_rows(ws, start_row=10, end_row=64)
+        _fill_estimate_header(ws, partner_info, layout, show_grade_discount=show_grade_discount)
+        _clear_estimate_detail_rows(ws, layout)
         _write_estimate_rows(
             ws,
             df,
-            start_row=10,
-            end_row=64,
+            layout,
             use_proposal_retail_price=use_proposal_retail_price,
         )
-        _set_estimate_total_formulas(ws, start_row=10, end_row=64, total_row=65)
-        _update_estimate_amount_text(ws, df)
+        _set_estimate_total_formulas(ws, layout)
+        _update_estimate_amount_text(ws, df, layout)
 
     output = io.BytesIO()
     wb.save(output)
@@ -938,14 +1021,6 @@ def render_estimate_export():
                 .fillna(pd.to_numeric(download_non_cigar_df["retail_price_krw"], errors="coerce"))
             )
 
-    excel_bytes = build_estimate_workbook(
-        download_cigar_df,
-        download_non_cigar_df,
-        partner_info,
-        use_proposal_retail_price=use_proposal_retail_price,
-        show_grade_discount=show_grade_discount,
-    )
-
     # 파일명: 견적서_상호명_날짜4자리(MMDD).xlsx
     today4 = datetime.now().strftime("%m%d")
 
@@ -956,18 +1031,57 @@ def render_estimate_export():
         safe_partner_name = safe_partner_name.replace(ch, "")
     safe_partner_name = " ".join(safe_partner_name.split()).strip()
 
-    if safe_partner_name:
-        file_name = f"견적서_{safe_partner_name}_{today4}.xlsx"
-    else:
-        file_name = f"견적서_{today4}.xlsx"
+    def _file_name_for(template_type: str) -> str:
+        suffix = "_A3" if template_type == "A3" else ""
+        if safe_partner_name:
+            return f"견적서_{safe_partner_name}_{today4}{suffix}.xlsx"
+        return f"견적서_{today4}{suffix}.xlsx"
 
-    st.download_button(
-        "견적서 다운로드",
-        data=excel_bytes,
-        file_name=file_name,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-    )
+    def _build_bytes_for(template_type: str) -> io.BytesIO:
+        return build_estimate_workbook(
+            download_cigar_df,
+            download_non_cigar_df,
+            partner_info,
+            use_proposal_retail_price=use_proposal_retail_price,
+            show_grade_discount=show_grade_discount,
+            template_type=template_type,
+        )
+
+    col_a4, col_a3 = st.columns(2)
+
+    mime_xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+    with col_a4:
+        try:
+            a4_bytes = _build_bytes_for("A4")
+            st.download_button(
+                "견적서 다운로드 (A4)",
+                data=a4_bytes,
+                file_name=_file_name_for("A4"),
+                mime=mime_xlsx,
+                use_container_width=True,
+                key="estimate_download_a4",
+            )
+        except FileNotFoundError as e:
+            st.error(f"A4 템플릿 오류: {e}")
+        except Exception as e:
+            st.error(f"A4 견적서 생성 중 오류: {e}")
+
+    with col_a3:
+        try:
+            a3_bytes = _build_bytes_for("A3")
+            st.download_button(
+                "견적서 다운로드 (A3)",
+                data=a3_bytes,
+                file_name=_file_name_for("A3"),
+                mime=mime_xlsx,
+                use_container_width=True,
+                key="estimate_download_a3",
+            )
+        except FileNotFoundError as e:
+            st.error(f"A3 템플릿 오류: {e}")
+        except Exception as e:
+            st.error(f"A3 견적서 생성 중 오류: {e}")
 
 def render():
     st.title("문서출력")
