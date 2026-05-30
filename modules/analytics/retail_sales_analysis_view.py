@@ -248,6 +248,97 @@ def render_usage_fee_trend_chart(trend_df: pd.DataFrame):
 
     st.altair_chart(chart, use_container_width=True)
 
+
+def get_delivery_trend_data(conn) -> pd.DataFrame:
+    """월별 × 배송구분(택배/매장) 판매금액(net_sales_amount) 합계."""
+    if not table_exists(conn, "retail_sales"):
+        return pd.DataFrame(columns=["sale_month", "배송구분", "금액"])
+
+    cols = get_table_columns(conn, "retail_sales")
+    cols_lower = {c.lower(): c for c in cols}
+
+    sale_date_col = cols_lower.get("sale_date")
+    net_sales_col = cols_lower.get("net_sales_amount")
+    delivery_col = cols_lower.get("delivery_yn")
+
+    # delivery_yn 컬럼이 없으면 빈 결과 반환 (ALTER TABLE 적용 전인 경우)
+    if not delivery_col or not sale_date_col or not net_sales_col:
+        return pd.DataFrame(columns=["sale_month", "배송구분", "금액"])
+
+    sql = f"""
+    SELECT
+        {sale_date_col} AS sale_date,
+        COALESCE({net_sales_col}, 0) AS net_sales_amount,
+        UPPER(TRIM(COALESCE({delivery_col}, 'N'))) AS delivery_yn
+    FROM retail_sales
+    WHERE COALESCE({sale_date_col}, '') <> ''
+    """
+    df = pd.read_sql_query(sql, conn)
+
+    if df.empty:
+        return pd.DataFrame(columns=["sale_month", "배송구분", "금액"])
+
+    df["sale_date"] = pd.to_datetime(df["sale_date"], errors="coerce")
+    df = df[df["sale_date"].notna()].copy()
+
+    df["net_sales_amount"] = pd.to_numeric(df["net_sales_amount"], errors="coerce").fillna(0)
+    df["배송구분"] = df["delivery_yn"].apply(lambda x: "택배" if x == "Y" else "매장")
+
+    df["sale_month"] = df["sale_date"].dt.to_period("M").astype(str)
+
+    trend_df = (
+        df.groupby(["sale_month", "배송구분"], as_index=False)["net_sales_amount"]
+        .sum()
+        .rename(columns={"net_sales_amount": "금액"})
+    )
+
+    # 월별 합계 대비 비중(%)
+    trend_df["월합계"] = trend_df.groupby("sale_month")["금액"].transform("sum")
+    trend_df["비중"] = ((trend_df["금액"] / trend_df["월합계"]) * 100).fillna(0)
+
+    trend_df = trend_df.sort_values(["sale_month", "배송구분"])
+
+    return trend_df
+
+
+def render_delivery_trend_chart(trend_df: pd.DataFrame):
+    st.markdown("### 월별 택배 / 매장 판매금액 추이")
+
+    if trend_df.empty:
+        st.info("배송구분 데이터가 없습니다. (delivery_yn 컬럼 또는 데이터가 비어 있을 수 있습니다.)")
+        return
+
+    month_order = trend_df["sale_month"].drop_duplicates().tolist()
+
+    # 택배가 위에 쌓이도록 정렬 (시각적으로 강조)
+    chart = (
+        alt.Chart(trend_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("sale_month:N", title="월", sort=month_order),
+            y=alt.Y("금액:Q", title="판매금액 (net_sales_amount 합계)", stack="zero"),
+            color=alt.Color(
+                "배송구분:N",
+                title="구분",
+                scale=alt.Scale(
+                    domain=["매장", "택배"],
+                    range=["#4C78A8", "#F58518"],
+                ),
+            ),
+            order=alt.Order("배송구분:N", sort="ascending"),
+            tooltip=[
+                alt.Tooltip("sale_month:N", title="월"),
+                alt.Tooltip("배송구분:N", title="구분"),
+                alt.Tooltip("금액:Q", title="금액", format=",.0f"),
+                alt.Tooltip("비중:Q", title="비중(%)", format=".1f"),
+            ],
+        )
+        .properties(height=380)
+    )
+
+    st.altair_chart(chart, use_container_width=True)
+
+
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
@@ -504,6 +595,11 @@ def render():
 
         usage_fee_trend_df = get_usage_fee_trend_data(conn)
         render_usage_fee_trend_chart(usage_fee_trend_df)
+
+        st.divider()
+
+        delivery_trend_df = get_delivery_trend_data(conn)
+        render_delivery_trend_chart(delivery_trend_df)
 
     finally:
         conn.close()

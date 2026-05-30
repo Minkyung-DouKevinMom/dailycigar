@@ -292,11 +292,42 @@ def update_upload_history(
     cur.execute(sql, tuple(params))
 
 
+def load_retail_customers_for_select(conn: sqlite3.Connection) -> pd.DataFrame:
+    """
+    수정 폼의 고객 selectbox에 쓸 고객 목록.
+    - active 고객을 위로, inactive는 아래로 정렬
+    - retail_customer_mst 테이블이 없으면 빈 DataFrame 반환
+    """
+    if not table_exists(conn, "retail_customer_mst"):
+        return pd.DataFrame(columns=["id", "customer_name", "phone", "status"])
+
+    try:
+        df = pd.read_sql_query(
+            """
+            SELECT id, customer_name, phone, status
+              FROM retail_customer_mst
+             ORDER BY
+                 CASE WHEN COALESCE(status, 'active') = 'active' THEN 0 ELSE 1 END,
+                 customer_name
+            """,
+            conn,
+        )
+    except Exception:
+        return pd.DataFrame(columns=["id", "customer_name", "phone", "status"])
+
+    df["id"] = pd.to_numeric(df["id"], errors="coerce").astype("Int64")
+    df["customer_name"] = df["customer_name"].fillna("").astype(str)
+    df["phone"] = df["phone"].fillna("").astype(str)
+    df["status"] = df["status"].fillna("active").astype(str)
+    return df
+
+
 def build_insert_payload(
     row: pd.Series,
     db_columns: Set[str],
     upload_id: Optional[int],
     source_file_name: str,
+    delivery_yn: str = "N",
 ) -> Dict:
     sale_date = row["sale_date"].strftime("%Y-%m-%d") if pd.notna(row["sale_date"]) else None
     sale_datetime = (
@@ -328,6 +359,7 @@ def build_insert_payload(
         "upload_id": upload_id,
         "source_file_name": source_file_name,
         "source_row_no": int(row["source_row_no"]) if pd.notna(row["source_row_no"]) else None,
+        "delivery_yn": "Y" if str(delivery_yn).upper() == "Y" else "N",
     }
 
     return {k: v for k, v in payload.items() if k in db_columns}
@@ -398,6 +430,12 @@ def render_manual_input(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
         c16, c17 = st.columns(2)
         product_discount_name = c16.text_input("상품할인", value="")
         order_discount_name = c17.text_input("주문할인", value="")
+
+        is_delivery = st.checkbox(
+            "택배판매",
+            value=False,
+            help="체크 시 이 매출은 택배 발송 건으로 기록됩니다 (delivery_yn = 'Y').",
+        )
 
         auto_calc = st.checkbox("실판매금액 자동계산", value=True)
 
@@ -500,6 +538,7 @@ def render_manual_input(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
             db_columns=retail_sales_cols,
             upload_id=upload_id,
             source_file_name="MANUAL_INPUT",
+            delivery_yn="Y" if is_delivery else "N",
         )
 
         columns_sql = ", ".join(payload.keys())
@@ -566,6 +605,8 @@ def render_edit_delete(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
         ("net_sales_amount", "net_sales_amount"),
         ("vat_amount", "vat_amount"),
         ("taxable_yn", "taxable_yn"),
+        ("delivery_yn", "delivery_yn"),
+        ("retail_customer_id", "retail_customer_id"),
     ]:
         actual = cols_lower.get(candidate)
         if actual:
@@ -599,8 +640,8 @@ def render_edit_delete(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
 
     # ── 행 선택 ────────────────────────────────────────────────────────────────
     display_cols = [c for c in [
-        "id", "sale_date", "order_no", "product_code_raw", "product_code",
-        "qty", "unit_price", "net_sales_amount", "payment_status", "order_channel"
+        "id", "sale_date", "sale_datetime", "order_no", "product_code_raw", "product_code",
+        "qty", "unit_price", "net_sales_amount", "payment_status", "order_channel", "delivery_yn"
     ] if c in df.columns]
 
     st.dataframe(df[display_cols], use_container_width=True, hide_index=True, height=280)
@@ -647,12 +688,10 @@ def render_edit_delete(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
         ed_sale_date = e1.date_input(
             "주문기준일자",
             value=pd.to_datetime(_val("sale_date", str(today))).date(),
-            key="ed_sale_date",
         )
         ed_sale_datetime_str = e2.text_input(
             "주문시작시각 (YYYY-MM-DD HH:MM:SS)",
             value=str(_val("sale_datetime", "")),
-            key="ed_sale_datetime",
         )
         ed_payment_status = e3.selectbox(
             "결제상태",
@@ -660,56 +699,106 @@ def render_edit_delete(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
             index=["완료", "취소", "대기", "환불", "기타"].index(_val("payment_status", "완료"))
             if _val("payment_status", "완료") in ["완료", "취소", "대기", "환불", "기타"]
             else 0,
-            key="ed_payment_status",
         )
 
         e4, e5, e6 = st.columns(3)
-        ed_order_channel = e4.text_input("주문채널", value=str(_val("order_channel", "")), key="ed_order_channel")
-        ed_order_no = e5.text_input("주문번호", value=str(_val("order_no", "")), key="ed_order_no")
-        ed_category = e6.text_input("카테고리", value=str(_val("category", "")), key="ed_category")
+        ed_order_channel = e4.text_input("주문채널", value=str(_val("order_channel", "")))
+        ed_order_no = e5.text_input("주문번호", value=str(_val("order_no", "")))
+        ed_category = e6.text_input("카테고리", value=str(_val("category", "")))
 
         e7, e8, e9 = st.columns(3)
-        ed_product_code_raw = e7.text_input("상품코드", value=str(_val("product_code_raw", "")), key="ed_product_code_raw")
-        ed_option_name = e8.text_input("옵션", value=str(_val("option_name", "")), key="ed_option_name")
+        ed_product_code_raw = e7.text_input("상품코드", value=str(_val("product_code_raw", "")))
+        ed_option_name = e8.text_input("옵션", value=str(_val("option_name", "")))
         ed_taxable_yn = e9.selectbox(
             "과세여부",
             ["과세", "면세", "비과세", ""],
             index=["과세", "면세", "비과세", ""].index(_val("taxable_yn", "과세"))
             if _val("taxable_yn", "과세") in ["과세", "면세", "비과세", ""]
             else 0,
-            key="ed_taxable_yn",
         )
 
         e10, e11, e12 = st.columns(3)
-        ed_qty = e10.number_input("수량", min_value=0, value=int(_val("qty", 1)), step=1, key="ed_qty")
-        ed_unit_price = e11.number_input("상품가격", min_value=0, value=int(_val("unit_price", 0)), step=1000, key="ed_unit_price")
-        ed_option_price = e12.number_input("옵션가격", min_value=0, value=0, step=1000, key="ed_option_price")
+        ed_qty = e10.number_input("수량", value=int(_val("qty", 1)), step=1)
+        ed_unit_price = e11.number_input("상품가격", value=int(_val("unit_price", 0)), step=1000)
+        ed_option_price = e12.number_input("옵션가격", value=int(_val("option_price", 0)), step=1000)
 
         e13, e14, e15 = st.columns(3)
-        ed_product_discount_amt = e13.number_input("상품할인 금액", min_value=0, value=int(_val("product_discount_amt", 0)), step=1000, key="ed_prod_disc_amt")
-        ed_order_discount_amt = e14.number_input("주문할인 금액", min_value=0, value=int(_val("order_discount_amt", 0)), step=1000, key="ed_ord_disc_amt")
-        ed_vat_amount = e15.number_input("부가세액", min_value=0, value=int(_val("vat_amount", 0)), step=100, key="ed_vat")
+        ed_product_discount_amt = e13.number_input("상품할인 금액", value=int(_val("product_discount_amt", 0)), step=1000)
+        ed_order_discount_amt = e14.number_input("주문할인 금액", value=int(_val("order_discount_amt", 0)), step=1000)
+        ed_vat_amount = e15.number_input("부가세액", value=int(_val("vat_amount", 0)), step=100)
 
         e16, e17 = st.columns(2)
-        ed_product_discount_name = e16.text_input("상품할인명", value=str(_val("product_discount_name", "")), key="ed_prod_disc_name")
-        ed_order_discount_name = e17.text_input("주문할인명", value=str(_val("order_discount_name", "")), key="ed_ord_disc_name")
+        ed_product_discount_name = e16.text_input("상품할인명", value=str(_val("product_discount_name", "")))
+        ed_order_discount_name = e17.text_input("주문할인명", value=str(_val("order_discount_name", "")))
 
-        ed_auto_calc = st.checkbox("실판매금액 자동계산", value=True, key="ed_auto_calc")
+        # ── 소매 고객 선택 ──────────────────────────────────────────────────
+        # retail_customer_id 컬럼이 DB에 있고 retail_customer_mst 테이블이 있을 때만 표시
+        ed_retail_customer_id = None
+        has_customer_col = "retail_customer_id" in retail_sales_cols
+        customers_df = load_retail_customers_for_select(conn) if has_customer_col else pd.DataFrame()
+
+        if has_customer_col and not customers_df.empty:
+            # 현재 값
+            current_cid_raw = _val("retail_customer_id", None)
+            try:
+                current_cid = int(current_cid_raw) if current_cid_raw not in (None, "", 0) and not pd.isna(current_cid_raw) else None
+            except (ValueError, TypeError):
+                current_cid = None
+
+            # ID → 라벨 매핑 ("─ 고객 미지정 ─"을 맨 앞에)
+            id_to_label = {None: "─ 고객 미지정 ─"}
+            for _, crow in customers_df.iterrows():
+                cid = int(crow["id"]) if pd.notna(crow["id"]) else None
+                if cid is None:
+                    continue
+                name = crow["customer_name"] or "(이름없음)"
+                phone = crow["phone"]
+                suffix = "" if crow["status"] == "active" else " [비활성]"
+                label = f"ID {cid} | {name}"
+                if phone:
+                    label += f" ({phone})"
+                label += suffix
+                id_to_label[cid] = label
+
+            # 현재 연결된 고객이 마스터에서 삭제됐거나 비활성으로 빠진 경우 대비
+            if current_cid is not None and current_cid not in id_to_label:
+                id_to_label[current_cid] = f"ID {current_cid} | [목록에 없는 고객]"
+
+            option_ids = list(id_to_label.keys())
+            default_index = option_ids.index(current_cid) if current_cid in option_ids else 0
+
+            ed_retail_customer_id = st.selectbox(
+                "고객 선택",
+                options=option_ids,
+                index=default_index,
+                format_func=lambda x: id_to_label.get(x, "─ 고객 미지정 ─"),
+                help="비워두면 고객 미지정으로 저장됩니다.",
+            )
+        elif has_customer_col and customers_df.empty:
+            st.caption(
+                "등록된 소매 고객이 없습니다. '소매 고객 관리' 메뉴에서 고객을 먼저 등록하세요."
+            )
+
+        ed_is_delivery = st.checkbox(
+            "택배판매",
+            value=(str(_val("delivery_yn", "N")).upper() == "Y"),
+            help="체크 시 택배판매로 기록됩니다 (delivery_yn = 'Y').",
+        )
+
+        ed_auto_calc = st.checkbox("실판매금액 자동계산", value=True)
         if ed_auto_calc:
-            ed_net = max(
-                0.0,
+            # 취소/환불 행은 음수 금액일 수 있으므로 클램프하지 않음
+            ed_net = (
                 float(ed_qty) * (float(ed_unit_price) + float(ed_option_price))
                 - float(ed_product_discount_amt)
-                - float(ed_order_discount_amt),
+                - float(ed_order_discount_amt)
             )
             st.info(f"실판매금액: {ed_net:,.0f}원")
         else:
             ed_net = st.number_input(
                 "실판매금액 (할인, 옵션 포함)",
-                min_value=0.0,
                 value=float(_val("net_sales_amount", 0)),
                 step=1000.0,
-                key="ed_net_sales",
             )
 
         submitted = st.form_submit_button("수정 저장", type="primary")
@@ -748,6 +837,8 @@ def render_edit_delete(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
             "order_discount_name": ed_order_discount_name,
             "net_sales_amount": float(ed_net),
             "vat_amount": float(ed_vat_amount),
+            "delivery_yn": "Y" if ed_is_delivery else "N",
+            "retail_customer_id": int(ed_retail_customer_id) if ed_retail_customer_id is not None else None,
         }
 
         # DB에 존재하는 컬럼만 업데이트

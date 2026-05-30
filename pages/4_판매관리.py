@@ -1,6 +1,7 @@
 import streamlit as st
 
 from modules.management.retail_upload import render as render_retail
+from modules.management.retail_customer_management import render as render_retail_customer
 from modules.management.wholesale_management import render as render_wholesale
 from modules.management.retail_sales_view import render as render_retail_view
 from modules.management.partner_grade_history_management import render as render_partner_grade_management
@@ -25,7 +26,7 @@ with st.sidebar:
     
 menu = st.radio(
     "메뉴 선택",
-    ["소매 관리", "도매 관리", "거래처 등급관리","소매 업로드"],
+    ["소매 관리", "소매 고객 관리", "도매 관리", "거래처 등급관리", "소매 업로드"],
     horizontal=True
 )
 
@@ -37,6 +38,9 @@ elif menu == "도매 관리":
 
 elif menu == "소매 관리":
     render_retail_view()
+
+elif menu == "소매 고객 관리":
+    render_retail_customer()
 
 elif menu == "거래처 등급관리":
     render_partner_grade_management()

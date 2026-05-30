@@ -122,6 +122,12 @@ def build_query(use_view: bool, filters: dict):
         where.append(f"product_code IN ({placeholders})")
         params.extend(filters["codes"])
 
+    if filters.get("delivery_filter") and filters["delivery_filter"] != "전체":
+        if filters["delivery_filter"] == "택배만":
+            where.append("COALESCE(delivery_yn, 'N') = 'Y'")
+        elif filters["delivery_filter"] == "매장만":
+            where.append("COALESCE(delivery_yn, 'N') = 'N'")
+
     if filters.get("keyword"):
         kw = f"%{filters['keyword'].strip()}%"
         keyword_fields = ["order_no", "product_code_raw", "product_code"]
@@ -233,6 +239,10 @@ def calc_kpis(df: pd.DataFrame):
         "부가세": float(df["vat_amount"].fillna(0).sum()) if "vat_amount" in df.columns else 0,
     }
 
+    if "delivery_yn" in df.columns:
+        delivery_count = int((df["delivery_yn"].fillna("N").astype(str).str.upper() == "Y").sum())
+        result["택배 건수"] = delivery_count
+
     if "total_korea_cost_krw" in df.columns:
         result["원가합계"] = float(df["total_korea_cost_krw"].fillna(0).sum())
 
@@ -295,6 +305,7 @@ HEADER_MAP = {
     "total_supply_price_krw": "공급가합계",
     "source_file_name": "원본파일명",
     "source_row_no": "원본행번호",
+    "delivery_yn": "택배판매",
     "마진율(%)": "마진율(%)",
     "주문수": "주문수",
 }
@@ -351,6 +362,15 @@ def render():
         with col7:
             keyword = st.text_input("검색어", placeholder="주문번호, 상품코드, 상품명")
 
+        col8, _, _, _ = st.columns(4)
+        with col8:
+            delivery_filter = st.radio(
+                "배송구분",
+                ["전체", "택배만", "매장만"],
+                horizontal=True,
+                index=0,
+            )
+
         filters = {
             "date_from": str(date_from) if date_from else None,
             "date_to": str(date_to) if date_to else None,
@@ -359,6 +379,7 @@ def render():
             "categories": selected_categories,
             "codes": selected_codes,
             "keyword": keyword,
+            "delivery_filter": delivery_filter,
         }
 
         sql, params = build_query(use_view=has_view, filters=filters)
@@ -450,6 +471,7 @@ def render():
                     "sale_datetime",
                     "order_channel",
                     "payment_status",
+                    "delivery_yn",
                     "order_no",
                     "product_code",
                     "product_code_raw",
