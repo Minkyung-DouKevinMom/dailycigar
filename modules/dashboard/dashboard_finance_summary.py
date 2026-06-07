@@ -434,8 +434,12 @@ def get_month_summary(conn, year: int, month: int) -> dict:
     }
 
 
-def get_monthly_trend(conn, months: int = 12) -> pd.DataFrame:
-    base = pd.Timestamp.today().replace(day=1)
+def get_monthly_trend(conn, months: int = 12, up_to_year: int = None, up_to_month: int = None) -> pd.DataFrame:
+    # 선택한 연/월이 있으면 그 달까지, 없으면 오늘 기준
+    if up_to_year is not None and up_to_month is not None:
+        base = pd.Timestamp(year=up_to_year, month=up_to_month, day=1)
+    else:
+        base = pd.Timestamp.today().replace(day=1)
     rows = []
 
     for i in range(months - 1, -1, -1):
@@ -791,7 +795,7 @@ def render():
         tab1, tab2, tab3, tab4 = st.tabs(["월별 추이", "최근 판매 내역", "최근 지출", "상위 제품"])
 
         with tab1:
-            trend_df = get_monthly_trend(conn, months=12)
+            trend_df = get_monthly_trend(conn, months=12, up_to_year=year, up_to_month=month)
 
             if not trend_df.empty:
                 show_trend_df = trend_df.copy()
