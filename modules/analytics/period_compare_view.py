@@ -33,6 +33,15 @@ def view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
     return object_exists(conn, view_name, "view")
 
 
+def get_table_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
+    try:
+        cur = conn.execute(f"PRAGMA table_info({table_name})")
+        rows = cur.fetchall()
+        return [r[1] for r in rows]
+    except Exception:
+        return []
+
+
 def fmt_krw(value) -> str:
     try:
         return f"₩{float(value):,.0f}"
@@ -74,6 +83,38 @@ def fmt_delta_count(curr: float, prev: float) -> str:
 
 
 # =========================
+# 시가 외 상품 매입가 맵 (소매관리와 동일 로직)
+# =========================
+def get_non_cigar_purchase_price_map(conn: sqlite3.Connection) -> dict:
+    if not table_exists(conn, "non_cigar_product_mst"):
+        return {}
+
+    cols = get_table_columns(conn, "non_cigar_product_mst")
+    if "product_code" not in cols or "purchase_price" not in cols:
+        return {}
+
+    sql = """
+        SELECT
+            TRIM(COALESCE(product_code, '')) AS product_code,
+            COALESCE(purchase_price, 0) AS purchase_price
+        FROM non_cigar_product_mst
+    """
+    try:
+        df = pd.read_sql_query(sql, conn)
+    except Exception:
+        return {}
+
+    if df.empty:
+        return {}
+
+    df["product_code"] = df["product_code"].astype(str).str.strip()
+    df["purchase_price"] = pd.to_numeric(df["purchase_price"], errors="coerce").fillna(0)
+    df = df[df["product_code"] != ""].copy()
+
+    return dict(zip(df["product_code"], df["purchase_price"]))
+
+
+# =========================
 # 데이터 로딩
 # =========================
 def get_retail_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
@@ -82,6 +123,8 @@ def get_retail_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
         SELECT
             sale_date,
             COALESCE(order_no, '') AS order_no,
+            TRIM(COALESCE(product_code, '')) AS product_code,
+            COALESCE(qty, 0) AS qty,
             COALESCE(net_sales_amount, 0) AS sales_amount,
             COALESCE(total_korea_cost_krw, 0) AS cost_amount,
             COALESCE(retail_gross_profit_krw, 0) AS profit_amount
@@ -95,6 +138,8 @@ def get_retail_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
         SELECT
             sale_date,
             COALESCE(order_no, '') AS order_no,
+            TRIM(COALESCE(product_code, '')) AS product_code,
+            COALESCE(qty, 0) AS qty,
             COALESCE(net_sales_amount, 0) AS sales_amount
         FROM retail_sales
         WHERE sale_date BETWEEN ? AND ?
@@ -104,10 +149,27 @@ def get_retail_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
         df["profit_amount"] = 0
 
     else:
-        return pd.DataFrame(columns=["sale_date", "order_no", "sales_amount", "cost_amount", "profit_amount", "sales_type"])
+        return pd.DataFrame(columns=["sale_date", "order_no", "product_code", "qty",
+                                     "sales_amount", "cost_amount", "profit_amount", "sales_type"])
 
-    for c in ["sales_amount", "cost_amount", "profit_amount"]:
+    for c in ["sales_amount", "cost_amount", "profit_amount", "qty"]:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+
+    df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
+
+    # ★ 시가 외 상품 이익 재계산 (소매관리와 동일하게)
+    purchase_price_map = get_non_cigar_purchase_price_map(conn)
+    if purchase_price_map and not df.empty:
+        non_cigar_mask = df["product_code"].isin(purchase_price_map.keys())
+        if non_cigar_mask.any():
+            df.loc[non_cigar_mask, "cost_amount"] = (
+                df.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
+                * df.loc[non_cigar_mask, "qty"]
+            )
+            df.loc[non_cigar_mask, "profit_amount"] = (
+                df.loc[non_cigar_mask, "sales_amount"]
+                - df.loc[non_cigar_mask, "cost_amount"]
+            )
 
     df["sales_type"] = "소매"
     return df
@@ -234,14 +296,12 @@ def build_compare_table(a: dict, b: dict) -> pd.DataFrame:
     return pd.DataFrame(result)
 
 
-
 def format_compare_table(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
     money_metrics = ["매출", "이익", "객단가", "소매매출", "도매매출", "소매이익", "도매이익"]
     count_metrics = ["거래건수"]
 
-    # 먼저 표시용으로 object 타입으로 바꿔 dtype 충돌 방지
     for col in ["기간 A", "기간 B", "증감액", "증감률(%)"]:
         out[col] = out[col].astype(object)
 
@@ -264,6 +324,7 @@ def format_compare_table(df: pd.DataFrame) -> pd.DataFrame:
 
     return out
 
+
 # =========================
 # 렌더
 # =========================
@@ -276,6 +337,7 @@ def render():
     prev_month_start = prev_month_end.replace(day=1)
 
     st.caption("기간 A와 기간 B를 비교하여 매출, 이익, 객단가, 거래건수를 확인합니다.")
+    st.caption("※ 시가 외 상품의 이익은 판매금액 - (매입가 × 수량) 기준으로 계산합니다.")
 
     a1, a2 = st.columns(2)
     with a1:
