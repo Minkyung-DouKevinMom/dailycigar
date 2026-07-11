@@ -1,7 +1,7 @@
 import os
 import re
 import sqlite3
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -17,6 +17,7 @@ REQUIRED_COLUMNS = [
     "주문채널",
     "주문번호",
     "상품코드",
+    "상품명",
     "카테고리",
     "옵션",
     "수량",
@@ -84,6 +85,17 @@ def normalize_product_code(value) -> str:
     return code.upper()
 
 
+# 엑셀 '상품명'에 그대로 적혀오지만 내부적으로 다르게 인식해야 하는 값들
+PRODUCT_NAME_ALIASES = {
+    "@사용료": "사용료",
+}
+
+
+def apply_product_name_alias(value) -> str:
+    raw = safe_str(value)
+    return PRODUCT_NAME_ALIASES.get(raw, raw)
+
+
 def load_excel(uploaded_file):
     return pd.read_excel(uploaded_file, sheet_name=ITEM_SHEET_NAME)
 
@@ -115,8 +127,8 @@ def clean_item_df(df_item: pd.DataFrame) -> pd.DataFrame:
     df["order_no"] = df["주문번호"].astype(str).str.strip()
     df["payment_status"] = df["결제상태"].apply(safe_str)
     df["order_channel"] = df["주문채널"].apply(safe_str)
-    df["product_code_raw"] = df["상품코드"].apply(safe_str)
-    df["product_code"] = df["상품코드"].apply(normalize_product_code)
+    df["product_code_raw"] = df["상품명"].apply(apply_product_name_alias)
+    df["product_code"] = df["product_code_raw"].apply(normalize_product_code)
     df["category"] = df["카테고리"].apply(safe_str)
     df["option_name"] = df["옵션"].apply(safe_str)
     df["product_discount_name"] = df["상품할인"].apply(safe_str) if "상품할인" in df.columns else ""
@@ -478,6 +490,34 @@ def load_retail_customers_for_select(conn: sqlite3.Connection) -> pd.DataFrame:
     df["phone"] = df["phone"].fillna("").astype(str)
     df["status"] = df["status"].fillna("active").astype(str)
     return df
+
+
+def build_delivery_match_keys(df: pd.DataFrame) -> Set[Tuple[str, str]]:
+    """
+    '택배비' 항목이 있는 레코드 기준으로 (주문번호, 날짜 시:분) 매칭 키 집합을 만든다.
+    같은 주문번호 + 같은 날짜/시:분(초는 무시)인 다른 레코드의 delivery_yn을 'Y'로 표시하는 데 사용.
+    (상품코드에 '택배비' 문자열이 포함된 행을 택배비 레코드로 간주)
+    """
+    keys: Set[Tuple[str, str]] = set()
+
+    fee_mask = df["product_code_raw"].astype(str).str.contains("택배비", na=False)
+    fee_rows = df[fee_mask]
+
+    for _, r in fee_rows.iterrows():
+        if pd.isna(r["sale_datetime"]) or safe_str(r["order_no"]) == "":
+            continue
+        minute_key = r["sale_datetime"].strftime("%Y-%m-%d %H:%M")
+        keys.add((safe_str(r["order_no"]), minute_key))
+
+    return keys
+
+
+def row_matches_delivery(row: pd.Series, delivery_keys: Set[Tuple[str, str]]) -> bool:
+    """해당 행이 택배비 레코드와 같은 주문번호 + 같은 날짜 시:분(초 무시)인지 확인"""
+    if pd.isna(row["sale_datetime"]) or safe_str(row["order_no"]) == "":
+        return False
+    minute_key = row["sale_datetime"].strftime("%Y-%m-%d %H:%M")
+    return (safe_str(row["order_no"]), minute_key) in delivery_keys
 
 
 def build_insert_payload(
@@ -1091,7 +1131,12 @@ def render():
                 st.warning("업로드 가능한 데이터가 없습니다.")
                 return
 
+            # 택배비 레코드 기준 delivery_yn 자동 매칭 키 (같은 주문번호 + 같은 날짜 시:분)
+            delivery_keys = build_delivery_match_keys(df)
+            df["delivery_yn_auto"] = df.apply(lambda r: "Y" if row_matches_delivery(r, delivery_keys) else "N", axis=1)
+
             validation = validate_item_df(df)
+            validation["택배 매칭(delivery_yn=Y)"] = int((df["delivery_yn_auto"] == "Y").sum())
 
             product_codes = fetch_product_codes(conn)
             st.caption("상품코드 매핑 기준: product_mst + non_cigar_product_mst")
@@ -1133,6 +1178,7 @@ def render():
                     "unit_price",
                     "net_sales_amount",
                     "vat_amount",
+                    "delivery_yn_auto",
                 ]
                 st.dataframe(df[preview_cols].head(30), use_container_width=True)
 
@@ -1191,6 +1237,7 @@ def render():
                             db_columns=retail_sales_cols,
                             upload_id=upload_id,
                             source_file_name=uploaded_file.name,
+                            delivery_yn=row.get("delivery_yn_auto", "N"),
                         )
 
                         if not payload:
