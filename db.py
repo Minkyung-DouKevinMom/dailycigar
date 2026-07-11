@@ -1587,19 +1587,56 @@ def get_store_menu_view(batch_id=None, keyword=""):
 # ──────────────────────────────────────────────
 
 def init_stock_out_table():
-    """stock_out 테이블이 없으면 생성"""
+    """stock_out 테이블이 없으면 생성 (신규 설치 기준. 기존 DB는 ensure_stock_out_source_columns() 로 마이그레이션)"""
     execute("""
         CREATE TABLE IF NOT EXISTS stock_out (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            out_date     TEXT    NOT NULL,
-            product_code TEXT    NOT NULL,
-            qty          INTEGER NOT NULL CHECK(qty > 0),
-            out_type     TEXT    NOT NULL
-                             CHECK(out_type IN ('sample','gift_set','disposal','etc')),
-            partner_id   INTEGER,
-            note         TEXT,
-            created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at   TEXT DEFAULT CURRENT_TIMESTAMP
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            out_date         TEXT    NOT NULL,
+            product_code     TEXT    NOT NULL,
+            qty              INTEGER NOT NULL CHECK(qty > 0),
+            out_type         TEXT    NOT NULL
+                                 CHECK(out_type IN ('sample','gift_set','disposal','etc')),
+            partner_id       INTEGER,
+            note             TEXT,
+            source_order_no  TEXT,
+            source_type      TEXT,
+            created_at       TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at       TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    ensure_stock_out_source_columns()
+
+
+def ensure_stock_out_source_columns():
+    """
+    기존에 만들어진 stock_out 테이블에 source_order_no / source_type 컬럼이 없으면 추가.
+    기존 행은 두 컬럼 모두 NULL로 유지되며, 기존 수동 입력 이력에는 영향을 주지 않는다.
+    """
+    conn = get_conn()
+    try:
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(stock_out)").fetchall()}
+        if "source_order_no" not in cols:
+            conn.execute("ALTER TABLE stock_out ADD COLUMN source_order_no TEXT")
+        if "source_type" not in cols:
+            conn.execute("ALTER TABLE stock_out ADD COLUMN source_type TEXT")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def init_gift_package_component_table():
+    """기프트패키지 구성품(BOM) 테이블이 없으면 생성"""
+    execute("""
+        CREATE TABLE IF NOT EXISTS gift_package_component (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            gift_product_id         INTEGER NOT NULL,
+            component_product_code  TEXT    NOT NULL,
+            qty_per_set             INTEGER NOT NULL DEFAULT 1 CHECK(qty_per_set > 0),
+            is_active               INTEGER NOT NULL DEFAULT 1,
+            notes                   TEXT,
+            created_at              TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at              TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (gift_product_id) REFERENCES non_cigar_product_mst(id)
         )
     """)
 
@@ -2041,3 +2078,105 @@ def delete_product_price_mst(price_id: int):
         conn.commit()
     finally:
         conn.close()
+
+# ──────────────────────────────────────────────
+# 5. 기프트패키지 구성품(BOM) 관리
+# ──────────────────────────────────────────────
+
+GIFT_PACKAGE_CATEGORY = "기프트패키지"
+
+
+def get_gift_package_products() -> pd.DataFrame:
+    """기프트패키지 카테고리의 non_cigar_product_mst 목록"""
+    sql = """
+        SELECT id, product_code, product_name, is_active
+        FROM non_cigar_product_mst
+        WHERE product_category = ?
+        ORDER BY COALESCE(is_active, 1) DESC, product_name
+    """
+    return run_query(sql, [GIFT_PACKAGE_CATEGORY])
+
+
+def get_gift_package_components(gift_product_id: int) -> pd.DataFrame:
+    """특정 기프트패키지의 구성품(시가) 목록"""
+    sql = """
+        SELECT
+            gpc.id,
+            gpc.component_product_code,
+            pm.product_name,
+            pm.size_name,
+            gpc.qty_per_set,
+            gpc.is_active,
+            gpc.notes,
+            gpc.updated_at
+        FROM gift_package_component gpc
+        LEFT JOIN product_mst pm ON gpc.component_product_code = pm.product_code
+        WHERE gpc.gift_product_id = ?
+        ORDER BY gpc.id
+    """
+    return run_query(sql, [gift_product_id])
+
+
+def insert_gift_package_component(
+    gift_product_id: int,
+    component_product_code: str,
+    qty_per_set: int,
+    notes: str = None,
+):
+    execute(
+        """
+        INSERT INTO gift_package_component
+            (gift_product_id, component_product_code, qty_per_set, notes)
+        VALUES (?, ?, ?, ?)
+        """,
+        [gift_product_id, component_product_code, qty_per_set, notes],
+    )
+
+
+def update_gift_package_component(
+    row_id: int,
+    qty_per_set: int,
+    is_active: int,
+    notes: str = None,
+):
+    execute(
+        """
+        UPDATE gift_package_component
+        SET qty_per_set = ?, is_active = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        [qty_per_set, is_active, notes, row_id],
+    )
+
+
+def delete_gift_package_component(row_id: int):
+    execute("DELETE FROM gift_package_component WHERE id = ?", [row_id])
+
+
+def get_gift_package_map_by_code() -> dict:
+    """
+    기프트패키지 product_code -> [{component_product_code, qty_per_set}, ...] 매핑.
+    retail_upload.py 에서 판매 상품코드가 기프트패키지인지 판별하고
+    자동 차감 대상/수량을 조회하는 데 사용.
+    """
+    sql = """
+        SELECT
+            ncp.product_code AS gift_code,
+            gpc.component_product_code,
+            gpc.qty_per_set
+        FROM gift_package_component gpc
+        JOIN non_cigar_product_mst ncp ON gpc.gift_product_id = ncp.id
+        WHERE COALESCE(gpc.is_active, 1) = 1
+          AND COALESCE(ncp.is_active, 1) = 1
+    """
+    df = run_query(sql)
+    result: dict = {}
+    for _, row in df.iterrows():
+        code = str(row["gift_code"] or "").strip().upper()
+        if not code:
+            continue
+        result.setdefault(code, []).append({
+            "component_product_code": row["component_product_code"],
+            "qty_per_set": int(row["qty_per_set"]),
+        })
+    return result

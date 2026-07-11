@@ -38,6 +38,9 @@ MIN_REQUIRED_DB_COLUMNS = {
     "net_sales_amount",
 }
 
+# 기프트패키지 판매 시 자동 재고 차감 관련
+GIFT_PACKAGE_CATEGORY = "기프트패키지"
+
 
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -217,7 +220,162 @@ def delete_existing_period_data(conn: sqlite3.Connection, start_date: str, end_d
         """,
         (start_date, end_date),
     )
+
+    # 같은 기간의 기프트패키지 자동차감 이력도 함께 삭제 (재업로드 시 재생성되므로 중복 차감 방지)
+    if table_exists(conn, "stock_out"):
+        cur.execute(
+            """
+            DELETE FROM stock_out
+             WHERE source_type = 'retail_auto'
+               AND out_date BETWEEN ? AND ?
+            """,
+            (start_date, end_date),
+        )
+
     return int(count_before)
+
+
+# ──────────────────────────────────────────────
+# 기프트패키지 자동 재고 차감
+# ──────────────────────────────────────────────
+
+def ensure_gift_package_tables(conn: sqlite3.Connection):
+    """
+    gift_package_component 테이블, stock_out 테이블(및 source_order_no/source_type 컬럼)이
+    없으면 생성/추가한다. 기존 데이터는 영향받지 않는다.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS gift_package_component (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            gift_product_id         INTEGER NOT NULL,
+            component_product_code  TEXT    NOT NULL,
+            qty_per_set             INTEGER NOT NULL DEFAULT 1 CHECK(qty_per_set > 0),
+            is_active               INTEGER NOT NULL DEFAULT 1,
+            notes                   TEXT,
+            created_at              TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at              TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (gift_product_id) REFERENCES non_cigar_product_mst(id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS stock_out (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            out_date         TEXT    NOT NULL,
+            product_code     TEXT    NOT NULL,
+            qty              INTEGER NOT NULL CHECK(qty > 0),
+            out_type         TEXT    NOT NULL
+                                 CHECK(out_type IN ('sample','gift_set','disposal','etc')),
+            partner_id       INTEGER,
+            note             TEXT,
+            source_order_no  TEXT,
+            source_type      TEXT,
+            created_at       TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at       TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(stock_out)").fetchall()}
+    if "source_order_no" not in cols:
+        conn.execute("ALTER TABLE stock_out ADD COLUMN source_order_no TEXT")
+    if "source_type" not in cols:
+        conn.execute("ALTER TABLE stock_out ADD COLUMN source_type TEXT")
+    conn.commit()
+
+
+def load_gift_package_map(conn: sqlite3.Connection) -> Dict[str, list]:
+    """기프트패키지 상품코드 -> [{component_product_code, qty_per_set}, ...] 매핑"""
+    sql = """
+        SELECT
+            ncp.product_code AS gift_code,
+            gpc.component_product_code,
+            gpc.qty_per_set
+        FROM gift_package_component gpc
+        JOIN non_cigar_product_mst ncp ON gpc.gift_product_id = ncp.id
+        WHERE COALESCE(gpc.is_active, 1) = 1
+          AND COALESCE(ncp.is_active, 1) = 1
+    """
+    df = pd.read_sql_query(sql, conn)
+    result: Dict[str, list] = {}
+    for _, row in df.iterrows():
+        code = normalize_product_code(row["gift_code"])
+        if not code:
+            continue
+        result.setdefault(code, []).append({
+            "component_product_code": row["component_product_code"],
+            "qty_per_set": int(row["qty_per_set"]),
+        })
+    return result
+
+
+def load_gift_package_names(conn: sqlite3.Connection) -> Dict[str, str]:
+    """기프트패키지 상품코드 -> 상품명 (자동차감 note 표기용)"""
+    df = pd.read_sql_query(
+        "SELECT product_code, product_name FROM non_cigar_product_mst WHERE product_category = ?",
+        conn,
+        params=[GIFT_PACKAGE_CATEGORY],
+    )
+    return {
+        normalize_product_code(r["product_code"]): r["product_name"]
+        for _, r in df.iterrows()
+    }
+
+
+def is_gift_auto_deducted(conn: sqlite3.Connection, order_no: str, component_product_code: str) -> bool:
+    """같은 주문번호로 해당 구성품이 이미 자동 차감되었는지 확인 (재업로드 시 중복 방지)"""
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT 1 FROM stock_out
+         WHERE source_type = 'retail_auto'
+           AND source_order_no = ?
+           AND product_code = ?
+         LIMIT 1
+        """,
+        (order_no, component_product_code),
+    )
+    return cur.fetchone() is not None
+
+
+def deduct_gift_package_stock(
+    conn: sqlite3.Connection,
+    gift_map: Dict[str, list],
+    order_no: str,
+    gift_product_code: str,
+    sold_qty: float,
+    out_date: str,
+    gift_product_name: str = "",
+) -> int:
+    """
+    기프트패키지 판매분에 대해 구성 시가 재고를 stock_out(출고유형=선물세트)에 자동 등록.
+    이미 같은 주문번호로 등록된 구성품은 건너뛴다.
+    반환값: 새로 차감된 구성품 행 수
+    """
+    components = gift_map.get(gift_product_code)
+    if not components:
+        return 0
+
+    cur = conn.cursor()
+    deducted = 0
+    for comp in components:
+        comp_code = comp["component_product_code"]
+        if is_gift_auto_deducted(conn, order_no, comp_code):
+            continue
+
+        qty_to_deduct = int(comp["qty_per_set"]) * int(round(sold_qty))
+        if qty_to_deduct <= 0:
+            continue
+
+        note = f"기프트패키지 자동차감 | 주문번호:{order_no} | 세트상품:{gift_product_name or gift_product_code}"
+        cur.execute(
+            """
+            INSERT INTO stock_out
+                (out_date, product_code, qty, out_type, partner_id, note, source_order_no, source_type)
+            VALUES (?, ?, ?, 'gift_set', NULL, ?, ?, 'retail_auto')
+            """,
+            (out_date, comp_code, qty_to_deduct, note, order_no),
+        )
+        deducted += 1
+
+    return deducted
 
 
 def insert_upload_history(
@@ -881,6 +1039,11 @@ def render():
             )
             return
 
+        # 기프트패키지 자동 재고 차감에 필요한 테이블/컬럼 확인 (기존 데이터에는 영향 없음)
+        ensure_gift_package_tables(conn)
+        gift_map = load_gift_package_map(conn)
+        gift_names = load_gift_package_names(conn)
+
         uploaded_file = st.file_uploader("엑셀 파일 업로드", type=["xlsx"])
 
         only_completed = st.checkbox(
@@ -982,6 +1145,8 @@ def render():
                 inserted = 0
                 skipped = 0
                 failed = 0
+                gift_deducted_lines = 0
+                gift_skipped_cancel = 0
 
                 try:
                     conn.execute("BEGIN")
@@ -1040,6 +1205,22 @@ def render():
                         )
                         inserted += 1
 
+                        # 기프트패키지 판매분 자동 재고 차감 (선물세트)
+                        # 취소 행은 반품 처리 방식이 별도 검토 필요하므로 우선 자동 차감 대상에서 제외
+                        if row["product_code"] in gift_map:
+                            if row.get("payment_status") == "취소":
+                                gift_skipped_cancel += 1
+                            else:
+                                gift_deducted_lines += deduct_gift_package_stock(
+                                    conn=conn,
+                                    gift_map=gift_map,
+                                    order_no=row["order_no"],
+                                    gift_product_code=row["product_code"],
+                                    sold_qty=row["qty"],
+                                    out_date=str(row["sale_date"]),
+                                    gift_product_name=gift_names.get(row["product_code"], ""),
+                                )
+
                     update_upload_history(
                         conn=conn,
                         upload_id=upload_id,
@@ -1052,6 +1233,11 @@ def render():
                     st.success(
                         f"업로드 완료: 저장 {inserted:,}건 / 중복 스킵 {skipped:,}건 / 실패 {failed:,}건"
                     )
+                    if gift_deducted_lines or gift_skipped_cancel:
+                        msg = f"기프트패키지 자동 재고 차감(선물세트): {gift_deducted_lines:,}건 등록"
+                        if gift_skipped_cancel:
+                            msg += f" / 취소 건 {gift_skipped_cancel:,}건은 자동 차감 제외(수동 확인 필요)"
+                        st.info(msg)
 
                 except Exception as e:
                     conn.rollback()
