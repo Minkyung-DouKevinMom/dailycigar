@@ -376,7 +376,10 @@ def deduct_gift_package_stock(
         if qty_to_deduct <= 0:
             continue
 
-        note = f"기프트패키지 자동차감 | 주문번호:{order_no} | 세트상품:{gift_product_name or gift_product_code}"
+        note = (
+            f"기프트패키지 자동차감 | 주문번호:{order_no} | "
+            f"세트상품코드:{gift_product_code} | 세트상품명:{gift_product_name or '-'}"
+        )
         cur.execute(
             """
             INSERT INTO stock_out
