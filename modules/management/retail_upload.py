@@ -378,7 +378,7 @@ def deduct_gift_package_stock(
 
         note = (
             f"기프트패키지 자동차감 | 주문번호:{order_no} | "
-            f"세트상품코드:{gift_product_code} | 세트상품명:{gift_product_name or '-'}"
+            f"세트상품코드:{gift_product_code}"
         )
         cur.execute(
             """
