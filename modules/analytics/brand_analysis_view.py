@@ -242,6 +242,92 @@ def get_wholesale_brand_product_data(conn, date_from: str | None, date_to: str |
     return df
 
 
+def get_cigar_brand_map(conn, cigar_codes: set) -> dict:
+    """
+    product_code -> brand(category) 매핑.
+    선물세트로 빠져나간 시가 수량에 브랜드를 붙이기 위해 retail_sales 기준으로
+    상품코드별 대표 브랜드(category)를 조회한다. (기간 무관, 전체 이력 기준)
+    """
+    if not view_exists(conn, "v_retail_sales_enriched"):
+        return {}
+
+    df = pd.read_sql_query(
+        """
+        SELECT
+            UPPER(TRIM(COALESCE(product_code, product_code_raw, ''))) AS product_code,
+            COALESCE(category, '미분류') AS brand
+        FROM v_retail_sales_enriched
+        WHERE COALESCE(product_code, product_code_raw, '') <> ''
+        """,
+        conn,
+    )
+    if df.empty:
+        return {}
+
+    df["product_code"] = normalize_code(df["product_code"])
+    df["brand"] = df["brand"].fillna("미분류").astype(str).str.strip()
+    df.loc[df["brand"] == "", "brand"] = "미분류"
+
+    if cigar_codes:
+        df = df[df["product_code"].isin(cigar_codes)]
+
+    df = df.drop_duplicates(subset=["product_code"], keep="first")
+    return dict(zip(df["product_code"], df["brand"]))
+
+
+def get_gift_set_cigar_out(
+    conn, cigar_codes: set, date_from: str | None, date_to: str | None
+) -> pd.DataFrame:
+    """
+    선물세트(gift_set)로 차감된 시가 상품 수량.
+    매출/이익은 이미 기프트패키지 상품(non_cigar) 판매에 반영되어 있으므로
+    여기서는 수량만 집계하고 sales/profit은 0으로 둔다 (이중계산 방지).
+    """
+    empty = pd.DataFrame(columns=["brand", "product_code", "product_name", "qty", "sales", "profit"])
+
+    if not table_exists(conn, "stock_out"):
+        return empty
+
+    where = "WHERE so.out_type = 'gift_set'"
+    params = []
+    if date_from and date_to:
+        where += " AND so.out_date BETWEEN ? AND ?"
+        params = [date_from, date_to]
+
+    sql = f"""
+    SELECT
+        UPPER(TRIM(COALESCE(so.product_code, ''))) AS product_code,
+        COALESCE(pm.product_name, so.product_code, '미분류') AS product_name,
+        SUM(so.qty) AS qty
+    FROM stock_out so
+    LEFT JOIN product_mst pm ON so.product_code = pm.product_code
+    {where}
+    GROUP BY so.product_code
+    """
+    df = pd.read_sql_query(sql, conn, params=params)
+
+    if df.empty:
+        return empty
+
+    df["product_code"] = normalize_code(df["product_code"])
+    if cigar_codes:
+        df = df[df["product_code"].isin(cigar_codes)].copy()
+    else:
+        df = df.iloc[0:0].copy()
+
+    if df.empty:
+        return empty
+
+    df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
+    df["sales"] = 0
+    df["profit"] = 0
+    df["product_name"] = df["product_name"].fillna("미분류").astype(str).str.strip()
+    df.loc[df["product_name"] == "", "product_name"] = "미분류"
+    df["brand"] = "미분류"  # 아래에서 get_cigar_brand_map 으로 실제 브랜드 매핑
+
+    return df[["brand", "product_code", "product_name", "qty", "sales", "profit"]]
+
+
 def _get_cigar_stock_base(cigar_codes: set) -> pd.DataFrame:
     """재고관리 데이터에서 시가 제품만 추출 (내부 공통 함수)"""
     try:
@@ -482,11 +568,23 @@ def render():
         retail_df = _filter_cigar_src(retail_df)
         wholesale_df = _filter_cigar_src(wholesale_df)
 
+        # ── 선물세트로 차감된 시가 수량 추가 (매출·이익은 0, 수량만) ──
+        # 이미 기프트패키지(non_cigar) 상품 판매로 매출/이익이 잡혀 있으므로
+        # 여기서는 "판매수량"에만 반영해 재고관리 총출고 수와 기준을 맞춘다.
+        gift_set_df = get_gift_set_cigar_out(conn, cigar_codes, date_from, date_to)
+        if not gift_set_df.empty:
+            brand_map = get_cigar_brand_map(conn, cigar_codes)
+            gift_set_df["brand"] = (
+                gift_set_df["product_code"].map(brand_map).fillna("미분류")
+            )
+
         frames = []
         if not retail_df.empty:
             frames.append(retail_df)
         if not wholesale_df.empty:
             frames.append(wholesale_df)
+        if not gift_set_df.empty:
+            frames.append(gift_set_df)
 
         if not frames:
             st.warning("시가 상품 데이터가 없습니다.")
@@ -519,10 +617,12 @@ def render():
         )
         brand_grouped = brand_grouped.sort_values("매출", ascending=False).reset_index(drop=True)
 
-        # retail_df / wholesale_df / df 는 이미 시가 상품만 필터링된 상태
+        # retail_df / wholesale_df 는 이미 시가 상품만 필터링된 상태
+        # 상품별 소매/도매 차트는 선물세트분(gift_set_df)을 굳이 섞지 않음
+        # (소매/도매 매출 비중 차트의 목적과 맞지 않으므로) — 전체 판매수량 KPI에는 반영됨
         retail_cigar_df = retail_df
         wholesale_cigar_df = wholesale_df
-        cigar_df = df
+        cigar_df = df  # 선물세트분 포함된 전체 (KPI/전체상품 집계용)
 
         def build_product_grouped(src: pd.DataFrame) -> pd.DataFrame:
             if src.empty:
@@ -564,6 +664,7 @@ def render():
         total_profit = brand_grouped["이익"].sum()
         total_qty = brand_grouped["판매량"].sum()
         cigar_product_count = cigar_df["product_code"].nunique() if not cigar_df.empty else 0
+        gift_set_qty = gift_set_df["qty"].sum() if not gift_set_df.empty else 0
 
         # ── KPI 카드 ───────────────────────────────────────────────
         k1, k2, k3, k4 = st.columns(4)
@@ -572,7 +673,11 @@ def render():
         k3.metric("총판매수량", f"{int(total_qty):,}개")
         k4.metric("시가 제품 수", f"{cigar_product_count:,}")
 
-        st.caption(f"기준: {period_label} · 시가 상품만 집계 (기프트패키지 등 비시가 제외)")
+        st.caption(
+            f"기준: {period_label} · 시가 상품만 집계"
+            + (f" (선물세트 차감 {int(gift_set_qty):,}개 포함, 매출은 기프트패키지 판매에 반영됨)"
+               if gift_set_qty else "")
+        )
         st.divider()
 
         # ── 파이차트 ───────────────────────────────────────────────
