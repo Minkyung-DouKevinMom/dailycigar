@@ -466,6 +466,22 @@ def render():
         retail_df = get_retail_brand_product_data(conn, date_from, date_to)
         wholesale_df = get_wholesale_brand_product_data(conn, date_from, date_to)
 
+        # ── 시가 상품만 대상으로 필터링 (재고관리 총출고와 집계 기준 통일) ──
+        cigar_codes = get_cigar_product_codes(conn)
+        non_cigar_category_map = get_non_cigar_category_map(conn)
+
+        def _filter_cigar_src(src: pd.DataFrame) -> pd.DataFrame:
+            if src.empty:
+                return src.copy()
+            src = src.copy()
+            src["product_code"] = normalize_code(src["product_code"])
+            if not cigar_codes:
+                return src.iloc[0:0].copy()
+            return src[src["product_code"].isin(cigar_codes)].copy()
+
+        retail_df = _filter_cigar_src(retail_df)
+        wholesale_df = _filter_cigar_src(wholesale_df)
+
         frames = []
         if not retail_df.empty:
             frames.append(retail_df)
@@ -473,7 +489,7 @@ def render():
             frames.append(wholesale_df)
 
         if not frames:
-            st.warning("브랜드 데이터가 없습니다.")
+            st.warning("시가 상품 데이터가 없습니다.")
             return
 
         df = pd.concat(frames, ignore_index=True)
@@ -482,6 +498,10 @@ def render():
         df["product_code"] = normalize_code(df["product_code"])
         df["product_name"] = df["product_name"].fillna("미분류").astype(str).str.strip()
         df.loc[df["product_name"] == "", "product_name"] = "미분류"
+
+        if df.empty:
+            st.warning("시가 상품 데이터가 없습니다.")
+            return
 
         brand_grouped = (
             df.groupby("brand", dropna=False)
@@ -499,19 +519,10 @@ def render():
         )
         brand_grouped = brand_grouped.sort_values("매출", ascending=False).reset_index(drop=True)
 
-        cigar_codes = get_cigar_product_codes(conn)
-        non_cigar_category_map = get_non_cigar_category_map(conn)
-
-        def filter_cigar(src: pd.DataFrame) -> pd.DataFrame:
-            if src.empty:
-                return pd.DataFrame(columns=src.columns)
-            if cigar_codes:
-                return src[src["product_code"].isin(cigar_codes)].copy()
-            return pd.DataFrame(columns=src.columns)
-
-        retail_cigar_df = filter_cigar(retail_df)
-        wholesale_cigar_df = filter_cigar(wholesale_df)
-        cigar_df = filter_cigar(df)
+        # retail_df / wholesale_df / df 는 이미 시가 상품만 필터링된 상태
+        retail_cigar_df = retail_df
+        wholesale_cigar_df = wholesale_df
+        cigar_df = df
 
         def build_product_grouped(src: pd.DataFrame) -> pd.DataFrame:
             if src.empty:
@@ -561,7 +572,7 @@ def render():
         k3.metric("총판매수량", f"{int(total_qty):,}개")
         k4.metric("시가 제품 수", f"{cigar_product_count:,}")
 
-        st.caption(f"기준: {period_label}")
+        st.caption(f"기준: {period_label} · 시가 상품만 집계 (기프트패키지 등 비시가 제외)")
         st.divider()
 
         # ── 파이차트 ───────────────────────────────────────────────
