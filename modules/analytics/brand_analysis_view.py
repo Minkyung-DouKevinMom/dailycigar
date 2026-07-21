@@ -86,14 +86,31 @@ def group_minor_as_others(
     return top_df
 
 
-def render_pie_chart(df: pd.DataFrame, label_col: str, value_col: str, title: str, qty_col: str | None = None):
+def render_pie_chart(
+    df: pd.DataFrame,
+    label_col: str,
+    value_col: str,
+    title: str,
+    qty_col: str | None = None,
+    value_label: str = "금액",
+    value_format: str = ",.0f",
+):
+    """
+    파이차트 렌더링. 툴팁에 항목명 / 값(금액 또는 수량) / 전체 대비 비율(%)을 함께 표시한다.
+    value_label, value_format 으로 매출/이익/수량 등 지표에 맞는 라벨·포맷을 지정할 수 있다.
+    """
     if df.empty or df[value_col].sum() == 0:
         st.info("데이터가 없습니다.")
         return
 
+    total = df[value_col].sum()
+    df = df.copy()
+    df["_pct"] = (df[value_col] / total * 100) if total else 0
+
     tooltip = [
         alt.Tooltip(label_col, title="구분"),
-        alt.Tooltip(value_col, title="금액", format=",.0f"),
+        alt.Tooltip(value_col, title=value_label, format=value_format),
+        alt.Tooltip("_pct:Q", title="비율(%)", format=".1f"),
     ]
     if qty_col and qty_col in df.columns:
         tooltip.append(alt.Tooltip(qty_col, title="판매수량", format=",.0f"))
@@ -109,6 +126,45 @@ def render_pie_chart(df: pd.DataFrame, label_col: str, value_col: str, title: st
         .properties(title=title, height=340)
     )
     st.altair_chart(chart, use_container_width=True)
+
+
+def make_full_pie_df(
+    grp: pd.DataFrame,
+    value_col_name: str,
+    qty_col_name: str | None = "판매량",
+    top_n: int = 10,
+) -> pd.DataFrame:
+    """
+    상품별 집계(product_grouped: 소매+도매+선물세트 통합) 기준으로
+    특정 지표(매출/이익/판매량) 파이차트용 DataFrame 을 만든다.
+    qty_col_name 이 value_col_name 과 같으면(예: 판매량 자체를 값으로 쓰는 경우)
+    중복 표시를 피하기 위해 수량 툴팁은 생략한다.
+    """
+    if grp.empty or "상품코드" not in grp.columns or value_col_name not in grp.columns:
+        cols = ["구분", "값"]
+        if qty_col_name and qty_col_name != value_col_name:
+            cols.append("판매수량")
+        return pd.DataFrame(columns=cols)
+
+    include_qty = bool(qty_col_name) and qty_col_name != value_col_name and qty_col_name in grp.columns
+
+    cols_needed = ["상품코드", value_col_name]
+    if include_qty:
+        cols_needed.append(qty_col_name)
+
+    work = grp[cols_needed].copy()
+    rename_map = {"상품코드": "구분", value_col_name: "값"}
+    if include_qty:
+        rename_map[qty_col_name] = "판매수량"
+    work = work.rename(columns=rename_map)
+
+    return group_minor_as_others(
+        work,
+        label_col="구분",
+        value_col="값",
+        qty_col="판매수량" if include_qty else None,
+        top_n=top_n,
+    )
 
 
 def get_cigar_product_codes(conn) -> set:
@@ -701,6 +757,7 @@ def render():
                 value_col="금액",
                 qty_col="판매수량",
                 title="시가상품별 매출금액 비중 (소매)",
+                value_label="매출금액",
             )
         with p2:
             render_pie_chart(
@@ -709,6 +766,46 @@ def render():
                 value_col="금액",
                 qty_col="판매수량",
                 title="시가상품별 매출금액 비중 (도매)",
+                value_label="매출금액",
+            )
+
+        st.divider()
+
+        # ── 통합(소매+도매+선물세트) 지표별 파이차트 ─────────────────
+        st.markdown("### 소매·도매 통합 지표별 비중")
+        pp1, pp2, pp3 = st.columns(3)
+
+        sales_pie_all = make_full_pie_df(product_grouped, "매출", "판매량")
+        profit_pie_all = make_full_pie_df(product_grouped, "이익", "판매량")
+        qty_pie_all = make_full_pie_df(product_grouped, "판매량", None)
+
+        with pp1:
+            render_pie_chart(
+                sales_pie_all,
+                label_col="구분",
+                value_col="값",
+                qty_col="판매수량",
+                title="시가상품별 매출금액 비중 (전체)",
+                value_label="매출금액",
+            )
+        with pp2:
+            render_pie_chart(
+                profit_pie_all,
+                label_col="구분",
+                value_col="값",
+                qty_col="판매수량",
+                title="시가상품별 이익 비중 (전체)",
+                value_label="이익금액",
+            )
+        with pp3:
+            render_pie_chart(
+                qty_pie_all,
+                label_col="구분",
+                value_col="값",
+                qty_col=None,
+                title="시가상품별 판매수량 비중 (전체)",
+                value_label="판매수량",
+                value_format=",.0f",
             )
 
         st.divider()
