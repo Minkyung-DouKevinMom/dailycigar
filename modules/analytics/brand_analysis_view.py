@@ -86,6 +86,24 @@ def group_minor_as_others(
     return top_df
 
 
+PIE_PALETTE = [
+    "#4C78A8", "#F58518", "#54A24B", "#B279A2", "#E45756",
+    "#72B7B2", "#B6992D", "#9D755D", "#D67195", "#17BECF",
+    "#EECA3B", "#7A5195",
+]
+PIE_OTHER_COLOR = "#B0B0B0"
+
+
+def build_product_color_map(codes) -> dict:
+    """
+    상품코드 -> 고정 색상 매핑을 한 번만 생성한다.
+    코드를 정렬한 뒤 팔레트를 순서대로 배정하므로, 어떤 파이차트(Top N)에 등장하든
+    같은 상품은 항상 같은 색으로 표시된다. "기타"는 별도로 항상 회색 처리한다.
+    """
+    sorted_codes = sorted(str(c) for c in codes if str(c).strip())
+    return {code: PIE_PALETTE[i % len(PIE_PALETTE)] for i, code in enumerate(sorted_codes)}
+
+
 def render_pie_chart(
     df: pd.DataFrame,
     label_col: str,
@@ -94,10 +112,14 @@ def render_pie_chart(
     qty_col: str | None = None,
     value_label: str = "금액",
     value_format: str = ",.0f",
+    color_map: dict | None = None,
 ):
     """
     파이차트 렌더링. 툴팁에 항목명 / 값(금액 또는 수량) / 전체 대비 비율(%)을 함께 표시한다.
     value_label, value_format 으로 매출/이익/수량 등 지표에 맞는 라벨·포맷을 지정할 수 있다.
+    color_map 이 주어지면 상품코드 기준 고정 색상을 사용해, 여러 파이차트에 걸쳐
+    동일 상품이 항상 같은 색으로 보이도록 한다. "기타"는 항상 회색으로 고정한다.
+    color_map 이 없거나 해당 라벨이 맵에 없으면 순서대로 팔레트를 배정하는 기존 방식으로 대체한다.
     """
     if df.empty or df[value_col].sum() == 0:
         st.info("데이터가 없습니다.")
@@ -115,12 +137,30 @@ def render_pie_chart(
     if qty_col and qty_col in df.columns:
         tooltip.append(alt.Tooltip(qty_col, title="판매수량", format=",.0f"))
 
+    # ── 색상 배정: color_map이 있으면 상품코드 고정 색상, 없으면 순서 기반 팔레트 ──
+    domain = df[label_col].astype(str).tolist()
+    color_range = []
+    fallback_idx = 0
+    for d in domain:
+        if d == "기타":
+            color_range.append(PIE_OTHER_COLOR)
+        elif color_map and d in color_map:
+            color_range.append(color_map[d])
+        else:
+            color_range.append(PIE_PALETTE[fallback_idx % len(PIE_PALETTE)])
+            fallback_idx += 1
+
     chart = (
         alt.Chart(df)
         .mark_arc(innerRadius=40)
         .encode(
             theta=alt.Theta(field=value_col, type="quantitative"),
-            color=alt.Color(field=label_col, type="nominal", legend=alt.Legend(title=None)),
+            color=alt.Color(
+                field=label_col,
+                type="nominal",
+                scale=alt.Scale(domain=domain, range=color_range),
+                legend=alt.Legend(title=None),
+            ),
             tooltip=tooltip,
         )
         .properties(title=title, height=340)
@@ -612,6 +652,9 @@ def render():
         cigar_codes = get_cigar_product_codes(conn)
         non_cigar_category_map = get_non_cigar_category_map(conn)
 
+        # 상품코드 -> 고정 색상 매핑 (모든 파이차트에서 동일 상품 = 동일 색)
+        pie_color_map = build_product_color_map(cigar_codes)
+
         def _filter_cigar_src(src: pd.DataFrame) -> pd.DataFrame:
             if src.empty:
                 return src.copy()
@@ -758,6 +801,7 @@ def render():
                 qty_col="판매수량",
                 title="시가상품별 매출금액 비중 (소매)",
                 value_label="매출금액",
+                color_map=pie_color_map,
             )
         with p2:
             render_pie_chart(
@@ -767,6 +811,7 @@ def render():
                 qty_col="판매수량",
                 title="시가상품별 매출금액 비중 (도매)",
                 value_label="매출금액",
+                color_map=pie_color_map,
             )
 
         st.divider()
@@ -787,6 +832,7 @@ def render():
                 qty_col="판매수량",
                 title="시가상품별 매출금액 비중 (전체)",
                 value_label="매출금액",
+                color_map=pie_color_map,
             )
         with pp2:
             render_pie_chart(
@@ -796,6 +842,7 @@ def render():
                 qty_col="판매수량",
                 title="시가상품별 이익 비중 (전체)",
                 value_label="이익금액",
+                color_map=pie_color_map,
             )
         with pp3:
             render_pie_chart(
@@ -806,6 +853,7 @@ def render():
                 title="시가상품별 판매수량 비중 (전체)",
                 value_label="판매수량",
                 value_format=",.0f",
+                color_map=pie_color_map,
             )
 
         st.divider()
