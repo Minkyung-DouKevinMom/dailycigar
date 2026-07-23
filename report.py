@@ -150,8 +150,20 @@ def section_brand_overview(conn, out_dir: str):
         print("  데이터가 없습니다.")
         return
 
-    df["brand"] = df["product_code"].map(brand_of)
-    grp = df.groupby("brand", as_index=False).agg(
+    try:
+        pm_df = pd.read_sql_query(
+            "SELECT UPPER(TRIM(product_code)) AS product_code, product_name, size_name FROM product_mst",
+            conn,
+        ).drop_duplicates(subset=["product_code"])
+    except Exception as e:
+        print(f"  product_mst product_name/size_name 조회 실패: {e}")
+        pm_df = pd.DataFrame(columns=["product_code", "product_name", "size_name"])
+
+    df = df.merge(pm_df, on="product_code", how="left")
+    df["product_name"] = df["product_name"].fillna(df["product_code"])
+    df["size_name"] = df["size_name"].fillna("")
+
+    grp = df.groupby(["product_code", "product_name", "size_name"], as_index=False).agg(
         판매수량=("qty", "sum"), 매출=("sales", "sum"), 이익=("profit", "sum")
     )
     grp["마진율(%)"] = (grp["이익"] / grp["매출"].replace(0, pd.NA) * 100).round(1).fillna(0)
@@ -165,16 +177,24 @@ def section_brand_overview(conn, out_dir: str):
           f"· 총판매 {int(total_qty):,}개 · 전체마진율 {total_profit/total_sales*100:.1f}%")
     for _, r in grp.iterrows():
         share = r["매출"] / total_sales * 100 if total_sales else 0
-        print(f"  - {r['brand']:<20} 매출 {fmt_krw(r['매출']):>15} ({share:4.1f}%)  "
-              f"이익 {fmt_krw(r['이익']):>15}  수량 {int(r['판매수량']):>6,}개  마진율 {r['마진율(%)']:.1f}%")
+        label = f"{r['product_code']} ({r['product_name']} {r['size_name']})"
+        print(f"  - {label:<45} 매출 {fmt_krw(r['매출']):>14} ({share:4.1f}%)  "
+              f"이익 {fmt_krw(r['이익']):>14}  수량 {int(r['판매수량']):>5,}개  마진율 {r['마진율(%)']:.1f}%")
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    for ax, col, title in zip(axes, ["매출", "이익", "판매수량"], ["매출", "이익", "판매수량"]):
-        vals = grp[col]
-        total = vals.sum()
-        labels = [f"{n}\n{v/total*100:.0f}%" for n, v in zip(grp["brand"], vals)]
-        ax.pie(vals, labels=labels, autopct=lambda p: f"{p:.0f}%" if False else None, startangle=90)
-        ax.set_title(f"브랜드별 {title} 비중")
+    top = grp.head(15).copy()
+    top_labels = [f"{c}" for c in top["product_code"]]
+    top_share = (top["매출"] / total_sales * 100) if total_sales else 0
+
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    axes[0].barh(top_labels[::-1], top["매출"][::-1], color="#1B2A4A")
+    for i, (v, s) in enumerate(zip(top["매출"][::-1], top_share[::-1])):
+        axes[0].text(v, i, f" {v/10000:,.0f}만원 ({s:.1f}%)", va="center", fontsize=9)
+    axes[0].set_title("상품코드별 매출 (상위 15개, 비중 %)")
+
+    axes[1].barh(top_labels[::-1], top["이익"][::-1], color="#B08D57")
+    for i, v in enumerate(top["이익"][::-1]):
+        axes[1].text(v, i, f" {v/10000:,.0f}만원", va="center", fontsize=9)
+    axes[1].set_title("상품코드별 이익 (상위 15개, 매출 기준 정렬)")
     plt.tight_layout()
     path = os.path.join(out_dir, "1_brand_overview.png")
     plt.savefig(path, dpi=150)
@@ -246,26 +266,70 @@ def section_month_over_month(conn, out_dir: str):
     retail_src = "v_retail_sales_enriched" if table_or_view_exists(conn, "v_retail_sales_enriched") else "retail_sales"
     wholesale_src = "v_wholesale_sales" if table_or_view_exists(conn, "v_wholesale_sales") else "wholesale_sales"
 
-    def period_totals(d_from, d_to):
-        r_sql = f"""
-            SELECT COALESCE(SUM(net_sales_amount),0) AS sales, COALESCE(SUM(retail_gross_profit_krw),0) AS profit
-            FROM {retail_src} WHERE sale_date BETWEEN ? AND ?
+    def get_non_cigar_purchase_price_map():
+        try:
+            cols = pd.read_sql_query("PRAGMA table_info(non_cigar_product_mst)", conn)["name"].tolist()
+        except Exception:
+            return {}
+        if "product_code" not in cols or "purchase_price" not in cols:
+            return {}
+        try:
+            pp_df = pd.read_sql_query(
+                "SELECT TRIM(COALESCE(product_code,'')) AS product_code, "
+                "COALESCE(purchase_price,0) AS purchase_price FROM non_cigar_product_mst",
+                conn,
+            )
+        except Exception:
+            return {}
+        pp_df["product_code"] = pp_df["product_code"].astype(str).str.strip()
+        pp_df = pp_df[pp_df["product_code"] != ""]
+        return dict(zip(pp_df["product_code"], pp_df["purchase_price"]))
+
+    non_cigar_price_map = get_non_cigar_purchase_price_map()
+
+    def retail_totals(d_from, d_to):
         """
+        '소매 매출 조회' 화면(retail_sales_view.py)의 apply_non_cigar_margin_logic()과 동일한 보정을 적용:
+        시가 외(non_cigar_product_mst 등록) 상품은 net_sales_amount - (매입가 × 수량)으로 이익을 재계산.
+        """
+        sql = f"""
+            SELECT
+                TRIM(COALESCE(product_code, '')) AS product_code,
+                COALESCE(qty, 0) AS qty,
+                COALESCE(net_sales_amount, 0) AS sales,
+                COALESCE(retail_gross_profit_krw, 0) AS profit
+            FROM {retail_src}
+            WHERE sale_date BETWEEN ? AND ?
+        """
+        try:
+            r = pd.read_sql_query(sql, conn, params=[str(d_from), str(d_to)])
+        except Exception as e:
+            print(f"  소매 조회 실패: {e}")
+            return 0, 0
+
+        if non_cigar_price_map:
+            mask = r["product_code"].isin(non_cigar_price_map.keys())
+            r.loc[mask, "profit"] = r.loc[mask, "sales"] - (
+                r.loc[mask, "product_code"].map(non_cigar_price_map).fillna(0) * r.loc[mask, "qty"]
+            )
+        return r["sales"].sum(), r["profit"].sum()
+
+    def period_totals(d_from, d_to):
+        r_sales, r_profit = retail_totals(d_from, d_to)
         w_sql = f"""
             SELECT COALESCE(SUM(sales_amount),0) AS sales, COALESCE(SUM(profit_amount),0) AS profit
             FROM {wholesale_src} WHERE sale_date BETWEEN ? AND ?
         """
         try:
-            r = pd.read_sql_query(r_sql, conn, params=[str(d_from), str(d_to)]).iloc[0]
-        except Exception as e:
-            print(f"  소매 조회 실패: {e}")
-            r = pd.Series({"sales": 0, "profit": 0})
-        try:
             w = pd.read_sql_query(w_sql, conn, params=[str(d_from), str(d_to)]).iloc[0]
         except Exception as e:
             print(f"  도매 조회 실패: {e}")
             w = pd.Series({"sales": 0, "profit": 0})
-        return {"sales": r["sales"] + w["sales"], "profit": r["profit"] + w["profit"]}
+        return {
+            "retail_sales": r_sales, "retail_profit": r_profit,
+            "wholesale_sales": w["sales"], "wholesale_profit": w["profit"],
+            "sales": r_sales + w["sales"], "profit": r_profit + w["profit"],
+        }
 
     cur = period_totals(cur_start, cur_end)
     prev = period_totals(prev_start, prev_end)
@@ -277,11 +341,18 @@ def section_month_over_month(conn, out_dir: str):
 
     sales_diff, sales_pct = delta(cur["sales"], prev["sales"])
     profit_diff, profit_pct = delta(cur["profit"], prev["profit"])
+    cur_margin = cur["profit"] / cur["sales"] * 100 if cur["sales"] else 0
+    prev_margin = prev["profit"] / prev["sales"] * 100 if prev["sales"] else 0
 
-    print(f"  최근 30일 ({cur_start} ~ {cur_end}): 매출 {fmt_krw(cur['sales'])} / 이익 {fmt_krw(cur['profit'])}")
-    print(f"  이전 30일 ({prev_start} ~ {prev_end}): 매출 {fmt_krw(prev['sales'])} / 이익 {fmt_krw(prev['profit'])}")
+    print(f"  최근 30일 ({cur_start} ~ {cur_end}): 매출 {fmt_krw(cur['sales'])} / 이익 {fmt_krw(cur['profit'])} / 마진율 {cur_margin:.1f}%")
+    print(f"    ㄴ 소매: 매출 {fmt_krw(cur['retail_sales'])} / 이익 {fmt_krw(cur['retail_profit'])}")
+    print(f"    ㄴ 도매: 매출 {fmt_krw(cur['wholesale_sales'])} / 이익 {fmt_krw(cur['wholesale_profit'])}")
+    print(f"  이전 30일 ({prev_start} ~ {prev_end}): 매출 {fmt_krw(prev['sales'])} / 이익 {fmt_krw(prev['profit'])} / 마진율 {prev_margin:.1f}%")
+    print(f"    ㄴ 소매: 매출 {fmt_krw(prev['retail_sales'])} / 이익 {fmt_krw(prev['retail_profit'])}")
+    print(f"    ㄴ 도매: 매출 {fmt_krw(prev['wholesale_sales'])} / 이익 {fmt_krw(prev['wholesale_profit'])}")
     print(f"  매출 증감: {sales_diff:+,.0f}원 ({sales_pct:+.1f}%)")
     print(f"  이익 증감: {profit_diff:+,.0f}원 ({profit_pct:+.1f}%)")
+    print(f"  마진율 변화: {prev_margin:.1f}% → {cur_margin:.1f}% ({cur_margin-prev_margin:+.1f}%p)")
 
     fig, ax = plt.subplots(figsize=(6, 5))
     labels = ["이전 30일", "최근 30일"]
