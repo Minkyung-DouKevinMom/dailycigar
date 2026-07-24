@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find \"$HOME/.claude\" -iname \"*report*\" 2>/dev/null | head -50)",
+      "Bash(find / -maxdepth 6 -iname \"SKILL.md\" 2>/dev/null | grep -i report)",
+      "Bash(git pull *)",
+      "Bash(python report.py)",
+      "Bash(PYTHONIOENCODING=utf-8 python report.py)",
+      "Skill(artifact-design)",
+      "Skill(artifact-design:*)"
+    ]
+  }
+}
