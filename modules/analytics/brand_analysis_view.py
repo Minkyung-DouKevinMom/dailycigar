@@ -49,6 +49,46 @@ def normalize_code(series: pd.Series) -> pd.Series:
     return series.fillna("").astype(str).str.strip().str.upper()
 
 
+# ── 하드코딩: 특정 상품코드에 대한 계산 예외 처리 ──
+# TAB(HC): 파이차트에 표시되는 매출/이익만 30% 할인된 금액으로 계산한다.
+# (상단 KPI 카드나 바차트 등 다른 곳의 실제 매출/이익에는 영향을 주지 않는다)
+DISCOUNT_CODE_RATES = {"TAB(HC)": 0.70}
+
+
+def apply_discount_to_grouped(
+    grp: pd.DataFrame,
+    code_col: str = "상품코드",
+    sales_col: str = "매출",
+    profit_col: str = "이익",
+    qty_col: str = "판매량",
+) -> pd.DataFrame:
+    """
+    파이차트용으로 이미 상품별 집계된 DataFrame(build_product_grouped 등의 결과)에
+    DISCOUNT_CODE_RATES 의 할인율을 적용한다. 원본 retail_df/wholesale_df나
+    KPI 계산에 쓰이는 brand_grouped와는 완전히 분리되어, 이 함수를 거친 사본만
+    할인이 반영된다 — 즉 파이차트에만 영향을 준다.
+    """
+    if grp.empty or not DISCOUNT_CODE_RATES or code_col not in grp.columns:
+        return grp
+    grp = grp.copy()
+    for code, rate in DISCOUNT_CODE_RATES.items():
+        mask = grp[code_col].astype(str).str.strip().str.upper() == code
+        if mask.any():
+            if sales_col in grp.columns:
+                grp.loc[mask, sales_col] = grp.loc[mask, sales_col] * rate
+            if profit_col in grp.columns:
+                grp.loc[mask, profit_col] = grp.loc[mask, profit_col] * rate
+    if "마진율(%)" in grp.columns and sales_col in grp.columns and profit_col in grp.columns:
+        grp["마진율(%)"] = grp.apply(
+            lambda x: round(x[profit_col] / x[sales_col] * 100, 1) if x[sales_col] else 0, axis=1
+        )
+    if "개당마진금액" in grp.columns and qty_col in grp.columns and profit_col in grp.columns:
+        grp["개당마진금액"] = grp.apply(
+            lambda x: round(x[profit_col] / x[qty_col], 0) if x[qty_col] else 0, axis=1
+        )
+    return grp
+
+
 def group_minor_as_others(
     df: pd.DataFrame,
     label_col: str,
@@ -263,10 +303,11 @@ def render_pie_chart(
             f"{lbl}\n{fmt_fn(v)}\n({p:.1f}%)" if r <= n_limit else ""
             for lbl, v, p, r in zip(df[label_col].astype(str), df[value_col], df["_pct"], rank)
         ]
-        # 라벨을 도넛 정중앙보다는 바깥쪽에 두되, 너무 바깥(85%)으로 보내면
-        # 3줄짜리 텍스트 블록의 높이 때문에 조각 색 영역을 벗어나 흰 배경과
-        # 겹쳐 (흰 글씨+흰 배경) 안 보이는 문제가 있어 70% 지점으로 당긴다.
-        # 추가로 검은 외곽선을 넣어 어떤 배경(조각 색/흰 배경 어디든) 위에서도 보이게 한다.
+        # 라벨을 도넛 정중앙보다는 바깥쪽(70% 지점)에 둬서 조각 색 영역 안에서
+        # 최대한 넓은 공간을 확보한다 (85%까지 보내면 3줄 텍스트 높이 때문에
+        # 조각 밖 흰 배경과 겹쳐 안 보이는 문제가 있어 70%로 당김).
+        # 검은 외곽선(stroke)은 fill과 겹쳐 글자가 두 겹으로 보이는 부작용이 있어 제거하고
+        # 단색 흰 글씨로 표시한다.
         label_radius = inner_radius + (outer_radius - inner_radius) * 0.70
         text = alt.Chart(df).encode(
             theta=alt.Theta(field=value_col, type="quantitative", stack=True),
@@ -277,8 +318,6 @@ def render_pie_chart(
             size=11,
             fontWeight="bold",
             color="white",
-            stroke="black",
-            strokeWidth=0.6,
             lineBreak="\n",
         )
         layers.append(text)
@@ -974,11 +1013,13 @@ def render():
             if not gift_set_df.empty else {}
         )
         retail_full_grp = build_full_grouped_with_giftset(
-            retail_product_grouped, gift_qty_by_code, gift_name_by_code
+            apply_discount_to_grouped(retail_product_grouped), gift_qty_by_code, gift_name_by_code
         )
         combined_full_grp = build_full_grouped_with_giftset(
-            product_grouped, gift_qty_by_code, gift_name_by_code
+            apply_discount_to_grouped(product_grouped), gift_qty_by_code, gift_name_by_code
         )
+        # 도매 파이는 선물세트 병합이 없어 할인만 적용한 별도 사본을 사용한다.
+        wholesale_pie_grp = apply_discount_to_grouped(wholesale_product_grouped)
 
         # ── KPI 카드 ───────────────────────────────────────────────
         k1, k2, k3, k4 = st.columns(4)
@@ -1029,7 +1070,7 @@ def render():
             label_value_formatter=fmt_krw_short,
         )
         render_pie_chart(
-            make_product_pie_df(wholesale_product_grouped),
+            make_product_pie_df(wholesale_pie_grp),
             label_col="구분",
             value_col="금액",
             qty_col="판매수량",
