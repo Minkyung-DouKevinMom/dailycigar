@@ -154,18 +154,20 @@ def render_pie_chart(
     color_map: dict | None = None,
     height: int = 340,
     show_top_labels: bool = False,
-    top_label_n: int = 5,
+    top_label_n: int | None = None,
     label_value_formatter=None,
 ):
     """
-    파이차트 렌더링. 툴팁에 항목명 / 값(금액 또는 수량) / 전체 대비 비율(%)을 함께 표시한다.
+    파이차트 렌더링. 범례는 표시하지 않고, 대신 조각 안에 상품코드/값/비율 라벨을 직접 표시한다.
+    툴팁에도 항목명 / 값(금액 또는 수량) / 전체 대비 비율(%)을 함께 담는다.
     value_label, value_format 으로 매출/이익/수량 등 지표에 맞는 라벨·포맷을 지정할 수 있다.
     color_map 이 주어지면 상품코드 기준 고정 색상을 사용해, 여러 파이차트에 걸쳐
     동일 상품이 항상 같은 색으로 보이도록 한다. "기타"는 항상 회색으로 고정한다.
     color_map 이 없거나 해당 라벨이 맵에 없으면 순서대로 팔레트를 배정하는 기존 방식으로 대체한다.
 
     height: 차트 높이(px). 크게 보고 싶을 때 키운다.
-    show_top_labels: True면 값 기준 상위 top_label_n개 조각 위에 "값 (비율%)" 라벨을 직접 표시한다.
+    show_top_labels: True면 조각 위에 "상품코드 / 값 / 비율%" 라벨을 직접 표시한다.
+    top_label_n: 라벨을 표시할 상위 개수 제한. None이면 전체 조각에 라벨을 표시한다.
     label_value_formatter: 라벨에 쓸 값 축약 포맷 함수 (예: fmt_krw_short). 없으면 value_format으로 표시.
     """
     if df.empty or df[value_col].sum() == 0:
@@ -206,7 +208,7 @@ def render_pie_chart(
             field=label_col,
             type="nominal",
             scale=alt.Scale(domain=domain, range=color_range),
-            legend=alt.Legend(title=None),
+            legend=None,  # 범례 제거 — 조각 위 라벨로 항목을 식별한다.
         ),
         order=alt.Order(value_col, sort="descending"),
     )
@@ -217,10 +219,11 @@ def render_pie_chart(
 
     if show_top_labels:
         fmt_fn = label_value_formatter or (lambda v: format(v, value_format))
+        n_limit = top_label_n if top_label_n is not None else len(df)
         rank = df[value_col].rank(method="first", ascending=False)
         df["_label"] = [
-            f"{fmt_fn(v)}\n({p:.1f}%)" if r <= top_label_n else ""
-            for v, p, r in zip(df[value_col], df["_pct"], rank)
+            f"{lbl}\n{fmt_fn(v)}\n({p:.1f}%)" if r <= n_limit else ""
+            for lbl, v, p, r in zip(df[label_col].astype(str), df[value_col], df["_pct"], rank)
         ]
         # 라벨은 도넛 바깥쪽이 아니라 안쪽(테두리~중심 사이)에 배치한다.
         # 바깥쪽(outer_radius 초과)에 두면 차트 실제 폭이 좁아질 때 캔버스 밖으로
@@ -231,12 +234,75 @@ def render_pie_chart(
             order=alt.Order(value_col, sort="descending"),
             text=alt.Text("_label:N"),
         ).mark_text(
-            radius=mid_radius, size=12, fontWeight="bold", color="white", lineBreak="\n"
+            radius=mid_radius, size=11, fontWeight="bold", color="white", lineBreak="\n"
         )
         layers.append(text)
 
     chart = alt.layer(*layers).properties(title=title, height=height)
     st.altair_chart(chart, use_container_width=True)
+
+
+def build_full_grouped_with_giftset(
+    direct_grp: pd.DataFrame,
+    gift_qty_by_code: dict,
+    gift_name_by_code: dict,
+) -> pd.DataFrame:
+    """
+    build_product_grouped() 결과(직접판매: 소매+도매 실적)에 선물세트 수량을 더한다.
+    실제 회계상 매출·이익은 선물세트 자체에는 없지만(=기프트패키지 상품 매출로 이미 잡혀 있음),
+    "이 상품이 판매수량 대비 얼마나 매출·이익에 기여했는지"를 보여주기 위해
+    해당 상품의 직접판매 평균 단가(매출/판매량)·평균 단위이익(이익/판매량)에
+    선물세트 수량을 곱한 값을 "추정 매출/이익"으로 직접판매 실적에 더한다.
+    직접판매 이력이 전혀 없는 상품은 단가를 알 수 없어 추정 매출/이익을 0으로 처리한다.
+    """
+    base = {}
+    if not direct_grp.empty:
+        for _, r in direct_grp.iterrows():
+            code = str(r["상품코드"])
+            base[code] = {
+                "product_name": r.get("product_name", code),
+                "판매량": float(r.get("판매량", 0) or 0),
+                "매출": float(r.get("매출", 0) or 0),
+                "이익": float(r.get("이익", 0) or 0),
+            }
+
+    all_codes = set(base.keys()) | set(gift_qty_by_code.keys())
+    rows = []
+    for code in all_codes:
+        b = base.get(
+            code,
+            {"product_name": gift_name_by_code.get(code, code), "판매량": 0.0, "매출": 0.0, "이익": 0.0},
+        )
+        direct_qty = b["판매량"]
+        direct_sales = b["매출"]
+        direct_profit = b["이익"]
+        avg_price = (direct_sales / direct_qty) if direct_qty else 0.0
+        avg_profit = (direct_profit / direct_qty) if direct_qty else 0.0
+        gift_qty = float(gift_qty_by_code.get(code, 0) or 0)
+
+        total_qty = direct_qty + gift_qty
+        est_sales = direct_sales + avg_price * gift_qty
+        est_profit = direct_profit + avg_profit * gift_qty
+
+        rows.append({
+            "상품코드": code,
+            "product_name": b["product_name"],
+            "판매량": total_qty,
+            "매출": est_sales,
+            "이익": est_profit,
+        })
+
+    result = pd.DataFrame(rows)
+    if result.empty:
+        return pd.DataFrame(columns=["상품코드", "product_name", "판매량", "매출", "이익", "마진율(%)", "개당마진금액"])
+
+    result["마진율(%)"] = result.apply(
+        lambda x: round(x["이익"] / x["매출"] * 100, 1) if x["매출"] else 0, axis=1
+    )
+    result["개당마진금액"] = result.apply(
+        lambda x: round(x["이익"] / x["판매량"], 0) if x["판매량"] else 0, axis=1
+    )
+    return result.sort_values("매출", ascending=False).reset_index(drop=True)
 
 
 def make_full_pie_df(
@@ -849,6 +915,26 @@ def render():
         cigar_product_count = cigar_df["product_code"].nunique() if not cigar_df.empty else 0
         gift_set_qty = gift_set_df["qty"].sum() if not gift_set_df.empty else 0
 
+        # ── 파이차트 전용: 선물세트 수량을 포함하고, 매출·이익은
+        # 해당 상품의 직접판매 평균 단가/단위이익 × 선물세트 수량으로 추정해 더한다.
+        # (KPI 카드와 위의 product_grouped(바차트용)는 실제 판매분만 사용해 그대로 둔다)
+        # 선물세트는 채널 구분 정보가 없어 소매 채널로 간주해 소매 파이에 포함한다.
+        gift_qty_by_code = (
+            gift_set_df.groupby("product_code")["qty"].sum().to_dict()
+            if not gift_set_df.empty else {}
+        )
+        gift_name_by_code = (
+            gift_set_df.drop_duplicates("product_code")
+            .set_index("product_code")["product_name"].to_dict()
+            if not gift_set_df.empty else {}
+        )
+        retail_full_grp = build_full_grouped_with_giftset(
+            retail_product_grouped, gift_qty_by_code, gift_name_by_code
+        )
+        combined_full_grp = build_full_grouped_with_giftset(
+            product_grouped, gift_qty_by_code, gift_name_by_code
+        )
+
         # ── KPI 카드 ───────────────────────────────────────────────
         k1, k2, k3, k4 = st.columns(4)
         k1.metric("총매출", fmt_krw(total_sales))
@@ -880,37 +966,50 @@ def render():
                 top_n=10,
             )
 
-        p1, p2 = st.columns(2)
-        with p1:
-            render_pie_chart(
-                make_product_pie_df(retail_product_grouped),
-                label_col="구분",
-                value_col="금액",
-                qty_col="판매수량",
-                title="시가상품별 매출금액 비중 (소매)",
-                value_label="매출금액",
-                color_map=pie_color_map,
-            )
-        with p2:
-            render_pie_chart(
-                make_product_pie_df(wholesale_product_grouped),
-                label_col="구분",
-                value_col="금액",
-                qty_col="판매수량",
-                title="시가상품별 매출금액 비중 (도매)",
-                value_label="매출금액",
-                color_map=pie_color_map,
-            )
+        st.caption(
+            "소매 파이는 선물세트 수량을 포함합니다(선물세트는 채널 구분이 없어 소매로 간주, "
+            "매출·이익은 상품별 직접판매 평균 단가·단위이익 기반 추정치). "
+            "도매는 선물세트 개념이 없어 도매 직접판매만 집계합니다."
+        )
+        render_pie_chart(
+            make_product_pie_df(retail_full_grp),
+            label_col="구분",
+            value_col="금액",
+            qty_col="판매수량",
+            title="시가상품별 매출금액 비중 (소매, 선물세트 포함 추정)",
+            value_label="매출금액",
+            color_map=pie_color_map,
+            height=560,
+            show_top_labels=True,
+            label_value_formatter=fmt_krw_short,
+        )
+        render_pie_chart(
+            make_product_pie_df(wholesale_product_grouped),
+            label_col="구분",
+            value_col="금액",
+            qty_col="판매수량",
+            title="시가상품별 매출금액 비중 (도매)",
+            value_label="매출금액",
+            color_map=pie_color_map,
+            height=560,
+            show_top_labels=True,
+            label_value_formatter=fmt_krw_short,
+        )
 
         st.divider()
 
         # ── 통합(소매+도매+선물세트) 지표별 파이차트 ─────────────────
-        st.markdown("### 소매·도매 통합 지표별 비중 (직접 판매 기준, 선물세트 제외)")
-        st.caption("상위 5개 항목은 조각 위에 값과 비율을 함께 표시합니다.")
+        st.markdown("### 소매·도매 통합 지표별 비중 (선물세트 수량 포함, 매출·이익은 추정치)")
+        st.caption(
+            "판매수량은 선물세트로 나간 수량까지 포함합니다. 매출·이익은 선물세트분에 대해 "
+            "실제 회계상 매출이 없는 대신, 해당 상품의 직접판매 평균 단가·단위이익 × 선물세트 수량으로 "
+            "추정해 더한 값입니다(직접판매 이력이 없는 상품은 추정 불가로 0 처리). "
+            "모든 조각 위에 상품코드·값·비율을 함께 표시합니다."
+        )
 
-        sales_pie_all = make_full_pie_df(product_grouped, "매출", "판매량")
-        profit_pie_all = make_full_pie_df(product_grouped, "이익", "판매량")
-        qty_pie_all = make_full_pie_df(product_grouped, "판매량", None)
+        sales_pie_all = make_full_pie_df(combined_full_grp, "매출", "판매량")
+        profit_pie_all = make_full_pie_df(combined_full_grp, "이익", "판매량")
+        qty_pie_all = make_full_pie_df(combined_full_grp, "판매량", None)
 
         render_pie_chart(
             sales_pie_all,
@@ -922,7 +1021,6 @@ def render():
             color_map=pie_color_map,
             height=560,
             show_top_labels=True,
-            top_label_n=5,
             label_value_formatter=fmt_krw_short,
         )
         render_pie_chart(
@@ -935,7 +1033,6 @@ def render():
             color_map=pie_color_map,
             height=560,
             show_top_labels=True,
-            top_label_n=5,
             label_value_formatter=fmt_krw_short,
         )
         render_pie_chart(
@@ -949,7 +1046,6 @@ def render():
             color_map=pie_color_map,
             height=560,
             show_top_labels=True,
-            top_label_n=5,
             label_value_formatter=fmt_qty_short,
         )
 
