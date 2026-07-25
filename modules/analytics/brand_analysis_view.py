@@ -263,16 +263,17 @@ def render_pie_chart(
             f"{lbl}\n{fmt_fn(v)}\n({p:.1f}%)" if r <= n_limit else ""
             for lbl, v, p, r in zip(df[label_col].astype(str), df[value_col], df["_pct"], rank)
         ]
-        # 라벨은 도넛 바깥쪽이 아니라 안쪽(테두리~중심 사이)에 배치한다.
-        # 바깥쪽(outer_radius 초과)에 두면 차트 실제 폭이 좁아질 때 캔버스 밖으로
-        # 잘려서 안 보이는 문제가 있어, 항상 파이가 그려지는 영역 안쪽으로 고정한다.
-        mid_radius = (inner_radius + outer_radius) / 2
+        # 라벨을 도넛 정중앙이 아니라 바깥쪽 테두리에 가깝게 배치한다.
+        # 반지름이 커질수록 원주 길이가 늘어나 조각 사이 간격도 넓어져 라벨이 덜 겹친다.
+        # 다만 outer_radius를 넘기면 차트 폭이 좁을 때 캔버스 밖으로 잘릴 수 있어
+        # outer_radius 안쪽(85% 지점)까지만 이동한다.
+        label_radius = inner_radius + (outer_radius - inner_radius) * 0.85
         text = alt.Chart(df).encode(
             theta=alt.Theta(field=value_col, type="quantitative", stack=True),
             order=alt.Order(value_col, sort="descending"),
             text=alt.Text("_label:N"),
         ).mark_text(
-            radius=mid_radius, size=11, fontWeight="bold", color="white", lineBreak="\n"
+            radius=label_radius, size=11, fontWeight="bold", color="white", lineBreak="\n"
         )
         layers.append(text)
 
