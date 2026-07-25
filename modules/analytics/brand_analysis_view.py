@@ -98,22 +98,53 @@ def group_minor_as_others(
     return top_df
 
 
-PIE_PALETTE = [
-    "#4C78A8", "#F58518", "#54A24B", "#B279A2", "#E45756",
-    "#72B7B2", "#B6992D", "#9D755D", "#D67195", "#17BECF",
-    "#EECA3B", "#7A5195",
-]
 PIE_OTHER_COLOR = "#B0B0B0"
+
+
+def _hsl_to_hex(h: float, s: float, l: float) -> str:
+    """h: 0~360, s/l: 0~1. HSL -> #RRGGBB 변환."""
+    h = h % 360
+    c = (1 - abs(2 * l - 1)) * s
+    x = c * (1 - abs((h / 60) % 2 - 1))
+    m = l - c / 2
+    if h < 60:
+        r, g, b = c, x, 0
+    elif h < 120:
+        r, g, b = x, c, 0
+    elif h < 180:
+        r, g, b = 0, c, x
+    elif h < 240:
+        r, g, b = 0, x, c
+    elif h < 300:
+        r, g, b = x, 0, c
+    else:
+        r, g, b = c, 0, x
+    r, g, b = [round((v + m) * 255) for v in (r, g, b)]
+    return f"#{r:02X}{g:02X}{b:02X}"
 
 
 def build_product_color_map(codes) -> dict:
     """
     상품코드 -> 고정 색상 매핑을 한 번만 생성한다.
-    코드를 정렬한 뒤 팔레트를 순서대로 배정하므로, 어떤 파이차트(Top N)에 등장하든
-    같은 상품은 항상 같은 색으로 표시된다. "기타"는 별도로 항상 회색 처리한다.
+    상품 개수만큼 색상환(Hue 0~360도)을 균등하게 나눠서 배정하므로,
+    상품이 몇 개든 서로 다른 색이 나오고(고정 팔레트처럼 순환되며 겹치지 않는다),
+    코드를 정렬한 뒤 배정하므로 어떤 파이차트(Top N)에 등장하든 같은 상품은 항상 같은 색이다.
+    채도/명도를 살짝씩 교차시켜(짝수/홀수 인덱스) 인접한 색상환 각도끼리도 더 잘 구분되게 한다.
+    "기타"는 별도로 항상 회색 처리한다.
     """
     sorted_codes = sorted(str(c) for c in codes if str(c).strip())
-    return {code: PIE_PALETTE[i % len(PIE_PALETTE)] for i, code in enumerate(sorted_codes)}
+    n = len(sorted_codes)
+    if n == 0:
+        return {}
+
+    color_map = {}
+    for i, code in enumerate(sorted_codes):
+        hue = (i * 360.0 / n) % 360
+        # 인접 색상 간 대비를 높이기 위해 채도/명도를 살짝 교차
+        sat = 0.62 if i % 2 == 0 else 0.75
+        light = 0.52 if i % 2 == 0 else 0.42
+        color_map[code] = _hsl_to_hex(hue, sat, light)
+    return color_map
 
 
 def fmt_krw_short(x: float) -> str:
@@ -186,18 +217,25 @@ def render_pie_chart(
     if qty_col and qty_col in df.columns:
         tooltip.append(alt.Tooltip(qty_col, title="판매수량", format=",.0f"))
 
-    # ── 색상 배정: color_map이 있으면 상품코드 고정 색상, 없으면 순서 기반 팔레트 ──
+    # ── 색상 배정: color_map이 있으면 상품코드 고정 색상, 없으면 이 차트 안에서
+    #    동적으로 색상환을 균등 분할해 배정 (겹치지 않도록) ──
     domain = df[label_col].astype(str).tolist()
+    fallback_labels = [d for d in domain if d != "기타" and not (color_map and d in color_map)]
+    fallback_map = {}
+    if fallback_labels:
+        n_fb = len(fallback_labels)
+        for i, lbl in enumerate(fallback_labels):
+            hue = (i * 360.0 / n_fb) % 360
+            fallback_map[lbl] = _hsl_to_hex(hue, 0.65, 0.5)
+
     color_range = []
-    fallback_idx = 0
     for d in domain:
         if d == "기타":
             color_range.append(PIE_OTHER_COLOR)
         elif color_map and d in color_map:
             color_range.append(color_map[d])
         else:
-            color_range.append(PIE_PALETTE[fallback_idx % len(PIE_PALETTE)])
-            fallback_idx += 1
+            color_range.append(fallback_map[d])
 
     outer_radius = max(90, height // 2 - 70)
     inner_radius = min(50, outer_radius - 30) if outer_radius > 30 else 0
