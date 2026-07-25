@@ -219,14 +219,20 @@ def render_pie_chart(
         fmt_fn = label_value_formatter or (lambda v: format(v, value_format))
         rank = df[value_col].rank(method="first", ascending=False)
         df["_label"] = [
-            f"{fmt_fn(v)} ({p:.1f}%)" if r <= top_label_n else ""
+            f"{fmt_fn(v)}\n({p:.1f}%)" if r <= top_label_n else ""
             for v, p, r in zip(df[value_col], df["_pct"], rank)
         ]
+        # 라벨은 도넛 바깥쪽이 아니라 안쪽(테두리~중심 사이)에 배치한다.
+        # 바깥쪽(outer_radius 초과)에 두면 차트 실제 폭이 좁아질 때 캔버스 밖으로
+        # 잘려서 안 보이는 문제가 있어, 항상 파이가 그려지는 영역 안쪽으로 고정한다.
+        mid_radius = (inner_radius + outer_radius) / 2
         text = alt.Chart(df).encode(
             theta=alt.Theta(field=value_col, type="quantitative", stack=True),
             order=alt.Order(value_col, sort="descending"),
             text=alt.Text("_label:N"),
-        ).mark_text(radius=outer_radius + 22, size=12, fontWeight="bold")
+        ).mark_text(
+            radius=mid_radius, size=12, fontWeight="bold", color="white", lineBreak="\n"
+        )
         layers.append(text)
 
     chart = alt.layer(*layers).properties(title=title, height=height)
