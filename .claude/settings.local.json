@@ -7,7 +7,12 @@
       "Bash(python report.py)",
       "Bash(PYTHONIOENCODING=utf-8 python report.py)",
       "Skill(artifact-design)",
-      "Skill(artifact-design:*)"
+      "Skill(artifact-design:*)",
+      "Bash(python3 compute_pie_data.py \"C:\\\\DAILYCIGAR_DB\\\\cigar.db\" pie_data.json)",
+      "Bash(echo \"Exit code: $?\")",
+      "Bash(npm init *)",
+      "Bash(npm install *)",
+      "Bash(ls -la \"C:\\\\Users\\\\lovec\\\\Documents\\\\데일리시가\\\\4.매장운영\\\\브랜드분석리포트\" 2>&1)"
     ]
   }
 }

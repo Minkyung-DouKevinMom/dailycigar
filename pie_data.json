@@ -1,0 +1,218 @@
+{
+  "sales": [
+    {
+      "label": "DJUA(R)",
+      "value": 15656595,
+      "pct": 13.6,
+      "color": "39D054"
+    },
+    {
+      "label": "ALH(R)",
+      "value": 13472405,
+      "pct": 11.7,
+      "color": "C3D039"
+    },
+    {
+      "label": "TABFF(PURITOS)",
+      "value": 10374000,
+      "pct": 9.0,
+      "color": "D0398B"
+    },
+    {
+      "label": "TAB(R)",
+      "value": 10220133,
+      "pct": 8.9,
+      "color": "1B38BB"
+    },
+    {
+      "label": "1881(C)",
+      "value": 9917410,
+      "pct": 8.6,
+      "color": "D03939"
+    },
+    {
+      "label": "TABE(R)",
+      "value": 6678953,
+      "pct": 5.8,
+      "color": "7039D0"
+    },
+    {
+      "label": "DJUA(C)",
+      "value": 6222246,
+      "pct": 5.4,
+      "color": "55BB1B"
+    },
+    {
+      "label": "ALH(C)",
+      "value": 5092913,
+      "pct": 4.4,
+      "color": "BB721B"
+    },
+    {
+      "label": "TAB(HC)",
+      "value": 3614877,
+      "pct": 3.1,
+      "color": "39A7D0"
+    },
+    {
+      "label": "TABFF(CHOCO)",
+      "value": 3395476,
+      "pct": 2.9,
+      "color": "AD1BBB"
+    },
+    {
+      "label": "기타",
+      "value": 30781692,
+      "pct": 26.7,
+      "color": "B0B0B0"
+    }
+  ],
+  "profit": [
+    {
+      "label": "DJUA(R)",
+      "value": 9469380,
+      "pct": 14.6,
+      "color": "39D054"
+    },
+    {
+      "label": "ALH(R)",
+      "value": 7114904,
+      "pct": 11.0,
+      "color": "C3D039"
+    },
+    {
+      "label": "1881(C)",
+      "value": 6303567,
+      "pct": 9.7,
+      "color": "D03939"
+    },
+    {
+      "label": "TABFF(PURITOS)",
+      "value": 5218058,
+      "pct": 8.1,
+      "color": "D0398B"
+    },
+    {
+      "label": "TAB(R)",
+      "value": 4865051,
+      "pct": 7.5,
+      "color": "1B38BB"
+    },
+    {
+      "label": "TABE(R)",
+      "value": 4331614,
+      "pct": 6.7,
+      "color": "7039D0"
+    },
+    {
+      "label": "DJUA(C)",
+      "value": 3711156,
+      "pct": 5.7,
+      "color": "55BB1B"
+    },
+    {
+      "label": "ALH(C)",
+      "value": 3228932,
+      "pct": 5.0,
+      "color": "BB721B"
+    },
+    {
+      "label": "DJUA(T)",
+      "value": 2077193,
+      "pct": 3.2,
+      "color": "1BBB90"
+    },
+    {
+      "label": "TAB(HC)",
+      "value": 1831424,
+      "pct": 2.8,
+      "color": "39A7D0"
+    },
+    {
+      "label": "기타",
+      "value": 16622684,
+      "pct": 25.7,
+      "color": "B0B0B0"
+    }
+  ],
+  "qty": [
+    {
+      "label": "ALH(R)",
+      "value": 830,
+      "pct": 15.4,
+      "color": "C3D039"
+    },
+    {
+      "label": "TAB(R)",
+      "value": 678,
+      "pct": 12.5,
+      "color": "1B38BB"
+    },
+    {
+      "label": "TAB(HC)",
+      "value": 608,
+      "pct": 11.2,
+      "color": "39A7D0"
+    },
+    {
+      "label": "DJUA(R)",
+      "value": 594,
+      "pct": 11.0,
+      "color": "39D054"
+    },
+    {
+      "label": "1881(C)",
+      "value": 460,
+      "pct": 8.5,
+      "color": "D03939"
+    },
+    {
+      "label": "TABFF(PURITOS)",
+      "value": 364,
+      "pct": 6.7,
+      "color": "D0398B"
+    },
+    {
+      "label": "ALH(C)",
+      "value": 332,
+      "pct": 6.1,
+      "color": "BB721B"
+    },
+    {
+      "label": "DJUA(C)",
+      "value": 313,
+      "pct": 5.8,
+      "color": "55BB1B"
+    },
+    {
+      "label": "TABE(R)",
+      "value": 174,
+      "pct": 3.2,
+      "color": "7039D0"
+    },
+    {
+      "label": "TABFF(CHOCO)",
+      "value": 130,
+      "pct": 2.4,
+      "color": "AD1BBB"
+    },
+    {
+      "label": "기타",
+      "value": 922,
+      "pct": 17.1,
+      "color": "B0B0B0"
+    }
+  ],
+  "insights": {
+    "period_from": "2025.07",
+    "period_to": "2026.07",
+    "sales_top1_code": "DJUA(R)",
+    "profit_top1_code": "DJUA(R)",
+    "sales_top1_pct": 13.6,
+    "profit_top1_pct": 14.6,
+    "sales_top5_share": 51.7,
+    "qty_top1_code": "ALH(R)",
+    "qty_top1_pct": 15.4,
+    "overall_margin_pct": 56.1
+  }
+}

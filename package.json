@@ -1,0 +1,22 @@
+{
+  "name": "dailycigar_db",
+  "version": "1.0.0",
+  "description": "Daily Cigar 운영 App",
+  "main": "build_pie_report.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Minkyung-DouKevinMom/dailycigar.git"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Minkyung-DouKevinMom/dailycigar/issues"
+  },
+  "homepage": "https://github.com/Minkyung-DouKevinMom/dailycigar#readme",
+  "dependencies": {
+    "pptxgenjs": "^4.0.1"
+  }
+}
