@@ -89,6 +89,9 @@ def ensure_wholesale_sales_columns(conn):
         "supply_amount": "REAL",
         "vat_amount": "REAL",
         "total_amount_vat": "REAL",
+        "grade_code_applied": "TEXT",
+        "discount_rate_applied": "REAL",
+        "normal_supply_amount": "REAL",
         "updated_at": "TEXT",
     }
     cur = conn.cursor()
@@ -360,6 +363,26 @@ def ensure_partner_grade_tables(conn):
         if "grade_name" not in existing:
             cur.execute("ALTER TABLE partner_grade_mst ADD COLUMN grade_name TEXT")
             conn.commit()
+
+        # 이미 등급 데이터가 있던 테이블이라 위 ALTER로 min_purchase_amount가 전부 0으로 깔린 경우를 보정.
+        # 등급코드명(대소문자 무관)으로 PDF 기준 문턱값을 매칭해서, 아직 0으로 비어있는 행만 채운다.
+        pdf_thresholds_by_name = {
+            "bronze": 0,
+            "silver": 6_000_000,
+            "gold": 12_000_000,
+            "platinum": 36_000_000,
+            "diamond": 60_000_000,
+        }
+        code_col_df = pd.read_sql("SELECT grade_code, min_purchase_amount FROM partner_grade_mst", conn)
+        for _, row in code_col_df.iterrows():
+            code_norm = str(row["grade_code"] or "").strip().lower()
+            current_min = _safe_float(row.get("min_purchase_amount", 0), 0)
+            if code_norm in pdf_thresholds_by_name and current_min == 0 and pdf_thresholds_by_name[code_norm] != 0:
+                cur.execute(
+                    "UPDATE partner_grade_mst SET min_purchase_amount = ? WHERE grade_code = ?",
+                    (pdf_thresholds_by_name[code_norm], row["grade_code"]),
+                )
+        conn.commit()
     else:
         cur.execute(
             """
@@ -395,14 +418,20 @@ def ensure_partner_grade_tables(conn):
 
 
 def load_partner_grade_thresholds(conn) -> pd.DataFrame:
-    """등급코드 -> 최소 누적 구매액(min_purchase_amount) / 할인율, 임계값 오름차순 정렬"""
+    """
+    등급코드 -> 최소 누적 구매액(min_purchase_amount) / 할인율, 임계값 오름차순 정렬.
+
+    할인율 컬럼은 실제 값이 채워진 'discount_rate'를 우선 사용한다
+    ('estimate_discount_rate'는 값이 비어(0) 있는 미사용 placeholder 컬럼인 경우가 있어 후순위).
+    저장된 값이 1보다 크면(예: 5, 10, 20 = 퍼센트 표기) 자동으로 100으로 나눠 소수(0.05 등)로 정규화한다.
+    """
     if not table_exists(conn, "partner_grade_mst"):
         return pd.DataFrame(columns=["grade_code", "min_purchase_amount", "discount_rate"])
 
     cols = get_table_columns(conn, "partner_grade_mst")
     code_col = find_existing_column(cols, ["grade_code", "partner_grade_code", "code"])
     min_col = find_existing_column(cols, ["min_purchase_amount", "min_amount", "threshold_amount"])
-    rate_col = find_existing_column(cols, ["estimate_discount_rate", "discount_rate"])
+    rate_col = find_existing_column(cols, ["discount_rate", "estimate_discount_rate"])
     if not code_col or not min_col or not rate_col:
         return pd.DataFrame(columns=["grade_code", "min_purchase_amount", "discount_rate"])
 
@@ -416,6 +445,9 @@ def load_partner_grade_thresholds(conn) -> pd.DataFrame:
         return df
     df["min_purchase_amount"] = df["min_purchase_amount"].apply(_safe_float)
     df["discount_rate"] = df["discount_rate"].apply(_safe_float)
+    if (df["discount_rate"] > 1).any():
+        # 5, 10, 20처럼 퍼센트 단위로 저장된 값을 0.05, 0.10, 0.20 소수로 정규화
+        df["discount_rate"] = df["discount_rate"] / 100.0
     return df
 
 
@@ -619,6 +651,8 @@ def compute_tiered_order_pricing(
             "segments": [],
             "cumulative_before": 0.0,
             "cumulative_after": 0.0,
+            "discount_ratio": 0.0,
+            "final_grade_code": None,
         }
 
     order_date = order_date or pd.Timestamp.today().strftime("%Y-%m-%d")
@@ -643,10 +677,12 @@ def compute_tiered_order_pricing(
     )
     window_start = str(last_grade_row.iloc[0]["start_date"]) if not last_grade_row.empty else join_date
 
-    day_before_order = (pd.to_datetime(order_date) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-    cumulative_before = get_partner_purchase_sum(conn, partner_id, window_start, day_before_order)
-    if pd.to_datetime(day_before_order) < pd.to_datetime(window_start):
-        cumulative_before = 0.0  # 주문일이 window_start와 같거나 이전인 경우 방어
+    # 아직 저장 전인 이번 주문 자체는 DB에 없으므로, 주문일을 포함해서 합산해도
+    # 이번 주문과 중복 계산되지 않는다. (기존에는 '주문일 하루 전까지'로 제한해서
+    # 같은 날짜에 먼저 저장된 다른 주문 건까지 함께 누락되는 버그가 있었음)
+    cumulative_before = get_partner_purchase_sum(conn, partner_id, window_start, order_date)
+    if pd.to_datetime(order_date) < pd.to_datetime(window_start):
+        cumulative_before = 0.0  # 주문일이 window_start보다 이전인 경우 방어
 
     order_normal_supply_amount = float(qty) * float(base_supply_price)
 
@@ -690,13 +726,32 @@ def compute_tiered_order_pricing(
     discount_ratio = (total_discount / order_normal_supply_amount) if order_normal_supply_amount > 0 else 0.0
     blended_unit_price = base_unit_price * (1 - discount_ratio)
 
+    final_grade_code = segments[-1]["grade_code"] if segments else None
+
     return {
         "blended_unit_price": round(blended_unit_price),
         "blended_supply_price": round(blended_supply_price),
         "segments": segments,
         "cumulative_before": cumulative_before,
         "cumulative_after": cumulative_before + order_normal_supply_amount,
+        "discount_ratio": discount_ratio,
+        "final_grade_code": final_grade_code,
     }
+
+
+def build_tiered_pricing_note(pricing_result: dict) -> str:
+    """
+    compute_tiered_order_pricing 결과 중 2개 이상 등급 구간에 걸친 주문이면
+    비고(notes)에 자동으로 남길 '혼합할인' 요약 문자열을 만든다.
+    한 구간에만 속하는 일반 주문이면 빈 문자열을 반환한다(자동 기록 없음).
+    """
+    if not pricing_result:
+        return ""
+    segs = [s for s in (pricing_result.get("segments") or []) if s["amount"] > 0]
+    if len(segs) <= 1:
+        return ""
+    parts = [f"{s['grade_code']}구간 ₩{s['amount']:,.0f}×{s['discount_rate']*100:.0f}%" for s in segs]
+    return "[혼합할인] " + " + ".join(parts)
 
 
 def _safe_float(value, default=0.0) -> float:
@@ -1042,6 +1097,49 @@ def _build_statement_from_rows(conn, selected_df: pd.DataFrame, document_no: str
         "total_amount": float(statement_df["합계"].sum()),
     }
 
+    # 등급 할인 합계 계산 (정상가 합계 - 실제 청구 공급가액 합계)
+    normal_supply_series = pd.to_numeric(
+        selected_df.get("normal_supply_amount", pd.Series(dtype=float)), errors="coerce"
+    )
+    actual_supply_series = pd.to_numeric(
+        selected_df.get("supply_amount", pd.Series(dtype=float)), errors="coerce"
+    ).fillna(0)
+    # normal_supply_amount가 기록 안 된(과거) 건은 실제 공급가액을 그대로 정상가로 간주(할인 0원 처리)
+    normal_supply_series = normal_supply_series.fillna(actual_supply_series)
+
+    normal_supply_sum = float(normal_supply_series.sum())
+    discount_amount = max(0.0, round(normal_supply_sum - totals["supply_amount"]))
+
+    applied_grades = sorted(
+        {
+            str(g).strip()
+            for g in selected_df.get("grade_code_applied", pd.Series(dtype=str)).fillna("").tolist()
+            if str(g).strip()
+        }
+    )
+
+    totals["normal_supply_amount"] = normal_supply_sum
+    totals["discount_amount"] = discount_amount
+    totals["applied_grades"] = applied_grades
+
+    discount_note = ""
+    if discount_amount > 0:
+        grade_label = ", ".join(applied_grades) if applied_grades else "등급"
+        discount_note = (
+            f"[{grade_label} 등급할인 -₩{discount_amount:,.0f} 반영 "
+            f"(정상가 합계 ₩{normal_supply_sum:,.0f} → 공급가액 ₩{totals['supply_amount']:,.0f})]"
+        )
+
+    base_notes = " / ".join(
+        sorted(
+            {
+                str(x).strip()
+                for x in selected_df.get("notes", pd.Series(dtype=str)).fillna("").tolist()
+                if str(x).strip()
+            }
+        )
+    )
+
     header = {
         "partner_id": partner_id,
         "partner_name": partner_name,
@@ -1052,15 +1150,7 @@ def _build_statement_from_rows(conn, selected_df: pd.DataFrame, document_no: str
         "sale_date": sale_date_display,
         "due_date": due_date_display,
         "document_no": document_no or "",
-        "notes": " / ".join(
-            sorted(
-                {
-                    str(x).strip()
-                    for x in selected_df.get("notes", pd.Series(dtype=str)).fillna("").tolist()
-                    if str(x).strip()
-                }
-            )
-        ),
+        "notes": (f"{discount_note} / {base_notes}" if base_notes else discount_note) if discount_note else base_notes,
     }
 
     return header, statement_df, totals
@@ -1102,6 +1192,21 @@ def _render_statement_preview(header: dict, statement_df: pd.DataFrame, totals: 
         st.metric("부가세 합계", f"₩{totals['vat_amount']:,.0f}")
     with m3:
         st.metric("총 합계", f"₩{totals['total_amount']:,.0f}")
+
+    if totals.get("discount_amount", 0) > 0:
+        d1, d2, d3 = st.columns(3)
+        with d1:
+            st.metric("정상가 합계", f"₩{totals['normal_supply_amount']:,.0f}")
+        with d2:
+            grade_label = ", ".join(totals.get("applied_grades", [])) or "등급"
+            st.metric(f"{grade_label} 등급할인", f"-₩{totals['discount_amount']:,.0f}")
+        with d3:
+            discount_pct = (
+                totals["discount_amount"] / totals["normal_supply_amount"] * 100
+                if totals.get("normal_supply_amount")
+                else 0
+            )
+            st.metric("평균 할인율", f"{discount_pct:.1f}%")
 
 
 def _make_statement_excel_bytes(header: dict, statement_df: pd.DataFrame, totals: dict) -> bytes:
@@ -1376,6 +1481,9 @@ def insert_wholesale_sale(
     total_amount_vat: float,
     profit_amount: float,
     notes: str,
+    grade_code_applied: str = None,
+    discount_rate_applied: float = 0.0,
+    normal_supply_amount: float = None,
 ):
     ensure_wholesale_sales_columns(conn)
     cur = conn.cursor()
@@ -1397,8 +1505,11 @@ def insert_wholesale_sale(
             total_amount_vat,
             profit_amount,
             notes,
+            grade_code_applied,
+            discount_rate_applied,
+            normal_supply_amount,
             updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """,
         (
             sale_date,
@@ -1416,9 +1527,13 @@ def insert_wholesale_sale(
             total_amount_vat,
             profit_amount,
             notes,
+            grade_code_applied,
+            discount_rate_applied,
+            normal_supply_amount,
         ),
     )
     conn.commit()
+
 
 
 def update_wholesale_sale(
@@ -1826,6 +1941,7 @@ def render_wholesale_management(conn):
         auto_supply_price = 0.0
         auto_unit_cost = 0.0
         pricing_result = None
+        base_supply_price_ref = 0.0
 
         if item_type == "cigar":
             if cigar_products.empty:
@@ -1847,6 +1963,7 @@ def render_wholesale_management(conn):
 
             base_unit_price = _safe_float(selected_product.get("retail_price_krw", 0))
             base_supply_price = _safe_float(selected_product.get("supply_price_krw", 0))
+            base_supply_price_ref = base_supply_price
             auto_unit_cost = _safe_float(selected_product.get("korea_cost_krw", 0))  # 원가는 할인 미적용
 
             pricing_result = compute_tiered_order_pricing(
@@ -1879,6 +1996,7 @@ def render_wholesale_management(conn):
 
             base_unit_price = _safe_float(selected_product.get("retail_price_krw", 0))
             base_supply_price = _safe_float(selected_product.get("supply_price_krw", 0))
+            base_supply_price_ref = base_supply_price
             auto_unit_cost = 0
 
             pricing_result = compute_tiered_order_pricing(
@@ -1900,9 +2018,30 @@ def render_wholesale_management(conn):
                 auto_unit_cost=auto_unit_cost,
             )
 
+        normal_total_for_display = base_supply_price_ref * float(qty) if base_supply_price_ref > 0 else None
+
+        if pricing_result and normal_total_for_display is not None:
+            discount_ratio_display = pricing_result.get("discount_ratio", 0.0)
+            if discount_ratio_display > 0:
+                discount_amt_display = normal_total_for_display - pricing_result["blended_supply_price"] * qty
+                st.info(
+                    f"⚠️ **등급 할인이 자동 반영된 값입니다** — 아래 '공급가'는 할인 적용 후 금액입니다.\n\n"
+                    f"정상 공급가 합계: ₩{normal_total_for_display:,.0f} → 자동계산 공급가 합계: "
+                    f"₩{pricing_result['blended_supply_price'] * qty:,.0f} "
+                    f"(할인 ₩{discount_amt_display:,.0f}, 평균 {discount_ratio_display*100:.1f}%)"
+                )
+            else:
+                st.caption(f"정상 공급가 합계: ₩{normal_total_for_display:,.0f} (현재 등급 기준 할인 없음)")
+
         with c2:
-            unit_price = st.number_input("단가 (₩)", min_value=0, step=100, format="%d", key="wh_unit_price")
-            supply_price = st.number_input("공급가 (₩)", min_value=0, step=100, format="%d", key="wh_supply_price")
+            unit_price = st.number_input(
+                "단가 (₩)", min_value=0, step=100, format="%d", key="wh_unit_price",
+                help="상품 정상 단가에 거래처 등급 할인이 자동 반영된 값입니다. 필요시 직접 수정 가능합니다.",
+            )
+            supply_price = st.number_input(
+                "공급가 (₩) — 등급할인 자동반영됨", min_value=0, step=100, format="%d", key="wh_supply_price",
+                help="상품 정상 공급가에 거래처 등급 할인이 자동 반영된 값입니다. 필요시 직접 수정 가능합니다.",
+            )
             unit_cost = st.number_input("원가 (₩)", min_value=0, step=100, format="%d", key="wh_unit_cost")
             notes = st.text_area("비고", key="wh_notes")
 
@@ -1921,7 +2060,7 @@ def render_wholesale_management(conn):
             if multi_tier:
                 cum_before = pricing_result["cumulative_before"]
                 cum_after = pricing_result["cumulative_after"]
-                st.caption(f"이 거래처의 window 내 누적 공급가액: ₩{cum_before:,.0f} → 이번 주문 후 ₩{cum_after:,.0f}")
+                st.caption(f"이 거래처의 누적 공급가액(할인 판단 기준): ₩{cum_before:,.0f} → 이번 주문 후 ₩{cum_after:,.0f}")
                 for seg in segs:
                     if seg["amount"] <= 0:
                         continue
@@ -1929,7 +2068,7 @@ def render_wholesale_management(conn):
                         f"　· {seg['grade_code']} 구간 ₩{seg['amount']:,.0f} × "
                         f"{seg['discount_rate']*100:.0f}% 할인"
                     )
-                st.caption("→ 위 구간별 계산을 반영한 혼합 단가/공급가가 기본값으로 채워졌습니다 (직접 수정 가능)")
+                st.caption("→ 이번 주문이 등급 문턱에 걸쳐있어 구간별로 나눠 계산된 결과입니다")
 
         if item_type == "cigar":
             st.caption("정상가 기준 = import_item.retail_price_krw / import_item.supply_price_krw (원가는 할인 미반영: import_item.korea_cost_krw)")
@@ -1940,6 +2079,20 @@ def render_wholesale_management(conn):
             partner_id = int(partners.loc[partners["partner_name"] == partner_name, "id"].iloc[0])
 
             supply_amount, vat_amount, total_amount_vat, profit_amount = _render_amount_summary(qty, unit_price, supply_price, unit_cost)
+
+            auto_note = build_tiered_pricing_note(pricing_result)
+            final_notes = notes.strip()
+            if auto_note:
+                final_notes = f"{final_notes} / {auto_note}" if final_notes else auto_note
+
+            grade_code_applied = pricing_result.get("final_grade_code") if pricing_result else None
+            if base_supply_price_ref > 0:
+                # 실제 저장되는 공급가(수동 수정 가능) 기준으로 적용할인율을 재계산 — 표시값과 실제 저장값을 일치시킴
+                discount_rate_applied = max(0.0, 1 - (float(supply_price) / base_supply_price_ref))
+            else:
+                discount_rate_applied = pricing_result.get("discount_ratio", 0.0) if pricing_result else 0.0
+
+            normal_supply_amount = float(qty) * base_supply_price_ref if base_supply_price_ref > 0 else float(supply_amount)
 
             insert_wholesale_sale(
                 conn=conn,
@@ -1956,9 +2109,12 @@ def render_wholesale_management(conn):
                 vat_amount=float(vat_amount),
                 total_amount_vat=float(total_amount_vat),
                 profit_amount=float(profit_amount),
-                notes=notes.strip(),
+                notes=final_notes,
+                grade_code_applied=grade_code_applied,
+                discount_rate_applied=float(discount_rate_applied),
+                normal_supply_amount=float(normal_supply_amount),
             )
-            st.success("도매 판매 이력이 저장되었습니다.")
+            st.success("도매 판매 이력이 저장되었습니다." + (f" (비고에 혼합할인 내역 자동 기록됨)" if auto_note else ""))
             st.rerun()
         else:
             _render_amount_summary(qty, unit_price, supply_price, unit_cost)
@@ -2034,6 +2190,8 @@ def render_wholesale_management(conn):
         "qty": "수량",
         "supply_price": "공급가(₩)",
         "supply_amount": "공급가액(₩)",
+        "grade_code_applied": "적용등급",
+        "discount_rate_applied": "적용할인율",
         "vat_amount": "부가세(₩)",
         "total_amount_vat": "부가세포함(₩)",
         "profit_amount": "예상마진(₩)",
@@ -2041,6 +2199,10 @@ def render_wholesale_management(conn):
     }
     available_cols = [c for c in display_cols if c in filtered.columns]
     grid_df = filtered[available_cols].rename(columns=display_cols).copy()
+    if "적용할인율" in grid_df.columns:
+        grid_df["적용할인율"] = pd.to_numeric(grid_df["적용할인율"], errors="coerce").map(
+            lambda x: f"{x*100:.1f}%" if pd.notna(x) and x > 0 else ("-" if pd.notna(x) else "")
+        )
     for col in ["공급가(₩)", "공급가액(₩)", "부가세(₩)", "부가세포함(₩)", "예상마진(₩)"]:
         if col in grid_df.columns:
             grid_df[col] = pd.to_numeric(grid_df[col], errors="coerce").map(
