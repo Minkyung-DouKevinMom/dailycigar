@@ -299,6 +299,299 @@ def load_grade_codes(conn) -> list[str]:
     return [str(x) for x in df["grade_code"].dropna().tolist()]
 
 
+def load_grade_discount_rate_map(conn) -> dict:
+    """
+    등급코드(grade_code) -> 견적/도매 자동 할인율(estimate_discount_rate) 매핑.
+    예: {"silver": 0.05, "gold": 0.1, ...}
+    partner_grade_mst 테이블 또는 필요한 컬럼이 없으면 빈 dict 반환 (할인 미적용).
+    """
+    if not table_exists(conn, "partner_grade_mst"):
+        return {}
+
+    cols = get_table_columns(conn, "partner_grade_mst")
+    code_col = find_existing_column(cols, ["grade_code", "partner_grade_code", "code"])
+    rate_col = find_existing_column(cols, ["estimate_discount_rate", "discount_rate"])
+    if not code_col or not rate_col:
+        return {}
+
+    sql = f"SELECT {code_col} AS grade_code, {rate_col} AS discount_rate FROM partner_grade_mst"
+    df = pd.read_sql(sql, conn)
+    if df.empty:
+        return {}
+
+    result = {}
+    for _, row in df.iterrows():
+        code = str(row.get("grade_code", "") or "").strip()
+        if not code:
+            continue
+        result[code] = _safe_float(row.get("discount_rate", 0), 0)
+    return result
+
+
+def ensure_partner_grade_tables(conn):
+    """
+    파트너 등급 이력 테이블(partner_grade_history)을 생성하고,
+    partner_grade_mst에 등급 기준 누적액(min_purchase_amount) 컬럼을 보강한다.
+    partner_grade_mst가 완전히 비어있을 때만 PDF 기준(Bronze~Diamond) 기본값을 시드한다.
+    """
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS partner_grade_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            partner_id INTEGER NOT NULL,
+            grade_code TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT,
+            base_amount REAL,
+            notes TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.commit()
+
+    if table_exists(conn, "partner_grade_mst"):
+        existing = set(get_table_columns(conn, "partner_grade_mst"))
+        if "min_purchase_amount" not in existing:
+            cur.execute("ALTER TABLE partner_grade_mst ADD COLUMN min_purchase_amount REAL DEFAULT 0")
+            conn.commit()
+        if "grade_name" not in existing:
+            cur.execute("ALTER TABLE partner_grade_mst ADD COLUMN grade_name TEXT")
+            conn.commit()
+    else:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS partner_grade_mst (
+                grade_code TEXT PRIMARY KEY,
+                grade_name TEXT,
+                min_purchase_amount REAL DEFAULT 0,
+                estimate_discount_rate REAL DEFAULT 0,
+                sort_order INTEGER
+            )
+            """
+        )
+        conn.commit()
+
+    cnt = pd.read_sql("SELECT COUNT(*) AS cnt FROM partner_grade_mst", conn)["cnt"].iloc[0]
+    if int(cnt) == 0:
+        default_grades = [
+            ("bronze", "Bronze", 0, 0.0, 1),
+            ("silver", "Silver", 6_000_000, 0.05, 2),
+            ("gold", "Gold", 12_000_000, 0.10, 3),
+            ("platinum", "Platinum", 36_000_000, 0.15, 4),
+            ("diamond", "Diamond", 60_000_000, 0.20, 5),
+        ]
+        cur.executemany(
+            """
+            INSERT INTO partner_grade_mst
+                (grade_code, grade_name, min_purchase_amount, estimate_discount_rate, sort_order)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            default_grades,
+        )
+        conn.commit()
+
+
+def load_partner_grade_thresholds(conn) -> pd.DataFrame:
+    """등급코드 -> 최소 누적 구매액(min_purchase_amount) / 할인율, 임계값 오름차순 정렬"""
+    if not table_exists(conn, "partner_grade_mst"):
+        return pd.DataFrame(columns=["grade_code", "min_purchase_amount", "discount_rate"])
+
+    cols = get_table_columns(conn, "partner_grade_mst")
+    code_col = find_existing_column(cols, ["grade_code", "partner_grade_code", "code"])
+    min_col = find_existing_column(cols, ["min_purchase_amount", "min_amount", "threshold_amount"])
+    rate_col = find_existing_column(cols, ["estimate_discount_rate", "discount_rate"])
+    if not code_col or not min_col or not rate_col:
+        return pd.DataFrame(columns=["grade_code", "min_purchase_amount", "discount_rate"])
+
+    sql = f"""
+        SELECT {code_col} AS grade_code, {min_col} AS min_purchase_amount, {rate_col} AS discount_rate
+        FROM partner_grade_mst
+        ORDER BY {min_col} ASC
+    """
+    df = pd.read_sql(sql, conn)
+    if df.empty:
+        return df
+    df["min_purchase_amount"] = df["min_purchase_amount"].apply(_safe_float)
+    df["discount_rate"] = df["discount_rate"].apply(_safe_float)
+    return df
+
+
+def determine_grade_for_amount(thresholds_df: pd.DataFrame, cumulative_amount: float) -> Optional[dict]:
+    """누적 구매액에 해당하는 최고 등급을 반환한다 (thresholds_df는 min_purchase_amount 오름차순 정렬 상태여야 함)"""
+    if thresholds_df.empty:
+        return None
+    eligible = thresholds_df[thresholds_df["min_purchase_amount"] <= cumulative_amount]
+    row = eligible.iloc[-1] if not eligible.empty else thresholds_df.iloc[0]
+    return {
+        "grade_code": str(row["grade_code"]),
+        "min_purchase_amount": float(row["min_purchase_amount"]),
+        "discount_rate": float(row["discount_rate"]),
+    }
+
+
+def get_partner_active_grade_history(conn, partner_id: int, as_of_date: str = None) -> Optional[dict]:
+    """오늘(as_of_date) 기준으로 유효한 partner_grade_history 1건 조회"""
+    ensure_partner_grade_tables(conn)
+    as_of = as_of_date or pd.Timestamp.today().strftime("%Y-%m-%d")
+    sql = """
+        SELECT id, partner_id, grade_code, start_date, end_date, base_amount, notes
+        FROM partner_grade_history
+        WHERE partner_id = ?
+          AND start_date <= ?
+          AND (end_date IS NULL OR end_date >= ?)
+        ORDER BY start_date DESC
+        LIMIT 1
+    """
+    df = pd.read_sql(sql, conn, params=[partner_id, as_of, as_of])
+    return df.iloc[0].to_dict() if not df.empty else None
+
+
+def load_partner_active_grade_map(conn) -> pd.DataFrame:
+    """전체 거래처의 '오늘 기준' 활성 등급 이력을 한 번에 조회 (거래처 목록 표시용)"""
+    ensure_partner_grade_tables(conn)
+    today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
+    sql = """
+        SELECT partner_id, grade_code, start_date, end_date
+        FROM partner_grade_history
+        WHERE start_date <= ?
+          AND (end_date IS NULL OR end_date >= ?)
+    """
+    df = pd.read_sql(sql, conn, params=[today_str, today_str])
+    if df.empty:
+        return pd.DataFrame(columns=["partner_id", "grade_code", "start_date", "end_date"])
+    return df.sort_values("start_date").drop_duplicates(subset=["partner_id"], keep="last")
+
+
+def get_partner_purchase_sum(conn, partner_id: int, start_date: str, end_date: str) -> float:
+    """[start_date, end_date] 구간(포함) 도매 판매 공급가액 합계 (시가+시가외 전체)"""
+    ensure_wholesale_sales_columns(conn)
+    sql = """
+        SELECT COALESCE(SUM(supply_amount), 0) AS total
+        FROM wholesale_sales
+        WHERE partner_id = ?
+          AND sale_date >= ?
+          AND sale_date <= ?
+    """
+    df = pd.read_sql(sql, conn, params=[partner_id, start_date, end_date])
+    return _safe_float(df.iloc[0]["total"], 0) if not df.empty else 0.0
+
+
+def recalc_partner_grade(conn, partner_id: int, partner_join_date: str = None, today: str = None) -> list[str]:
+    """
+    파트너 프로그램 등급 규칙(달성일 기준 1년 유지 / 만료 시 직전 12개월 재산정 / 즉시 상향)에 따라
+    partner_grade_history를 갱신하고 partner_mst.current_grade_code / grade_acquired_date를 동기화한다.
+
+    - 관리자가 버튼을 눌렀을 때만 호출되는 '수동 실행' 전용 함수입니다 (자동 트리거 없음).
+    - 반환값은 화면에 표시할 처리 로그 메시지 리스트입니다.
+    """
+    ensure_partner_grade_tables(conn)
+    thresholds = load_partner_grade_thresholds(conn)
+    if thresholds.empty:
+        return ["등급 기준 정보(partner_grade_mst)가 없어 재계산할 수 없습니다."]
+
+    grade_rank = {
+        code: i
+        for i, code in enumerate(thresholds.sort_values("min_purchase_amount")["grade_code"].tolist())
+    }
+
+    today_str = today or pd.Timestamp.today().strftime("%Y-%m-%d")
+    logs: list[str] = []
+    cur = conn.cursor()
+
+    # 1) 만료된 등급이 있으면 만료일 기준 직전 12개월 구매액으로 순차 재산정
+    while True:
+        active = get_partner_active_grade_history(conn, partner_id, as_of_date=today_str)
+        if active is None:
+            break
+        end_date = active.get("end_date")
+        if not end_date or str(end_date) >= today_str:
+            break  # 아직 만료 안 됨
+
+        expire_dt = pd.to_datetime(end_date)
+        window_start = (expire_dt - pd.Timedelta(days=364)).strftime("%Y-%m-%d")
+        window_end = expire_dt.strftime("%Y-%m-%d")
+        total = get_partner_purchase_sum(conn, partner_id, window_start, window_end)
+        new_grade = determine_grade_for_amount(thresholds, total)
+
+        new_start = expire_dt.strftime("%Y-%m-%d")
+        new_end = (expire_dt + pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+
+        cur.execute(
+            """
+            INSERT INTO partner_grade_history
+                (partner_id, grade_code, start_date, end_date, base_amount, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (partner_id, new_grade["grade_code"], new_start, new_end, total, "만료 재산정"),
+        )
+        conn.commit()
+        logs.append(
+            f"{end_date} 만료 → 직전 12개월 구매액 ₩{total:,.0f} 기준 '{new_grade['grade_code']}' 재산정 "
+            f"(새 유지기간: {new_start} ~ {new_end})"
+        )
+
+    # 2) 현재 유효 등급 기준으로 '즉시 상향' 여부 체크
+    active = get_partner_active_grade_history(conn, partner_id, as_of_date=today_str)
+    if active is None:
+        window_start = partner_join_date or today_str
+        total = get_partner_purchase_sum(conn, partner_id, window_start, today_str)
+        first_grade = determine_grade_for_amount(thresholds, total)
+        new_end = (pd.to_datetime(window_start) + pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+        cur.execute(
+            """
+            INSERT INTO partner_grade_history
+                (partner_id, grade_code, start_date, end_date, base_amount, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (partner_id, first_grade["grade_code"], window_start, new_end, total, "최초 등급 산정"),
+        )
+        conn.commit()
+        logs.append(f"등급 이력 없음 → {window_start}부터 누적 ₩{total:,.0f} 기준 '{first_grade['grade_code']}' 최초 산정")
+        active = get_partner_active_grade_history(conn, partner_id, as_of_date=today_str)
+
+    total_since_start = get_partner_purchase_sum(conn, partner_id, active["start_date"], today_str)
+    candidate = determine_grade_for_amount(thresholds, total_since_start)
+
+    current_rank = grade_rank.get(active["grade_code"], 0)
+    candidate_rank = grade_rank.get(candidate["grade_code"], 0)
+
+    if candidate_rank > current_rank:
+        cur.execute(
+            "UPDATE partner_grade_history SET end_date = ? WHERE id = ?",
+            (today_str, active["id"]),
+        )
+        new_end = (pd.to_datetime(today_str) + pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+        cur.execute(
+            """
+            INSERT INTO partner_grade_history
+                (partner_id, grade_code, start_date, end_date, base_amount, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (partner_id, candidate["grade_code"], today_str, new_end, total_since_start, "즉시 상향"),
+        )
+        conn.commit()
+        logs.append(
+            f"즉시 상향 → 누적 ₩{total_since_start:,.0f} 기준 '{candidate['grade_code']}' 달성 "
+            f"(새 유지기간: {today_str} ~ {new_end})"
+        )
+
+    final_active = get_partner_active_grade_history(conn, partner_id, as_of_date=today_str)
+    if final_active is not None:
+        cur.execute(
+            "UPDATE partner_mst SET current_grade_code = ?, grade_acquired_date = ? WHERE id = ?",
+            (final_active["grade_code"], final_active["start_date"], partner_id),
+        )
+        conn.commit()
+
+    if not logs:
+        logs.append(f"변동 없음 (현재 등급: {active['grade_code']}, 누적 ₩{total_since_start:,.0f})")
+
+    return logs
+
+
 def _safe_float(value, default=0.0) -> float:
     try:
         if value is None:
@@ -430,20 +723,41 @@ def load_cigar_products_for_wholesale(conn) -> pd.DataFrame:
 
 
 def load_non_cigar_products(conn) -> pd.DataFrame:
+    """
+    시가 외(non_cigar) 상품 마스터 목록.
+    product_name 외에도 마스터 기준가(retail_price / wholesale_price)를
+    retail_price_krw / supply_price_krw 로 함께 반환하여
+    도매 판매 등록 시 기본값으로 사용할 수 있게 한다.
+    """
+    empty_cols = ["id", "product_name", "retail_price_krw", "supply_price_krw"]
+
     if not table_exists(conn, "non_cigar_product_mst"):
-        return pd.DataFrame(columns=["id", "product_name"])
+        return pd.DataFrame(columns=empty_cols)
 
     cols = get_table_columns(conn, "non_cigar_product_mst")
     name_col = find_existing_column(cols, ["product_name", "name"])
     if not name_col:
-        return pd.DataFrame(columns=["id", "product_name"])
+        return pd.DataFrame(columns=empty_cols)
+
+    retail_col = find_existing_column(cols, ["retail_price", "retail_price_krw"])
+    supply_col = find_existing_column(cols, ["wholesale_price", "supply_price_krw", "supply_price"])
+
+    select_parts = ["id", f"{name_col} AS product_name"]
+    select_parts.append(f"{retail_col} AS retail_price_krw" if retail_col else "0 AS retail_price_krw")
+    select_parts.append(f"{supply_col} AS supply_price_krw" if supply_col else "0 AS supply_price_krw")
 
     sql = f"""
-        SELECT id, {name_col} AS product_name
+        SELECT {', '.join(select_parts)}
         FROM non_cigar_product_mst
         ORDER BY id
     """
-    return pd.read_sql(sql, conn)
+    df = pd.read_sql(sql, conn)
+    if df.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    df["retail_price_krw"] = df["retail_price_krw"].apply(_safe_float)
+    df["supply_price_krw"] = df["supply_price_krw"].apply(_safe_float)
+    return df
 
 
 def load_wholesale_sales(conn) -> pd.DataFrame:
@@ -502,6 +816,7 @@ def load_wholesale_sales_for_grid(conn) -> pd.DataFrame:
                     "product_name": "non_cigar_product_name",
                 }
             )
+            nc = nc[["non_cigar_product_id", "non_cigar_product_name"]]
 
             df = df.merge(
                 nc,
@@ -1110,8 +1425,35 @@ def _bind_price_cost_by_selection(state_prefix: str, selected_product_key: str, 
 def render_partner_registration(conn):
     st.markdown("### 거래처 관리")
 
+    ensure_partner_grade_tables(conn)
+
+    with st.expander("🏅 파트너 등급 자동 재계산 (수동 실행)", expanded=False):
+        st.caption(
+            "최근 12개월 누적 공급가액 기준으로 즉시 상향 여부와 만료된 등급의 재산정을 확인/반영합니다. "
+            "이 버튼을 눌러야만 등급이 갱신되며, 자동으로는 실행되지 않습니다."
+        )
+        if st.button("전체 거래처 등급 재계산 실행", use_container_width=True, key="recalc_all_grades_btn"):
+            all_partners_for_recalc = load_partners(conn)
+            changed_logs = []
+            for _, p in all_partners_for_recalc.iterrows():
+                p_logs = recalc_partner_grade(
+                    conn,
+                    partner_id=int(p["id"]),
+                    partner_join_date=str(p["join_date"]) if pd.notna(p["join_date"]) else None,
+                )
+                if p_logs and "변동 없음" not in p_logs[0]:
+                    changed_logs.append(f"**{p['partner_name']}**")
+                    changed_logs.extend([f"　- {m}" for m in p_logs])
+            if changed_logs:
+                st.success("등급 변동이 반영되었습니다.")
+                for line in changed_logs:
+                    st.write(line)
+            else:
+                st.info("등급 변동이 있는 거래처가 없습니다.")
+
     partners = load_partners(conn)
     grade_codes = load_grade_codes(conn)
+    grade_active_map = load_partner_active_grade_map(conn)
 
     mode = st.radio("작업", ["신규 등록", "기존 업체 수정"], horizontal=True)
 
@@ -1128,6 +1470,23 @@ def render_partner_registration(conn):
         partners["purchase_item_names"] = ""
         partners["purchase_supply_amount_sum"] = 0
 
+    if not grade_active_map.empty:
+        partners = partners.merge(
+            grade_active_map.rename(columns={
+                "grade_code": "active_grade_code",
+                "start_date": "active_start_date",
+                "end_date": "active_end_date",
+            }),
+            how="left",
+            left_on="id",
+            right_on="partner_id",
+            suffixes=("", "_grade"),
+        )
+    else:
+        partners["active_grade_code"] = None
+        partners["active_start_date"] = None
+        partners["active_end_date"] = None
+
     selected_partner = None
     selected_row = None
     if mode == "기존 업체 수정":
@@ -1140,6 +1499,22 @@ def render_partner_registration(conn):
         selected_label = st.selectbox("수정할 업체 선택", option_df["label"].tolist())
         selected_partner = option_df.loc[option_df["label"] == selected_label].iloc[0]
         selected_row = partners.loc[partners["id"] == selected_partner["id"]].iloc[0]
+
+        active_grade_display = selected_row.get("active_grade_code") or selected_row.get("current_grade_code") or "-"
+        active_end_display = selected_row.get("active_end_date") or "-"
+        rc1, rc2 = st.columns([2, 1])
+        with rc1:
+            st.caption(f"현재 등급(자동 계산 기준): **{active_grade_display}** / 만료일: {active_end_display}")
+        with rc2:
+            if st.button("이 거래처 등급 재계산", key=f"recalc_one_{int(selected_partner['id'])}", use_container_width=True):
+                one_logs = recalc_partner_grade(
+                    conn,
+                    partner_id=int(selected_partner["id"]),
+                    partner_join_date=str(selected_row["join_date"]) if pd.notna(selected_row["join_date"]) else None,
+                )
+                for m in one_logs:
+                    st.info(m)
+                st.rerun()
 
     with st.form("partner_registration_form", clear_on_submit=(mode == "신규 등록")):
         c1, c2 = st.columns(2)
@@ -1259,7 +1634,9 @@ def render_partner_registration(conn):
             "partner_name": "거래처명",
             "partner_type": "유형",
             "phone": "연락처",
-            "current_grade_code": "등급",
+            "current_grade_code": "등급(수동값)",
+            "active_grade_code": "등급(자동계산)",
+            "active_end_date": "등급만료일",
             "status": "상태",
             "join_date": "가입일",
             "grade_acquired_date": "등급업일",
@@ -1284,7 +1661,9 @@ def render_partner_registration(conn):
             "거래처명",
             "유형",
             "연락처",
-            "등급",
+            "등급(자동계산)",
+            "등급만료일",
+            "등급(수동값)",
             "상태",
             "가입일",
             "등급업일",
@@ -1313,6 +1692,7 @@ def render_wholesale_management(conn):
     partners = load_partners(conn)
     cigar_products = load_cigar_products_for_wholesale(conn)
     non_cigar_products = load_non_cigar_products(conn)
+    grade_discount_map = load_grade_discount_rate_map(conn)  # 등급코드 -> 할인율 (예: {"silver": 0.05})
 
     if partners.empty:
         st.warning("먼저 거래처를 등록해 주세요.")
@@ -1327,6 +1707,12 @@ def render_wholesale_management(conn):
             partner_name = st.selectbox("거래처", partners["partner_name"].tolist(), key="wh_partner_name")
             sale_date = str(st.date_input("판매일자", key="wh_sale_date"))
             qty = st.number_input("수량", min_value=1, value=1, step=1, format="%d", key="wh_qty")
+
+        # 선택된 거래처의 등급에 따른 자동 할인율 계산 (예: silver -> 5%)
+        selected_partner_row = partners.loc[partners["partner_name"] == partner_name].iloc[0]
+        partner_id_for_default = _safe_int(selected_partner_row["id"])
+        partner_grade_code = str(selected_partner_row.get("current_grade_code", "") or "").strip()
+        partner_discount_rate = grade_discount_map.get(partner_grade_code, 0.0)
 
         cigar_product_id = None
         non_cigar_product_id = None
@@ -1353,13 +1739,16 @@ def render_wholesale_management(conn):
             cigar_product_id = _safe_int(selected_product["id"])
             product_name = str(selected_product["product_name"] or "")
             product_code = str(selected_product["product_code"] or "")
-            auto_unit_price = _safe_float(selected_product.get("retail_price_krw", 0))
-            auto_supply_price = _safe_float(selected_product.get("supply_price_krw", 0))
-            auto_unit_cost = _safe_float(selected_product.get("korea_cost_krw", 0))
+
+            base_unit_price = _safe_float(selected_product.get("retail_price_krw", 0))
+            base_supply_price = _safe_float(selected_product.get("supply_price_krw", 0))
+            auto_unit_price = round(base_unit_price * (1 - partner_discount_rate))
+            auto_supply_price = round(base_supply_price * (1 - partner_discount_rate))
+            auto_unit_cost = _safe_float(selected_product.get("korea_cost_krw", 0))  # 원가는 할인 미적용
 
             _bind_price_cost_by_selection(
                 state_prefix="wh",
-                selected_product_key=f"cigar::{cigar_product_id}",
+                selected_product_key=f"cigar::{cigar_product_id}::partner{partner_id_for_default}",
                 auto_unit_price=auto_unit_price,
                 auto_supply_price=auto_supply_price,
                 auto_unit_cost=auto_unit_cost,
@@ -1374,12 +1763,18 @@ def render_wholesale_management(conn):
             non_cigar_product_id = _safe_int(selected_product["id"])
             product_name = str(selected_name)
 
+            base_unit_price = _safe_float(selected_product.get("retail_price_krw", 0))
+            base_supply_price = _safe_float(selected_product.get("supply_price_krw", 0))
+            auto_unit_price = round(base_unit_price * (1 - partner_discount_rate))
+            auto_supply_price = round(base_supply_price * (1 - partner_discount_rate))
+            auto_unit_cost = 0
+
             _bind_price_cost_by_selection(
                 state_prefix="wh",
-                selected_product_key=f"non_cigar::{non_cigar_product_id}",
-                auto_unit_price=0,
-                auto_supply_price=0,
-                auto_unit_cost=0,
+                selected_product_key=f"non_cigar::{non_cigar_product_id}::partner{partner_id_for_default}",
+                auto_unit_price=auto_unit_price,
+                auto_supply_price=auto_supply_price,
+                auto_unit_cost=auto_unit_cost,
             )
 
         with c2:
@@ -1397,13 +1792,18 @@ def render_wholesale_management(conn):
         if product_code:
             st.caption(f"상품코드: {product_code}")
 
-        if item_type == "cigar":
-            st.caption("단가 = import_item.retail_price_krw / 공급가 = import_item.supply_price_krw / 원가 = import_item.korea_cost_krw 기준 자동 바인딩")
+        if partner_discount_rate:
+            st.caption(f"거래처 등급: {partner_grade_code} → 기준가에서 {partner_discount_rate*100:.0f}% 자동 할인 적용됨 (직접 수정 가능)")
 
-        supply_amount, vat_amount, total_amount_vat, profit_amount = _render_amount_summary(qty, unit_price, supply_price, unit_cost)
+        if item_type == "cigar":
+            st.caption("단가/공급가 기준 = import_item.retail_price_krw / import_item.supply_price_krw × (1 - 등급 할인율) / 원가 = import_item.korea_cost_krw (할인 미적용)")
+        else:
+            st.caption("단가/공급가 기준 = non_cigar_product_mst.retail_price / wholesale_price × (1 - 등급 할인율)")
 
         if st.button("도매 판매 저장", use_container_width=True, key="wh_insert_btn"):
             partner_id = int(partners.loc[partners["partner_name"] == partner_name, "id"].iloc[0])
+
+            supply_amount, vat_amount, total_amount_vat, profit_amount = _render_amount_summary(qty, unit_price, supply_price, unit_cost)
 
             insert_wholesale_sale(
                 conn=conn,
@@ -1424,6 +1824,8 @@ def render_wholesale_management(conn):
             )
             st.success("도매 판매 이력이 저장되었습니다.")
             st.rerun()
+        else:
+            _render_amount_summary(qty, unit_price, supply_price, unit_cost)
 
     st.divider()
     st.markdown("#### 도매 판매 내역")
