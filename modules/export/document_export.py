@@ -695,17 +695,24 @@ def _write_estimate_grade_discount_note(ws, layout: dict, partner_info: dict, sh
         if label_end_col_idx > start_col_idx:
             ws.merge_cells(start_row=note_row, start_column=start_col_idx, end_row=note_row, end_column=label_end_col_idx)
 
+        # Total 행의 폰트 색상을 그대로 가져와서 동일하게 맞춘다
+        total_cell_color = ws.cell(row=total_row, column=supply_col_idx).font.color
+
         label_cell = ws.cell(row=note_row, column=start_col_idx)
         label_cell.value = label_text
-        label_cell.font = Font(name=label_cell.font.name or "맑은 고딕", size=10, bold=True, color="C00000")
-        label_cell.alignment = Alignment(horizontal="right", vertical="center")
+        label_cell.font = Font(
+            name=label_cell.font.name or "맑은 고딕", size=10, bold=True, color=total_cell_color
+        )
+        label_cell.alignment = Alignment(horizontal="center", vertical="center")
 
-        # 할인 금액: G열(공급가 컬럼) Total 값 × 할인율 수식
+        # 최종 합계금액: Total(공급가액) × (1 - 할인율) — 예: 5% 할인이면 ×0.95
         _unmerge_overlapping(ws, note_row, supply_col_idx, note_row, supply_col_idx)
         amount_cell = ws.cell(row=note_row, column=supply_col_idx)
-        amount_cell.value = f"={col_supply}{total_row}*{discount_rate}"
+        amount_cell.value = f"={col_supply}{total_row}*{1 - discount_rate}"
         amount_cell.number_format = '₩#,##0'
-        amount_cell.font = Font(name=amount_cell.font.name or "맑은 고딕", size=10, bold=True, color="C00000")
+        amount_cell.font = Font(
+            name=amount_cell.font.name or "맑은 고딕", size=10, bold=True, color=total_cell_color
+        )
     except Exception:
         # 예상 못한 템플릿 구조라면, 최소한 상단 금액 텍스트 줄에라도 안내를 남긴다
         try:
