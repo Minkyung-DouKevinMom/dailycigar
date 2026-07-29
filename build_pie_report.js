@@ -41,24 +41,24 @@ function fmtQty(v) {
 const cover = pres.addSlide();
 cover.background = { color: "FFFFFF" };
 cover.addText("데일리시가 브랜드 분석 리포트", {
-  x: 0.9, y: 2.55, w: 11.5, h: 0.9,
+  x: 0.9, y: 1.55, w: 11.5, h: 0.9,
   fontFace: "Malgun Gothic", fontSize: 34, bold: true, color: NAVY,
 });
 cover.addText("시가 상품 매출 · 이익 · 판매수량 비중 (전체 기간, 소매+도매 통합)", {
-  x: 0.9, y: 3.45, w: 11.5, h: 0.5,
+  x: 0.9, y: 2.45, w: 11.5, h: 0.5,
   fontFace: "Malgun Gothic", fontSize: 16, color: GRAY_TEXT,
 });
 cover.addText(`집계 기간: ${ins.period_from} ~ ${ins.period_to} 누적`, {
-  x: 0.9, y: 4.0, w: 11.5, h: 0.4,
+  x: 0.9, y: 3.0, w: 11.5, h: 0.4,
   fontFace: "Malgun Gothic", fontSize: 13, color: GRAY_TEXT,
 });
 cover.addShape(pres.ShapeType.rect, {
-  x: 0.9, y: 1.5, w: 0.55, h: 0.55, fill: { color: NAVY }, line: { type: "none" },
+  x: 0.9, y: 0.5, w: 0.55, h: 0.55, fill: { color: NAVY }, line: { type: "none" },
 });
 
 // ── 한줄평 (매달 자동 계산된 인사이트) ──
 cover.addShape(pres.ShapeType.rect, {
-  x: 0.9, y: 4.85, w: 11.5, h: 1.15,
+  x: 0.9, y: 3.85, w: 11.5, h: 1.15,
   fill: { color: LIGHT_BG }, line: { type: "none" },
 });
 cover.addText(
@@ -72,13 +72,31 @@ cover.addText(
     { text: `입니다.`, options: { color: NAVY } },
   ],
   {
-    x: 1.2, y: 5.02, w: 10.9, h: 0.85,
+    x: 1.2, y: 4.02, w: 10.9, h: 0.85,
     fontFace: "Malgun Gothic", fontSize: 13, valign: "middle", lineSpacingMultiple: 1.25,
   }
 );
 
-// ── 차트 슬라이드 ──
-function addPieSlide(title, subtitle, records, valueLabelFmt) {
+// ── 제안 (인사이트 지표 기반 자동 제안) ──
+if (Array.isArray(ins.recommendations) && ins.recommendations.length) {
+  cover.addText("제안", {
+    x: 0.9, y: 5.15, w: 11.5, h: 0.32,
+    fontFace: "Malgun Gothic", fontSize: 14, bold: true, color: NAVY,
+  });
+  cover.addText(
+    ins.recommendations.map((r) => ({
+      text: r,
+      options: { bullet: { code: "2022" }, breakLine: true, color: GRAY_TEXT },
+    })),
+    {
+      x: 1.1, y: 5.5, w: 11.1, h: 0.95,
+      fontFace: "Malgun Gothic", fontSize: 11, valign: "top", lineSpacingMultiple: 1.25,
+    }
+  );
+}
+
+// ── 차트 슬라이드 (세로 막대, 기존 파이차트 색상 그대로 유지) ──
+function addBarSlide(title, subtitle, records, valueLabelFmt) {
   const slide = pres.addSlide();
   slide.background = { color: "FFFFFF" };
 
@@ -91,60 +109,50 @@ function addPieSlide(title, subtitle, records, valueLabelFmt) {
     fontFace: "Malgun Gothic", fontSize: 12, color: GRAY_TEXT,
   });
 
-  const chartLabels = records.map(r => `${r.label}\n${valueLabelFmt.fmt(r.value)}`);
-  const values = records.map(r => r.value);
+  const labels = records.map(r => r.label);
+  const values = records.map(r => r.pct);
   const colors = records.map(r => r.color);
 
-  slide.addChart(pres.ChartType.doughnut, [
-    { name: valueLabelFmt.name, labels: chartLabels, values },
+  slide.addChart(pres.ChartType.bar, [
+    { name: valueLabelFmt.name, labels, values },
   ], {
-    x: 0.5, y: 1.5, w: 6.6, h: 5.6,
+    x: 0.5, y: 1.35, w: 12.3, h: 5.75,
+    barDir: "col",
+    barGapWidthPct: 22,
     chartColors: colors,
     showTitle: false,
     showLegend: false,
-    showLabel: true,
-    showValue: false,
-    showPercent: false,
-    dataLabelPosition: "ctr",
-    dataLabelColor: "FFFFFF",
-    dataLabelFontSize: 9,
+    valAxisHidden: true,
+    valAxisMinVal: 0,
+    valAxisMaxVal: Math.max(...values) * 1.18,
+    catAxisLabelColor: NAVY,
+    catAxisLabelFontFace: "Malgun Gothic",
+    catAxisLabelFontSize: records.length > 11 ? 9 : 10.5,
+    catAxisLabelRotate: 30,
+    catAxisLineShow: true,
+    showValue: true,
+    dataLabelPosition: "outEnd",
+    dataLabelFormatCode: '0.0"%"',
+    dataLabelColor: NAVY,
+    dataLabelFontFace: "Malgun Gothic",
+    dataLabelFontSize: records.length > 11 ? 9 : 10.5,
     dataLabelFontBold: true,
-    holeSize: 45,
-    dataBorder: { pt: 1.5, color: "FFFFFF" },
-  });
-
-  let ty = 1.55;
-  const rowH = 0.46;
-  records.forEach((r) => {
-    slide.addShape(pres.ShapeType.rect, {
-      x: 7.35, y: ty + 0.06, w: 0.22, h: 0.22,
-      fill: { color: r.color }, line: { type: "none" },
-    });
-    slide.addText(r.label, {
-      x: 7.68, y: ty, w: 2.9, h: rowH,
-      fontFace: "Malgun Gothic", fontSize: 12, color: NAVY, bold: true, valign: "middle",
-    });
-    slide.addText(`${valueLabelFmt.fmt(r.value)}  (${r.pct}%)`, {
-      x: 10.55, y: ty, w: 2.2, h: rowH,
-      fontFace: "Malgun Gothic", fontSize: 11.5, color: GRAY_TEXT, align: "right", valign: "middle",
-    });
-    ty += rowH;
   });
 }
 
-addPieSlide(
+addBarSlide(
   "시가상품별 매출금액 비중 (전체)",
-  "소매 + 도매 직접판매 + 선물세트 수량 추정치 포함 · 상위 10개 상품 + 기타",
+  "소매 + 도매 직접판매 + 선물세트 수량 추정치 포함 · 상위 14개 상품 + 기타",
   data.sales, { name: "매출금액", fmt: fmtKrwShort }
 );
-addPieSlide(
+addBarSlide(
   "시가상품별 이익 비중 (전체)",
-  "소매 + 도매 직접판매 + 선물세트 수량 추정치 포함 · 상위 10개 상품 + 기타",
+  "소매 + 도매 직접판매 + 선물세트 수량 추정치 포함 · 상위 14개 상품 + 기타",
   data.profit, { name: "이익금액", fmt: fmtKrwShort }
 );
-addPieSlide(
+addBarSlide(
   "시가상품별 판매수량 비중 (전체)",
-  "소매 + 도매 직접판매 + 선물세트 수량 포함 · 상위 10개 상품 + 기타",
+  "소매 + 도매 직접판매 + 선물세트 수량 포함 · 상위 14개 상품 + 기타",
   data.qty, { name: "판매수량", fmt: fmtQty }
 );
 

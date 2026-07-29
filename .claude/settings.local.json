@@ -12,7 +12,28 @@
       "Bash(echo \"Exit code: $?\")",
       "Bash(npm init *)",
       "Bash(npm install *)",
-      "Bash(ls -la \"C:\\\\Users\\\\lovec\\\\Documents\\\\데일리시가\\\\4.매장운영\\\\브랜드분석리포트\" 2>&1)"
+      "Bash(ls -la \"C:\\\\Users\\\\lovec\\\\Documents\\\\데일리시가\\\\4.매장운영\\\\브랜드분석리포트\" 2>&1)",
+      "Bash(where soffice *)",
+      "Bash(where libreoffice *)",
+      "Read(//c/Program Files/LibreOffice/program/**)",
+      "Read(//c/Program Files \\\\\\(x86\\\\\\)/LibreOffice/program/**)",
+      "Bash(reg query *)",
+      "Bash(rm -f \"C:\\\\Users\\\\lovec\\\\Documents\\\\데일리시가\\\\4.매장운영\\\\브랜드분석리포트\\\\daily_cigar_brand_report_20260725_test.pdf\")",
+      "Bash(rm -f \"C:\\\\Users\\\\lovec\\\\Documents\\\\데일리시가\\\\4.매장운영\\\\브랜드분석리포트\\\\daily_cigar_brand_report_20260725.pptx\")",
+      "Bash(echo \"EXIT_CODE:$?\")",
+      "Bash(tasklist)",
+      "Bash(python3 -c ' *)",
+      "Bash(ls -la \"/c/Users/lovec/AppData/Local/Temp/claude/C--DAILYCIGAR-DB/5f0b3e2a-48d5-479e-b575-aa7f0ea7ff6c/scratchpad/\" 2>&1)",
+      "Bash(python3 -m pip install --quiet pypdf)",
+      "Bash(node build_pie_report.js pie_data.json /c/Users/lovec/AppData/Local/Temp/claude/C--DAILYCIGAR-DB/5f0b3e2a-48d5-479e-b575-aa7f0ea7ff6c/scratchpad/verify.pptx)",
+      "Bash(ls -la \"C:\\\\Users\\\\lovec\\\\Documents\\\\데일리시가\\\\4.매장운영\\\\브랜드분석리포트\\\\\")",
+      "Bash(rm -f \"/c/Users/lovec/AppData/Local/Temp/claude/C--DAILYCIGAR-DB/5f0b3e2a-48d5-479e-b575-aa7f0ea7ff6c/scratchpad/verify.pptx\" \\\\ *)",
+      "Bash(sqlite3 cigar.db \".schema wholesale_sales\")",
+      "Bash(powershell -Command \"Test-Path 'C:\\\\Users\\\\lovec\\\\Documents\\\\데일리시가\\\\4.매장운영\\\\브랜드분석리포트'; Get-ChildItem 'C:\\\\Users\\\\lovec\\\\Documents\\\\데일리시가\\\\4.매장운영' -ErrorAction SilentlyContinue | Select-Object Name\")",
+      "Bash(python3 compute_partner_data.py \"C:\\\\DAILYCIGAR_DB\\\\cigar.db\" partner_data.json)",
+      "Bash(node build_partner_report.js partner_data.json \"C:\\\\Users\\\\lovec\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--DAILYCIGAR-DB\\\\75f55960-9fab-416c-9573-fa511298f22a\\\\scratchpad\\\\daily_cigar_partner_report_20260728.pptx\")",
+      "Bash(node -c build_pie_report.js)",
+      "Bash(python3 -m pip install --quiet pymupdf)"
     ]
   }
 }

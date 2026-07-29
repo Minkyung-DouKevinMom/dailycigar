@@ -191,9 +191,9 @@ def main():
 
     combined = pd.DataFrame(rows).sort_values("매출", ascending=False).reset_index(drop=True)
 
-    sales_pie = group_minor_as_others(combined, "매출")
-    profit_pie = group_minor_as_others(combined, "이익")
-    qty_pie = group_minor_as_others(combined, "판매량")
+    sales_pie = group_minor_as_others(combined, "매출", top_n=14)
+    profit_pie = group_minor_as_others(combined, "이익", top_n=14)
+    qty_pie = group_minor_as_others(combined, "판매량", top_n=14)
 
     # ── 색상: 세 차트에 등장하는 라벨 합집합 기준으로 고유 배정 (동일 상품 = 동일 색) ──
     all_labels = set(sales_pie["상품코드"]) | set(profit_pie["상품코드"]) | set(qty_pie["상품코드"])
@@ -245,6 +245,62 @@ def main():
         "qty_top1_pct": round(float(qty_pie.iloc[0]["판매량"]) / qty_pie["판매량"].sum() * 100, 1),
         "overall_margin_pct": round(combined["이익"].sum() / combined["매출"].sum() * 100, 1) if combined["매출"].sum() else 0,
     }
+
+    # ── 제안 (인사이트 지표 기반 규칙형 자동 제안, 표지에 함께 표기) ──
+    def generate_recommendations(ins: dict) -> list:
+        recs = []
+
+        top5 = ins["sales_top5_share"]
+        if top5 >= 50:
+            recs.append(
+                f"상위 5개 상품이 전체 매출의 {top5}%를 차지해 편중도가 높습니다. "
+                f"6위 이하 상품의 노출·프로모션을 늘려 판매 채널을 다각화하는 것을 권장합니다."
+            )
+        elif top5 >= 35:
+            recs.append(
+                f"상위 5개 상품이 매출의 {top5}%를 차지해 다소 편중되어 있습니다. "
+                f"중위권 상품 프로모션으로 매출 기반을 넓히는 것을 고려해 보세요."
+            )
+        else:
+            recs.append(
+                f"상위 5개 상품 비중이 {top5}%로 비교적 고르게 분산되어 있습니다. "
+                f"현재의 다각화된 상품 구성을 유지하세요."
+            )
+
+        sales_top1, qty_top1 = ins["sales_top1_code"], ins["qty_top1_code"]
+        if sales_top1 != qty_top1:
+            recs.append(
+                f"매출 1위는 {sales_top1}, 판매수량 1위는 {qty_top1}로 서로 다릅니다. "
+                f"{qty_top1} 구매 고객에게 {sales_top1} 등 고단가 상품을 함께 제안하는 업셀링 전략을 고려해 보세요."
+            )
+        else:
+            recs.append(
+                f"{sales_top1}이(가) 매출과 판매수량 모두 1위로 핵심 주력 상품입니다. "
+                f"재고·매입 우선순위를 해당 상품에 집중하세요."
+            )
+
+        if ins["sales_top1_code"] == ins["profit_top1_code"]:
+            diff = ins["profit_top1_pct"] - ins["sales_top1_pct"]
+            if diff >= 1.5:
+                recs.append(
+                    f"{sales_top1}은(는) 매출 비중({ins['sales_top1_pct']}%)보다 이익 비중({ins['profit_top1_pct']}%)이 "
+                    f"더 높아 마진 효율이 우수합니다. 관련 재고 확보와 마케팅을 강화하세요."
+                )
+            elif diff <= -1.5:
+                recs.append(
+                    f"{sales_top1}은(는) 매출 비중({ins['sales_top1_pct']}%) 대비 이익 비중({ins['profit_top1_pct']}%)이 "
+                    f"낮습니다. 매입 단가나 할인 정책을 점검해 마진을 개선할 필요가 있습니다."
+                )
+
+        margin = ins["overall_margin_pct"]
+        if margin < 40:
+            recs.append(f"전체 평균 마진율이 {margin}%로 낮은 편입니다. 저마진 상품 비중을 줄이거나 매입가 협상을 검토하세요.")
+        elif margin >= 55:
+            recs.append(f"전체 평균 마진율이 {margin}%로 양호합니다. 현재의 상품 믹스와 가격 정책을 유지하세요.")
+
+        return recs[:3]
+
+    insights["recommendations"] = generate_recommendations(insights)
 
     import json
     data = {
