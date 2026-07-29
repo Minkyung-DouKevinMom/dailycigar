@@ -592,6 +592,113 @@ def recalc_partner_grade(conn, partner_id: int, partner_join_date: str = None, t
     return logs
 
 
+def compute_tiered_order_pricing(
+    conn,
+    partner_id: int,
+    qty: float,
+    base_unit_price: float,
+    base_supply_price: float,
+    order_date: str = None,
+) -> dict:
+    """
+    한 건의 주문(상품 1종 × 수량)에 대해 누적 구매액 문턱을 실시간으로 계산하여,
+    문턱을 넘는 지점을 기준으로 구간별 할인율을 정밀 적용한 혼합(가중평균) 단가/공급가를 산출한다.
+
+    - '등급 재계산' 버튼과 무관하게 항상 실제 wholesale_sales 누적치를 기준으로 계산한다
+      (즉, 관리자가 재계산을 누르지 않았어도 매 주문마다 정확한 구간별 할인이 적용됨).
+    - 한 주문이 여러 등급 문턱을 동시에 넘는 경우 각 구간의 금액에 해당 구간의 할인율을
+      각각 적용한 뒤 합산한다.
+    """
+    ensure_partner_grade_tables(conn)
+    thresholds = load_partner_grade_thresholds(conn)
+
+    if thresholds.empty or qty is None or float(qty) <= 0:
+        return {
+            "blended_unit_price": base_unit_price,
+            "blended_supply_price": base_supply_price,
+            "segments": [],
+            "cumulative_before": 0.0,
+            "cumulative_after": 0.0,
+        }
+
+    order_date = order_date or pd.Timestamp.today().strftime("%Y-%m-%d")
+
+    partner_row_df = pd.read_sql("SELECT join_date FROM partner_mst WHERE id = ?", conn, params=[partner_id])
+    join_date = (
+        str(partner_row_df.iloc[0]["join_date"])
+        if not partner_row_df.empty and pd.notna(partner_row_df.iloc[0]["join_date"])
+        else order_date
+    )
+
+    last_grade_row = pd.read_sql(
+        """
+        SELECT start_date
+        FROM partner_grade_history
+        WHERE partner_id = ?
+        ORDER BY start_date DESC
+        LIMIT 1
+        """,
+        conn,
+        params=[partner_id],
+    )
+    window_start = str(last_grade_row.iloc[0]["start_date"]) if not last_grade_row.empty else join_date
+
+    day_before_order = (pd.to_datetime(order_date) - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    cumulative_before = get_partner_purchase_sum(conn, partner_id, window_start, day_before_order)
+    if pd.to_datetime(day_before_order) < pd.to_datetime(window_start):
+        cumulative_before = 0.0  # 주문일이 window_start와 같거나 이전인 경우 방어
+
+    order_normal_supply_amount = float(qty) * float(base_supply_price)
+
+    tier_rows = thresholds.sort_values("min_purchase_amount").reset_index(drop=True)
+    boundaries = tier_rows["min_purchase_amount"].tolist() + [float("inf")]
+    rates = tier_rows["discount_rate"].tolist()
+    codes = tier_rows["grade_code"].tolist()
+
+    remaining = order_normal_supply_amount
+    cursor_amount = cumulative_before
+    segments = []
+
+    for i in range(len(rates)):
+        seg_lower = boundaries[i]
+        seg_upper = boundaries[i + 1]
+        if cursor_amount >= seg_upper:
+            continue
+        seg_capacity = seg_upper - max(cursor_amount, seg_lower)
+        if seg_capacity <= 0:
+            continue
+        seg_amount = min(remaining, seg_capacity)
+        if seg_amount <= 0:
+            continue
+        segments.append({"grade_code": codes[i], "discount_rate": rates[i], "amount": seg_amount})
+        remaining -= seg_amount
+        cursor_amount += seg_amount
+        if remaining <= 0:
+            break
+
+    if remaining > 0:
+        if segments:
+            segments[-1]["amount"] += remaining
+        else:
+            segments.append({"grade_code": codes[-1], "discount_rate": rates[-1], "amount": remaining})
+        remaining = 0
+
+    total_discount = sum(seg["amount"] * seg["discount_rate"] for seg in segments)
+    blended_supply_amount = order_normal_supply_amount - total_discount
+    blended_supply_price = blended_supply_amount / float(qty) if qty else base_supply_price
+
+    discount_ratio = (total_discount / order_normal_supply_amount) if order_normal_supply_amount > 0 else 0.0
+    blended_unit_price = base_unit_price * (1 - discount_ratio)
+
+    return {
+        "blended_unit_price": round(blended_unit_price),
+        "blended_supply_price": round(blended_supply_price),
+        "segments": segments,
+        "cumulative_before": cumulative_before,
+        "cumulative_after": cumulative_before + order_normal_supply_amount,
+    }
+
+
 def _safe_float(value, default=0.0) -> float:
     try:
         if value is None:
@@ -1692,7 +1799,6 @@ def render_wholesale_management(conn):
     partners = load_partners(conn)
     cigar_products = load_cigar_products_for_wholesale(conn)
     non_cigar_products = load_non_cigar_products(conn)
-    grade_discount_map = load_grade_discount_rate_map(conn)  # 등급코드 -> 할인율 (예: {"silver": 0.05})
 
     if partners.empty:
         st.warning("먼저 거래처를 등록해 주세요.")
@@ -1708,11 +1814,9 @@ def render_wholesale_management(conn):
             sale_date = str(st.date_input("판매일자", key="wh_sale_date"))
             qty = st.number_input("수량", min_value=1, value=1, step=1, format="%d", key="wh_qty")
 
-        # 선택된 거래처의 등급에 따른 자동 할인율 계산 (예: silver -> 5%)
+        # 선택된 거래처의 실시간 누적 구매액 기준 구간별(문턱값) 할인 계산 준비
         selected_partner_row = partners.loc[partners["partner_name"] == partner_name].iloc[0]
         partner_id_for_default = _safe_int(selected_partner_row["id"])
-        partner_grade_code = str(selected_partner_row.get("current_grade_code", "") or "").strip()
-        partner_discount_rate = grade_discount_map.get(partner_grade_code, 0.0)
 
         cigar_product_id = None
         non_cigar_product_id = None
@@ -1721,6 +1825,7 @@ def render_wholesale_management(conn):
         auto_unit_price = 0.0
         auto_supply_price = 0.0
         auto_unit_cost = 0.0
+        pricing_result = None
 
         if item_type == "cigar":
             if cigar_products.empty:
@@ -1742,13 +1847,22 @@ def render_wholesale_management(conn):
 
             base_unit_price = _safe_float(selected_product.get("retail_price_krw", 0))
             base_supply_price = _safe_float(selected_product.get("supply_price_krw", 0))
-            auto_unit_price = round(base_unit_price * (1 - partner_discount_rate))
-            auto_supply_price = round(base_supply_price * (1 - partner_discount_rate))
             auto_unit_cost = _safe_float(selected_product.get("korea_cost_krw", 0))  # 원가는 할인 미적용
+
+            pricing_result = compute_tiered_order_pricing(
+                conn,
+                partner_id=partner_id_for_default,
+                qty=qty,
+                base_unit_price=base_unit_price,
+                base_supply_price=base_supply_price,
+                order_date=sale_date,
+            )
+            auto_unit_price = pricing_result["blended_unit_price"]
+            auto_supply_price = pricing_result["blended_supply_price"]
 
             _bind_price_cost_by_selection(
                 state_prefix="wh",
-                selected_product_key=f"cigar::{cigar_product_id}::partner{partner_id_for_default}",
+                selected_product_key=f"cigar::{cigar_product_id}::partner{partner_id_for_default}::qty{int(qty)}::date{sale_date}",
                 auto_unit_price=auto_unit_price,
                 auto_supply_price=auto_supply_price,
                 auto_unit_cost=auto_unit_cost,
@@ -1765,13 +1879,22 @@ def render_wholesale_management(conn):
 
             base_unit_price = _safe_float(selected_product.get("retail_price_krw", 0))
             base_supply_price = _safe_float(selected_product.get("supply_price_krw", 0))
-            auto_unit_price = round(base_unit_price * (1 - partner_discount_rate))
-            auto_supply_price = round(base_supply_price * (1 - partner_discount_rate))
             auto_unit_cost = 0
+
+            pricing_result = compute_tiered_order_pricing(
+                conn,
+                partner_id=partner_id_for_default,
+                qty=qty,
+                base_unit_price=base_unit_price,
+                base_supply_price=base_supply_price,
+                order_date=sale_date,
+            )
+            auto_unit_price = pricing_result["blended_unit_price"]
+            auto_supply_price = pricing_result["blended_supply_price"]
 
             _bind_price_cost_by_selection(
                 state_prefix="wh",
-                selected_product_key=f"non_cigar::{non_cigar_product_id}::partner{partner_id_for_default}",
+                selected_product_key=f"non_cigar::{non_cigar_product_id}::partner{partner_id_for_default}::qty{int(qty)}::date{sale_date}",
                 auto_unit_price=auto_unit_price,
                 auto_supply_price=auto_supply_price,
                 auto_unit_cost=auto_unit_cost,
@@ -1792,13 +1915,26 @@ def render_wholesale_management(conn):
         if product_code:
             st.caption(f"상품코드: {product_code}")
 
-        if partner_discount_rate:
-            st.caption(f"거래처 등급: {partner_grade_code} → 기준가에서 {partner_discount_rate*100:.0f}% 자동 할인 적용됨 (직접 수정 가능)")
+        if pricing_result:
+            segs = pricing_result.get("segments") or []
+            multi_tier = len([s for s in segs if s["amount"] > 0]) > 1 or (segs and segs[0]["discount_rate"] > 0)
+            if multi_tier:
+                cum_before = pricing_result["cumulative_before"]
+                cum_after = pricing_result["cumulative_after"]
+                st.caption(f"이 거래처의 window 내 누적 공급가액: ₩{cum_before:,.0f} → 이번 주문 후 ₩{cum_after:,.0f}")
+                for seg in segs:
+                    if seg["amount"] <= 0:
+                        continue
+                    st.caption(
+                        f"　· {seg['grade_code']} 구간 ₩{seg['amount']:,.0f} × "
+                        f"{seg['discount_rate']*100:.0f}% 할인"
+                    )
+                st.caption("→ 위 구간별 계산을 반영한 혼합 단가/공급가가 기본값으로 채워졌습니다 (직접 수정 가능)")
 
         if item_type == "cigar":
-            st.caption("단가/공급가 기준 = import_item.retail_price_krw / import_item.supply_price_krw × (1 - 등급 할인율) / 원가 = import_item.korea_cost_krw (할인 미적용)")
+            st.caption("정상가 기준 = import_item.retail_price_krw / import_item.supply_price_krw (원가는 할인 미반영: import_item.korea_cost_krw)")
         else:
-            st.caption("단가/공급가 기준 = non_cigar_product_mst.retail_price / wholesale_price × (1 - 등급 할인율)")
+            st.caption("정상가 기준 = non_cigar_product_mst.retail_price / wholesale_price")
 
         if st.button("도매 판매 저장", use_container_width=True, key="wh_insert_btn"):
             partner_id = int(partners.loc[partners["partner_name"] == partner_name, "id"].iloc[0])
