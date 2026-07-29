@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from openpyxl.utils import column_index_from_string
 
 from db import (
     get_product_intro_export_data,
@@ -642,12 +643,31 @@ def _fill_estimate_header(ws, partner_info: dict, layout: dict, show_grade_disco
     else:
         ws[layout["grade_discount_cell"]] = None
 
-def _write_estimate_grade_discount_note(ws, df: pd.DataFrame, layout: dict, partner_info: dict, show_grade_discount: bool):
+def _unmerge_overlapping(ws, start_row, start_col, end_row, end_col):
+    """지정한 범위(행/열)와 겹치는 기존 병합 셀이 있으면 모두 해제한다.
+    (병합 범위 안의 셀은 anchor가 아니면 값을 직접 쓸 수 없어 미리 해제해야 함)"""
+    ranges_to_remove = [
+        merged_range
+        for merged_range in ws.merged_cells.ranges
+        if not (
+            merged_range.max_col < start_col
+            or merged_range.min_col > end_col
+            or merged_range.max_row < start_row
+            or merged_range.min_row > end_row
+        )
+    ]
+    for merged_range in ranges_to_remove:
+        ws.unmerge_cells(str(merged_range))
+
+
+def _write_estimate_grade_discount_note(ws, layout: dict, partner_info: dict, show_grade_discount: bool):
     """
     show_grade_discount 체크 시, 파트너 등급 할인율이 0%보다 크면(Silver 이상)
-    '금액(견적금액)' 텍스트 줄에 '실버 파트너 5% 추가 할인 적용 금액: -₩OOO' 형태로
-    전체 할인 금액을 한 줄 덧붙인다. 품목 줄 자체는 항상 정상가(할인 전)로 유지된다.
-    등급 할인은 시가(cigar) 시트에만 적용되므로 이 함수도 시가 시트에만 호출한다.
+    합계(Total) 바로 아래 행에 'SILVER 파트너 5% 추가 할인 적용 금액' 라벨(병합)과
+    그 옆 공급가 컬럼에 '=G{total_row}*할인율' 수식을 넣는다.
+    견적서 금액이 바뀌면(수량/단가 수정 등) 수식이 Total 값을 참조하므로 할인 금액도
+    엑셀에서 자동으로 함께 바뀐다. 등급 할인은 시가(cigar) 시트에만 적용되므로
+    이 함수도 시가 시트에만 호출한다.
     """
     if not show_grade_discount:
         return
@@ -658,22 +678,42 @@ def _write_estimate_grade_discount_note(ws, df: pd.DataFrame, layout: dict, part
 
     grade_code = str(partner_info.get("grade_code", "") or "").strip() or "파트너"
     discount_pct = round(discount_rate * 100)
+    label_text = f"{grade_code} 파트너 {discount_pct}% 추가 할인 적용 금액"
 
-    total_normal_supply = 0
-    if df is not None and not df.empty:
-        qty = pd.to_numeric(df.get("qty", 0), errors="coerce").fillna(0)
-        supply = pd.to_numeric(df.get("supply_price_krw", 0), errors="coerce").fillna(0)
-        total_normal_supply = float((qty * supply).sum())
+    total_row = layout["total_row"]
+    note_row = total_row + 1
+    col_display = layout["col_display"]
+    col_supply = layout["col_supply"]
 
-    discount_amount = round(total_normal_supply * discount_rate)
-    if discount_amount <= 0:
-        return
+    start_col_idx = column_index_from_string(col_display)
+    supply_col_idx = column_index_from_string(col_supply)
+    label_end_col_idx = max(start_col_idx, supply_col_idx - 1)
 
-    note_text = f"※ {grade_code} 파트너 {discount_pct}% 추가 할인 적용 금액: -₩{discount_amount:,.0f}"
+    try:
+        # 라벨 영역: col_display ~ col_supply 바로 앞 컬럼까지 병합
+        _unmerge_overlapping(ws, note_row, start_col_idx, note_row, label_end_col_idx)
+        if label_end_col_idx > start_col_idx:
+            ws.merge_cells(start_row=note_row, start_column=start_col_idx, end_row=note_row, end_column=label_end_col_idx)
 
-    amount_cell = ws[layout["amount_text_cell"]]
-    current_text = amount_cell.value or ""
-    amount_cell.value = f"{current_text}  {note_text}"
+        label_cell = ws.cell(row=note_row, column=start_col_idx)
+        label_cell.value = label_text
+        label_cell.font = Font(name=label_cell.font.name or "맑은 고딕", size=10, bold=True, color="C00000")
+        label_cell.alignment = Alignment(horizontal="right", vertical="center")
+
+        # 할인 금액: G열(공급가 컬럼) Total 값 × 할인율 수식
+        _unmerge_overlapping(ws, note_row, supply_col_idx, note_row, supply_col_idx)
+        amount_cell = ws.cell(row=note_row, column=supply_col_idx)
+        amount_cell.value = f"={col_supply}{total_row}*{discount_rate}"
+        amount_cell.number_format = '₩#,##0'
+        amount_cell.font = Font(name=amount_cell.font.name or "맑은 고딕", size=10, bold=True, color="C00000")
+    except Exception:
+        # 예상 못한 템플릿 구조라면, 최소한 상단 금액 텍스트 줄에라도 안내를 남긴다
+        try:
+            amount_cell = ws[layout["amount_text_cell"]]
+            current_text = amount_cell.value or ""
+            amount_cell.value = f"{current_text}  ※ {label_text} ({discount_pct}%)"
+        except Exception:
+            pass
 
 
 def build_estimate_workbook(
@@ -724,7 +764,7 @@ def build_estimate_workbook(
         _update_estimate_amount_text(ws, df, layout)
 
     # 등급 할인은 시가(cigar)에만 적용되므로, 합계 하단 안내문구도 시가 시트에만 표기
-    _write_estimate_grade_discount_note(ws_cigar, cigar_df, layout, partner_info, show_grade_discount)
+    _write_estimate_grade_discount_note(ws_cigar, layout, partner_info, show_grade_discount)
 
     output = io.BytesIO()
     wb.save(output)
