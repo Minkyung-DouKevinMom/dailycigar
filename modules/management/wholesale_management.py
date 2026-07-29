@@ -511,117 +511,6 @@ def get_partner_purchase_sum(conn, partner_id: int, start_date: str, end_date: s
     return _safe_float(df.iloc[0]["total"], 0) if not df.empty else 0.0
 
 
-def recalc_partner_grade(conn, partner_id: int, partner_join_date: str = None, today: str = None) -> list[str]:
-    """
-    파트너 프로그램 등급 규칙(달성일 기준 1년 유지 / 만료 시 직전 12개월 재산정 / 즉시 상향)에 따라
-    partner_grade_history를 갱신하고 partner_mst.current_grade_code / grade_acquired_date를 동기화한다.
-
-    - 관리자가 버튼을 눌렀을 때만 호출되는 '수동 실행' 전용 함수입니다 (자동 트리거 없음).
-    - 반환값은 화면에 표시할 처리 로그 메시지 리스트입니다.
-    """
-    ensure_partner_grade_tables(conn)
-    thresholds = load_partner_grade_thresholds(conn)
-    if thresholds.empty:
-        return ["등급 기준 정보(partner_grade_mst)가 없어 재계산할 수 없습니다."]
-
-    grade_rank = {
-        code: i
-        for i, code in enumerate(thresholds.sort_values("min_purchase_amount")["grade_code"].tolist())
-    }
-
-    today_str = today or pd.Timestamp.today().strftime("%Y-%m-%d")
-    logs: list[str] = []
-    cur = conn.cursor()
-
-    # 1) 만료된 등급이 있으면 만료일 기준 직전 12개월 구매액으로 순차 재산정
-    while True:
-        active = get_partner_active_grade_history(conn, partner_id, as_of_date=today_str)
-        if active is None:
-            break
-        end_date = active.get("end_date")
-        if not end_date or str(end_date) >= today_str:
-            break  # 아직 만료 안 됨
-
-        expire_dt = pd.to_datetime(end_date)
-        window_start = (expire_dt - pd.Timedelta(days=364)).strftime("%Y-%m-%d")
-        window_end = expire_dt.strftime("%Y-%m-%d")
-        total = get_partner_purchase_sum(conn, partner_id, window_start, window_end)
-        new_grade = determine_grade_for_amount(thresholds, total)
-
-        new_start = expire_dt.strftime("%Y-%m-%d")
-        new_end = (expire_dt + pd.Timedelta(days=365)).strftime("%Y-%m-%d")
-
-        cur.execute(
-            """
-            INSERT INTO partner_grade_history
-                (partner_id, grade_code, start_date, end_date, base_amount, notes)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (partner_id, new_grade["grade_code"], new_start, new_end, total, "만료 재산정"),
-        )
-        conn.commit()
-        logs.append(
-            f"{end_date} 만료 → 직전 12개월 구매액 ₩{total:,.0f} 기준 '{new_grade['grade_code']}' 재산정 "
-            f"(새 유지기간: {new_start} ~ {new_end})"
-        )
-
-    # 2) 현재 유효 등급 기준으로 '즉시 상향' 여부 체크
-    active = get_partner_active_grade_history(conn, partner_id, as_of_date=today_str)
-    if active is None:
-        window_start = partner_join_date or today_str
-        total = get_partner_purchase_sum(conn, partner_id, window_start, today_str)
-        first_grade = determine_grade_for_amount(thresholds, total)
-        new_end = (pd.to_datetime(window_start) + pd.Timedelta(days=365)).strftime("%Y-%m-%d")
-        cur.execute(
-            """
-            INSERT INTO partner_grade_history
-                (partner_id, grade_code, start_date, end_date, base_amount, notes)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (partner_id, first_grade["grade_code"], window_start, new_end, total, "최초 등급 산정"),
-        )
-        conn.commit()
-        logs.append(f"등급 이력 없음 → {window_start}부터 누적 ₩{total:,.0f} 기준 '{first_grade['grade_code']}' 최초 산정")
-        active = get_partner_active_grade_history(conn, partner_id, as_of_date=today_str)
-
-    total_since_start = get_partner_purchase_sum(conn, partner_id, active["start_date"], today_str)
-    candidate = determine_grade_for_amount(thresholds, total_since_start)
-
-    current_rank = grade_rank.get(active["grade_code"], 0)
-    candidate_rank = grade_rank.get(candidate["grade_code"], 0)
-
-    if candidate_rank > current_rank:
-        cur.execute(
-            "UPDATE partner_grade_history SET end_date = ? WHERE id = ?",
-            (today_str, active["id"]),
-        )
-        new_end = (pd.to_datetime(today_str) + pd.Timedelta(days=365)).strftime("%Y-%m-%d")
-        cur.execute(
-            """
-            INSERT INTO partner_grade_history
-                (partner_id, grade_code, start_date, end_date, base_amount, notes)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (partner_id, candidate["grade_code"], today_str, new_end, total_since_start, "즉시 상향"),
-        )
-        conn.commit()
-        logs.append(
-            f"즉시 상향 → 누적 ₩{total_since_start:,.0f} 기준 '{candidate['grade_code']}' 달성 "
-            f"(새 유지기간: {today_str} ~ {new_end})"
-        )
-
-    final_active = get_partner_active_grade_history(conn, partner_id, as_of_date=today_str)
-    if final_active is not None:
-        cur.execute(
-            "UPDATE partner_mst SET current_grade_code = ?, grade_acquired_date = ? WHERE id = ?",
-            (final_active["grade_code"], final_active["start_date"], partner_id),
-        )
-        conn.commit()
-
-    if not logs:
-        logs.append(f"변동 없음 (현재 등급: {active['grade_code']}, 누적 ₩{total_since_start:,.0f})")
-
-    return logs
 
 
 def compute_tiered_order_pricing(
@@ -1649,30 +1538,6 @@ def render_partner_registration(conn):
 
     ensure_partner_grade_tables(conn)
 
-    with st.expander("🏅 파트너 등급 자동 재계산 (수동 실행)", expanded=False):
-        st.caption(
-            "최근 12개월 누적 공급가액 기준으로 즉시 상향 여부와 만료된 등급의 재산정을 확인/반영합니다. "
-            "이 버튼을 눌러야만 등급이 갱신되며, 자동으로는 실행되지 않습니다."
-        )
-        if st.button("전체 거래처 등급 재계산 실행", use_container_width=True, key="recalc_all_grades_btn"):
-            all_partners_for_recalc = load_partners(conn)
-            changed_logs = []
-            for _, p in all_partners_for_recalc.iterrows():
-                p_logs = recalc_partner_grade(
-                    conn,
-                    partner_id=int(p["id"]),
-                    partner_join_date=str(p["join_date"]) if pd.notna(p["join_date"]) else None,
-                )
-                if p_logs and "변동 없음" not in p_logs[0]:
-                    changed_logs.append(f"**{p['partner_name']}**")
-                    changed_logs.extend([f"　- {m}" for m in p_logs])
-            if changed_logs:
-                st.success("등급 변동이 반영되었습니다.")
-                for line in changed_logs:
-                    st.write(line)
-            else:
-                st.info("등급 변동이 있는 거래처가 없습니다.")
-
     partners = load_partners(conn)
     grade_codes = load_grade_codes(conn)
     grade_active_map = load_partner_active_grade_map(conn)
@@ -1724,19 +1589,10 @@ def render_partner_registration(conn):
 
         active_grade_display = selected_row.get("active_grade_code") or selected_row.get("current_grade_code") or "-"
         active_end_display = selected_row.get("active_end_date") or "-"
-        rc1, rc2 = st.columns([2, 1])
-        with rc1:
-            st.caption(f"현재 등급(자동 계산 기준): **{active_grade_display}** / 만료일: {active_end_display}")
-        with rc2:
-            if st.button("이 거래처 등급 재계산", key=f"recalc_one_{int(selected_partner['id'])}", use_container_width=True):
-                one_logs = recalc_partner_grade(
-                    conn,
-                    partner_id=int(selected_partner["id"]),
-                    partner_join_date=str(selected_row["join_date"]) if pd.notna(selected_row["join_date"]) else None,
-                )
-                for m in one_logs:
-                    st.info(m)
-                st.rerun()
+        st.caption(
+            f"현재 등급: **{active_grade_display}** / 만료일: {active_end_display} "
+            "(등급 변경은 '판매관리 > 거래처등급관리' 화면에서 처리해 주세요)"
+        )
 
     with st.form("partner_registration_form", clear_on_submit=(mode == "신규 등록")):
         c1, c2 = st.columns(2)

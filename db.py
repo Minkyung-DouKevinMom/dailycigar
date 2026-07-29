@@ -1385,6 +1385,75 @@ def get_all_partner_for_select():
     return run_query(sql)
 
 
+def _get_realtime_partner_grade_discount(partner_id):
+    """
+    (등급코드, 할인율(소수)) 를 조회한다.
+
+    - '오늘 기준 유효한' partner_grade_history 행을 그대로 신뢰해서 등급을 가져온다
+      (별도로 누적액을 재계산하지 않는다 — 등급 갱신은 별도 프로세스가 담당).
+    - 이력이 없으면 partner_mst.current_grade_code로 폴백한다.
+    - 할인율은 실값이 채워진 'discount_rate' 컬럼을 비어있는(0) placeholder일 수 있는
+      'estimate_discount_rate'보다 우선 사용하고, 값이 1보다 크면(5, 10처럼 퍼센트
+      표기) 100으로 나눠 소수(0.05, 0.10)로 정규화한다.
+    """
+    conn = get_conn()
+    try:
+        grade_code = ""
+        if table_exists("partner_grade_history"):
+            active_row = pd.read_sql_query(
+                """
+                SELECT grade_code
+                FROM partner_grade_history
+                WHERE partner_id = ?
+                  AND start_date <= date('now')
+                  AND (end_date IS NULL OR end_date >= date('now'))
+                ORDER BY start_date DESC
+                LIMIT 1
+                """,
+                conn,
+                params=[partner_id],
+            )
+            if not active_row.empty:
+                grade_code = str(active_row.iloc[0]["grade_code"])
+
+        if not grade_code:
+            partner_row = pd.read_sql_query(
+                "SELECT current_grade_code FROM partner_mst WHERE id = ?", conn, params=[partner_id]
+            )
+            grade_code = (
+                str(partner_row.iloc[0]["current_grade_code"])
+                if not partner_row.empty and pd.notna(partner_row.iloc[0]["current_grade_code"])
+                else ""
+            )
+
+        if not grade_code or not table_exists("partner_grade_mst"):
+            return grade_code, 0.0
+
+        cols = _get_table_columns(conn, "partner_grade_mst")
+        rate_col = "discount_rate" if "discount_rate" in cols else (
+            "estimate_discount_rate" if "estimate_discount_rate" in cols else None
+        )
+        if not rate_col:
+            return grade_code, 0.0
+
+        rate_df = pd.read_sql_query(
+            f"SELECT {rate_col} AS rate FROM partner_grade_mst WHERE grade_code = ?",
+            conn,
+            params=[grade_code],
+        )
+        if rate_df.empty:
+            return grade_code, 0.0
+
+        rate = float(rate_df.iloc[0]["rate"] or 0)
+        if rate > 1:
+            rate = rate / 100.0
+        return grade_code, rate
+    except Exception:
+        return "", 0.0
+    finally:
+        conn.close()
+
+
 def get_partner_detail_by_id(partner_id):
     sql = """
         SELECT
@@ -1394,19 +1463,22 @@ def get_partner_detail_by_id(partner_id):
         p.owner_name,
         p.contact_name,
         p.phone,
-        h.grade_code,
-        COALESCE(g.estimate_discount_rate, 0) AS estimate_discount_rate
+        p.current_grade_code
     FROM partner_mst p
-    LEFT JOIN partner_grade_history h
-        ON h.partner_id = p.id
-    AND date('now') BETWEEN h.start_date AND COALESCE(h.end_date, '9999-12-31')
-    LEFT JOIN partner_grade_mst g
-        ON h.grade_code = g.grade_code
     WHERE p.id = ?
     LIMIT 1
     """
     df = run_query(sql, [partner_id])
-    return df.iloc[0].to_dict() if not df.empty else {}
+    if df.empty:
+        return {}
+
+    result = df.iloc[0].to_dict()
+
+    grade_code, discount_rate = _get_realtime_partner_grade_discount(partner_id)
+    result["grade_code"] = grade_code or result.get("current_grade_code") or ""
+    result["estimate_discount_rate"] = discount_rate
+
+    return result
 
 
 def get_estimate_cigar_items(only_in_stock: bool = False):

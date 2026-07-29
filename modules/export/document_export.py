@@ -524,9 +524,9 @@ def _write_estimate_rows(ws, df: pd.DataFrame, layout: dict, use_proposal_retail
             proposal_price = row.get("proposal_retail_price_krw", None)
             if proposal_price not in (None, "", 0):
                 retail_price = proposal_price
-        supply_price = row.get("estimate_supply_price_krw", None)
-        if supply_price in (None, "", 0):
-            supply_price = row.get("supply_price_krw", 0) or 0
+        # 품목 줄은 항상 정상(할인 전) 공급가로 표기한다. 등급 할인은 개별 품목에
+        # 반영하지 않고, 합계 하단에 한 줄 요약으로만 표기한다.
+        supply_price = row.get("supply_price_krw", 0) or 0
 
         display_name = f"{product_name} / {size_name}" if str(size_name).strip() else str(product_name)
 
@@ -601,12 +601,8 @@ def _update_estimate_amount_text(ws, df: pd.DataFrame, layout: dict):
     total_supply = 0
     if not df.empty:
         qty = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
-
-        if "estimate_supply_price_krw" in df.columns:
-            supply = pd.to_numeric(df["estimate_supply_price_krw"], errors="coerce").fillna(0)
-        else:
-            supply = pd.to_numeric(df["supply_price_krw"], errors="coerce").fillna(0)
-
+        # 품목 줄과 동일하게 항상 정상(할인 전) 공급가 기준으로 집계한다.
+        supply = pd.to_numeric(df["supply_price_krw"], errors="coerce").fillna(0)
         total_supply = int((qty * supply).sum())
 
     ws[layout["amount_text_cell"]] = (
@@ -645,6 +641,40 @@ def _fill_estimate_header(ws, partner_info: dict, layout: dict, show_grade_disco
         ws[layout["grade_discount_cell"]] = f"Grade: {grade_code}(할인율: {discount_pct}%)"
     else:
         ws[layout["grade_discount_cell"]] = None
+
+def _write_estimate_grade_discount_note(ws, df: pd.DataFrame, layout: dict, partner_info: dict, show_grade_discount: bool):
+    """
+    show_grade_discount 체크 시, 파트너 등급 할인율이 0%보다 크면(Silver 이상)
+    '금액(견적금액)' 텍스트 줄에 '실버 파트너 5% 추가 할인 적용 금액: -₩OOO' 형태로
+    전체 할인 금액을 한 줄 덧붙인다. 품목 줄 자체는 항상 정상가(할인 전)로 유지된다.
+    등급 할인은 시가(cigar) 시트에만 적용되므로 이 함수도 시가 시트에만 호출한다.
+    """
+    if not show_grade_discount:
+        return
+
+    discount_rate = float(partner_info.get("estimate_discount_rate", 0) or 0)
+    if discount_rate <= 0:
+        return  # Bronze 등 할인 없는 등급은 별도 표기하지 않음
+
+    grade_code = str(partner_info.get("grade_code", "") or "").strip() or "파트너"
+    discount_pct = round(discount_rate * 100)
+
+    total_normal_supply = 0
+    if df is not None and not df.empty:
+        qty = pd.to_numeric(df.get("qty", 0), errors="coerce").fillna(0)
+        supply = pd.to_numeric(df.get("supply_price_krw", 0), errors="coerce").fillna(0)
+        total_normal_supply = float((qty * supply).sum())
+
+    discount_amount = round(total_normal_supply * discount_rate)
+    if discount_amount <= 0:
+        return
+
+    note_text = f"※ {grade_code} 파트너 {discount_pct}% 추가 할인 적용 금액: -₩{discount_amount:,.0f}"
+
+    amount_cell = ws[layout["amount_text_cell"]]
+    current_text = amount_cell.value or ""
+    amount_cell.value = f"{current_text}  {note_text}"
+
 
 def build_estimate_workbook(
     cigar_df: pd.DataFrame,
@@ -692,6 +722,9 @@ def build_estimate_workbook(
         )
         _set_estimate_total_formulas(ws, layout)
         _update_estimate_amount_text(ws, df, layout)
+
+    # 등급 할인은 시가(cigar)에만 적용되므로, 합계 하단 안내문구도 시가 시트에만 표기
+    _write_estimate_grade_discount_note(ws_cigar, cigar_df, layout, partner_info, show_grade_discount)
 
     output = io.BytesIO()
     wb.save(output)
