@@ -689,19 +689,25 @@ def _write_estimate_grade_discount_note(ws, layout: dict, partner_info: dict, sh
     supply_col_idx = column_index_from_string(col_supply)
     label_end_col_idx = max(start_col_idx, supply_col_idx - 1)
 
+    # 고정된 빨간색 사용 (Total 셀의 색을 그대로 복사하면 템플릿에 따라 테마색/자동색이
+    # 엉뚱하게 적용되어 안 보이는 색(예: 흰색)으로 바뀌는 경우가 있어, 확실히 보이는
+    # 고정 빨간색으로 지정한다)
+    NOTE_FONT_COLOR = "FFC00000"
+
     try:
+        # 혹시 템플릿에서 이 행이 숨김 처리되어 있으면 강제로 표시
+        if ws.row_dimensions[note_row].hidden:
+            ws.row_dimensions[note_row].hidden = False
+
         # 라벨 영역: col_display ~ col_supply 바로 앞 컬럼까지 병합
         _unmerge_overlapping(ws, note_row, start_col_idx, note_row, label_end_col_idx)
         if label_end_col_idx > start_col_idx:
             ws.merge_cells(start_row=note_row, start_column=start_col_idx, end_row=note_row, end_column=label_end_col_idx)
 
-        # Total 행의 폰트 색상을 그대로 가져와서 동일하게 맞춘다
-        total_cell_color = ws.cell(row=total_row, column=supply_col_idx).font.color
-
         label_cell = ws.cell(row=note_row, column=start_col_idx)
         label_cell.value = label_text
         label_cell.font = Font(
-            name=label_cell.font.name or "맑은 고딕", size=10, bold=True, color=total_cell_color
+            name=label_cell.font.name or "맑은 고딕", size=10, bold=True, color=NOTE_FONT_COLOR
         )
         label_cell.alignment = Alignment(horizontal="center", vertical="center")
 
@@ -711,7 +717,7 @@ def _write_estimate_grade_discount_note(ws, layout: dict, partner_info: dict, sh
         amount_cell.value = f"={col_supply}{total_row}*{1 - discount_rate}"
         amount_cell.number_format = '₩#,##0'
         amount_cell.font = Font(
-            name=amount_cell.font.name or "맑은 고딕", size=10, bold=True, color=total_cell_color
+            name=amount_cell.font.name or "맑은 고딕", size=10, bold=True, color=NOTE_FONT_COLOR
         )
     except Exception:
         # 예상 못한 템플릿 구조라면, 최소한 상단 금액 텍스트 줄에라도 안내를 남긴다
