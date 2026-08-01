@@ -6,6 +6,8 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 
+from db import get_non_cigar_purchase_price_map, apply_non_cigar_margin_logic as apply_non_cigar_cost_logic
+
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
 
@@ -72,88 +74,6 @@ def get_table_columns(conn: sqlite3.Connection, table_name: str) -> List[str]:
         return [r[1] for r in rows]
     except Exception:
         return []
-
-
-def get_non_cigar_purchase_price_map(conn: sqlite3.Connection) -> Dict[str, float]:
-    if not table_exists(conn, "non_cigar_product_mst"):
-        return {}
-
-    cols = get_table_columns(conn, "non_cigar_product_mst")
-    if "product_code" not in cols or "purchase_price" not in cols:
-        return {}
-
-    sql = """
-        SELECT
-            TRIM(COALESCE(product_code, '')) AS product_code,
-            COALESCE(purchase_price, 0) AS purchase_price
-        FROM non_cigar_product_mst
-    """
-    try:
-        df = pd.read_sql_query(sql, conn)
-    except Exception:
-        return {}
-
-    if df.empty:
-        return {}
-
-    df["product_code"] = df["product_code"].astype(str).str.strip()
-    df["purchase_price"] = pd.to_numeric(df["purchase_price"], errors="coerce").fillna(0)
-    df = df[df["product_code"] != ""].copy()
-
-    return dict(zip(df["product_code"], df["purchase_price"]))
-
-
-def apply_non_cigar_cost_logic(retail_df: pd.DataFrame, conn: sqlite3.Connection) -> pd.DataFrame:
-    """
-    시가는 기존 원가/이익 유지
-    시가 외 상품만 purchase_price 기준으로 원가/이익 재계산
-    """
-    if retail_df.empty:
-        return retail_df
-
-    df = retail_df.copy()
-
-    if "product_code" not in df.columns:
-        if "total_korea_cost_krw" not in df.columns:
-            df["total_korea_cost_krw"] = 0.0
-        if "retail_gross_profit_krw" not in df.columns:
-            df["retail_gross_profit_krw"] = 0.0
-        return df
-
-    purchase_price_map = get_non_cigar_purchase_price_map(conn)
-
-    if "total_korea_cost_krw" not in df.columns:
-        df["total_korea_cost_krw"] = 0.0
-    if "retail_gross_profit_krw" not in df.columns:
-        df["retail_gross_profit_krw"] = 0.0
-    if "qty" not in df.columns:
-        df["qty"] = 0.0
-    if "net_sales_amount" not in df.columns:
-        df["net_sales_amount"] = 0.0
-
-    df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
-    df["qty"] = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
-    df["net_sales_amount"] = pd.to_numeric(df["net_sales_amount"], errors="coerce").fillna(0)
-    df["total_korea_cost_krw"] = pd.to_numeric(df["total_korea_cost_krw"], errors="coerce").fillna(0)
-    df["retail_gross_profit_krw"] = pd.to_numeric(df["retail_gross_profit_krw"], errors="coerce").fillna(0)
-
-    if purchase_price_map:
-        non_cigar_mask = df["product_code"].isin(purchase_price_map.keys())
-
-        df.loc[non_cigar_mask, "_purchase_price"] = (
-            df.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
-        )
-        df.loc[non_cigar_mask, "total_korea_cost_krw"] = (
-            df.loc[non_cigar_mask, "_purchase_price"] * df.loc[non_cigar_mask, "qty"]
-        )
-        df.loc[non_cigar_mask, "retail_gross_profit_krw"] = (
-            df.loc[non_cigar_mask, "net_sales_amount"] - df.loc[non_cigar_mask, "total_korea_cost_krw"]
-        )
-
-        if "_purchase_price" in df.columns:
-            df = df.drop(columns=["_purchase_price"])
-
-    return df
 
 
 def get_retail_data(conn, date_from: Optional[str], date_to: Optional[str]) -> Tuple[pd.DataFrame, str]:

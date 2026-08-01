@@ -7,6 +7,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from db import get_non_cigar_purchase_price_map, apply_non_cigar_margin_logic
+
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
 
@@ -147,87 +149,6 @@ def build_query(use_view: bool, filters: dict):
 
     return sql, params
 
-
-def get_non_cigar_purchase_price_map(conn: sqlite3.Connection) -> dict:
-    if not table_exists(conn, "non_cigar_product_mst"):
-        return {}
-
-    cols = get_table_columns(conn, "non_cigar_product_mst")
-    if "product_code" not in cols or "purchase_price" not in cols:
-        return {}
-
-    sql = """
-        SELECT
-            TRIM(COALESCE(product_code, '')) AS product_code,
-            COALESCE(purchase_price, 0) AS purchase_price
-        FROM non_cigar_product_mst
-    """
-    try:
-        df = pd.read_sql_query(sql, conn)
-    except Exception:
-        return {}
-
-    if df.empty:
-        return {}
-
-    df["product_code"] = df["product_code"].astype(str).str.strip()
-    df["purchase_price"] = pd.to_numeric(df["purchase_price"], errors="coerce").fillna(0)
-    df = df[df["product_code"] != ""].copy()
-
-    return dict(zip(df["product_code"], df["purchase_price"]))
-
-
-def apply_non_cigar_margin_logic(df: pd.DataFrame, conn: sqlite3.Connection) -> pd.DataFrame:
-    """
-    - 시가(product_mst): 기존 로직 유지
-    - 시가 외(non_cigar_product_mst): 판매금액 - (매입가 * 수량)
-    """
-    if df.empty:
-        return df
-
-    out = df.copy()
-
-    if "product_code" not in out.columns:
-        return out
-
-    purchase_price_map = get_non_cigar_purchase_price_map(conn)
-    if not purchase_price_map:
-        return out
-
-    if "qty" not in out.columns:
-        out["qty"] = 0.0
-    if "net_sales_amount" not in out.columns:
-        out["net_sales_amount"] = 0.0
-    if "total_korea_cost_krw" not in out.columns:
-        out["total_korea_cost_krw"] = 0.0
-    if "retail_gross_profit_krw" not in out.columns:
-        out["retail_gross_profit_krw"] = 0.0
-
-    out["product_code"] = out["product_code"].fillna("").astype(str).str.strip()
-    out["qty"] = pd.to_numeric(out["qty"], errors="coerce").fillna(0)
-    out["net_sales_amount"] = pd.to_numeric(out["net_sales_amount"], errors="coerce").fillna(0)
-    out["total_korea_cost_krw"] = pd.to_numeric(out["total_korea_cost_krw"], errors="coerce").fillna(0)
-    out["retail_gross_profit_krw"] = pd.to_numeric(out["retail_gross_profit_krw"], errors="coerce").fillna(0)
-
-    # 시가 외 항목만 덮어쓰기
-    non_cigar_mask = out["product_code"].isin(purchase_price_map.keys())
-
-    out.loc[non_cigar_mask, "_purchase_price"] = (
-        out.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
-    )
-
-    out.loc[non_cigar_mask, "total_korea_cost_krw"] = (
-        out.loc[non_cigar_mask, "_purchase_price"] * out.loc[non_cigar_mask, "qty"]
-    )
-
-    out.loc[non_cigar_mask, "retail_gross_profit_krw"] = (
-        out.loc[non_cigar_mask, "net_sales_amount"] - out.loc[non_cigar_mask, "total_korea_cost_krw"]
-    )
-
-    if "_purchase_price" in out.columns:
-        out = out.drop(columns=["_purchase_price"])
-
-    return out
 
 
 def calc_kpis(df: pd.DataFrame):

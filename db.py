@@ -10,6 +10,102 @@ def get_conn():
     return conn
 
 
+def get_non_cigar_purchase_price_map(conn) -> dict:
+    """
+    non_cigar_product_mst.purchase_price를 product_code -> 매입가 딕셔너리로 반환.
+
+    ⚠️ 이 함수가 유일한 정본(canonical) 구현입니다.
+    retail_sales_view.py / finance_sales_profit.py / dashboard_finance_summary.py /
+    DAILY_CIGAR.py 에 각각 따로 존재하던 동일한 함수를 여기 하나로 통합했습니다.
+    앞으로 이 로직을 고칠 일이 있으면 반드시 여기(db.py)만 수정하세요.
+    """
+    try:
+        cols_df = pd.read_sql_query("PRAGMA table_info(non_cigar_product_mst)", conn)
+    except Exception:
+        return {}
+    if cols_df.empty:
+        return {}
+
+    cols = set(cols_df["name"].astype(str).tolist())
+    if "product_code" not in cols or "purchase_price" not in cols:
+        return {}
+
+    sql = """
+        SELECT
+            TRIM(COALESCE(product_code, '')) AS product_code,
+            COALESCE(purchase_price, 0) AS purchase_price
+        FROM non_cigar_product_mst
+    """
+    try:
+        df = pd.read_sql_query(sql, conn)
+    except Exception:
+        return {}
+
+    if df.empty:
+        return {}
+
+    df["product_code"] = df["product_code"].astype(str).str.strip()
+    df["purchase_price"] = pd.to_numeric(df["purchase_price"], errors="coerce").fillna(0)
+    df = df[df["product_code"] != ""].copy()
+
+    return dict(zip(df["product_code"], df["purchase_price"]))
+
+
+def apply_non_cigar_margin_logic(df: pd.DataFrame, conn) -> pd.DataFrame:
+    """
+    소매 판매 데이터프레임에서 시가 외(non_cigar) 항목만 매입가(purchase_price) 기준으로
+    원가/마진을 재계산해서 덮어쓴다. 시가(cigar) 항목은 그대로 둔다.
+
+    - total_korea_cost_krw = purchase_price * qty
+    - retail_gross_profit_krw = net_sales_amount - total_korea_cost_krw
+
+    ⚠️ 이 함수가 유일한 정본(canonical) 구현입니다. (get_non_cigar_purchase_price_map과 동일)
+    """
+    if df.empty:
+        return df
+
+    out = df.copy()
+
+    if "product_code" not in out.columns:
+        return out
+
+    purchase_price_map = get_non_cigar_purchase_price_map(conn)
+    if not purchase_price_map:
+        return out
+
+    if "qty" not in out.columns:
+        out["qty"] = 0.0
+    if "net_sales_amount" not in out.columns:
+        out["net_sales_amount"] = 0.0
+    if "total_korea_cost_krw" not in out.columns:
+        out["total_korea_cost_krw"] = 0.0
+    if "retail_gross_profit_krw" not in out.columns:
+        out["retail_gross_profit_krw"] = 0.0
+
+    out["product_code"] = out["product_code"].fillna("").astype(str).str.strip()
+    out["qty"] = pd.to_numeric(out["qty"], errors="coerce").fillna(0)
+    out["net_sales_amount"] = pd.to_numeric(out["net_sales_amount"], errors="coerce").fillna(0)
+    out["total_korea_cost_krw"] = pd.to_numeric(out["total_korea_cost_krw"], errors="coerce").fillna(0)
+    out["retail_gross_profit_krw"] = pd.to_numeric(out["retail_gross_profit_krw"], errors="coerce").fillna(0)
+
+    non_cigar_mask = out["product_code"].isin(purchase_price_map.keys())
+
+    out.loc[non_cigar_mask, "_purchase_price"] = (
+        out.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
+    )
+    out.loc[non_cigar_mask, "total_korea_cost_krw"] = (
+        out.loc[non_cigar_mask, "_purchase_price"] * out.loc[non_cigar_mask, "qty"]
+    )
+    out.loc[non_cigar_mask, "retail_gross_profit_krw"] = (
+        out.loc[non_cigar_mask, "net_sales_amount"] - out.loc[non_cigar_mask, "total_korea_cost_krw"]
+    )
+
+    if "_purchase_price" in out.columns:
+        out = out.drop(columns=["_purchase_price"])
+
+    return out
+
+
 def run_query(sql, params=None):
     conn = get_conn()
     try:

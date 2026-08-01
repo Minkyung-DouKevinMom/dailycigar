@@ -6,6 +6,8 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
+from db import get_non_cigar_purchase_price_map, apply_non_cigar_margin_logic
+
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
 
@@ -109,36 +111,6 @@ def inject_expense_metric_css():
     )
 
 
-def get_non_cigar_purchase_price_map(conn) -> dict:
-    if not table_exists(conn, "non_cigar_product_mst"):
-        return {}
-
-    cols = get_table_columns(conn, "non_cigar_product_mst")
-    if "product_code" not in cols or "purchase_price" not in cols:
-        return {}
-
-    sql = """
-        SELECT
-            TRIM(COALESCE(product_code, '')) AS product_code,
-            COALESCE(purchase_price, 0) AS purchase_price
-        FROM non_cigar_product_mst
-    """
-    try:
-        df = pd.read_sql_query(sql, conn)
-    except Exception:
-        return {}
-
-    if df.empty:
-        return {}
-
-    df["product_code"] = df["product_code"].astype(str).str.strip()
-    df["purchase_price"] = pd.to_numeric(df["purchase_price"], errors="coerce").fillna(0)
-    df = df[df["product_code"] != ""].copy()
-
-    return dict(zip(df["product_code"], df["purchase_price"]))
-
-
-
 def get_product_name_map(conn) -> dict:
     name_map = {}
 
@@ -191,10 +163,8 @@ def get_product_name_map(conn) -> dict:
 def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     """
     - 시가는 기존 로직 유지
-    - 시가 외 상품만 purchase_price 기준으로 원가/이익 재계산
+    - 시가 외 상품만 purchase_price 기준으로 원가/이익 재계산 (db.apply_non_cigar_margin_logic 사용)
     """
-    purchase_price_map = get_non_cigar_purchase_price_map(conn)
-
     if view_exists(conn, "v_retail_sales_enriched"):
         vcols = get_table_columns(conn, "v_retail_sales_enriched")
 
@@ -230,21 +200,11 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
 
             df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
 
-            # 시가 외 항목만 재계산
-            non_cigar_mask = df["product_code"].isin(purchase_price_map.keys())
-
-            df.loc[non_cigar_mask, "_purchase_price"] = (
-                df.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
-            )
-            df.loc[non_cigar_mask, "total_korea_cost_krw"] = (
-                df.loc[non_cigar_mask, "_purchase_price"] * df.loc[non_cigar_mask, "qty"]
-            )
-            df.loc[non_cigar_mask, "gross_profit_krw"] = (
-                df.loc[non_cigar_mask, "net_sales_amount"] - df.loc[non_cigar_mask, "total_korea_cost_krw"]
-            )
-
-            if "_purchase_price" in df.columns:
-                df = df.drop(columns=["_purchase_price"])
+            # 공용 로직(db.apply_non_cigar_margin_logic)은 retail_gross_profit_krw 컬럼명을
+            # 쓰므로 임시로 맞춰 호출 후 원래 컬럼명으로 되돌린다.
+            df = df.rename(columns={"gross_profit_krw": "retail_gross_profit_krw"})
+            df = apply_non_cigar_margin_logic(df, conn)
+            df = df.rename(columns={"retail_gross_profit_krw": "gross_profit_krw"})
 
             return df
 
@@ -279,21 +239,9 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
 
             df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
 
-            # 시가 외 항목만 재계산
-            non_cigar_mask = df["product_code"].isin(purchase_price_map.keys())
-
-            df.loc[non_cigar_mask, "_purchase_price"] = (
-                df.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
-            )
-            df.loc[non_cigar_mask, "total_korea_cost_krw"] = (
-                df.loc[non_cigar_mask, "_purchase_price"] * df.loc[non_cigar_mask, "qty"]
-            )
-            df.loc[non_cigar_mask, "gross_profit_krw"] = (
-                df.loc[non_cigar_mask, "net_sales_amount"] - df.loc[non_cigar_mask, "total_korea_cost_krw"]
-            )
-
-            if "_purchase_price" in df.columns:
-                df = df.drop(columns=["_purchase_price"])
+            df = df.rename(columns={"gross_profit_krw": "retail_gross_profit_krw"})
+            df = apply_non_cigar_margin_logic(df, conn)
+            df = df.rename(columns={"retail_gross_profit_krw": "gross_profit_krw"})
 
         return df
 
