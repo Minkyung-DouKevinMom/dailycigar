@@ -2382,3 +2382,122 @@ def update_gift_package_component(
 
 def delete_gift_package_component(row_id: int):
     execute("DELETE FROM gift_package_component WHERE id = ?", [row_id])
+
+
+def get_gift_set_component_attribution(conn, date_from: str = None, date_to: str = None) -> pd.DataFrame:
+    """
+    선물세트(기프트패키지)로 판매된 매출/원가를 구성품(시가 + 기타) 단위로 정확히 귀속시킨다.
+
+    - 세트 안에서 구성품별 배분비중 = (개당판매가 × 세트당수량) / Σ(개당판매가 × 세트당수량)
+      (세트의 모든 구성품 개당판매가 합이 0이면 세트당수량 기준 균등 배분으로 폴백)
+    - 귀속매출 = 세트 실제판매금액(retail_sales.net_sales_amount) × 배분비중
+    - 귀속원가 = 개당원가 × 세트당수량 × 판매된 세트수(qty)
+    - 귀속이익 = 귀속매출 - 귀속원가
+
+    date_from/date_to를 주면 retail_sales.sale_date 기준으로 기간을 제한한다.
+
+    반환 컬럼: component_type, component_product_code, product_name, qty,
+              attributed_sales, attributed_cost, attributed_profit
+    """
+    empty_cols = ["component_type", "component_product_code", "product_name",
+                  "qty", "attributed_sales", "attributed_cost", "attributed_profit"]
+
+    gift_products = pd.read_sql_query(
+        "SELECT id, TRIM(COALESCE(product_code, '')) AS product_code "
+        "FROM non_cigar_product_mst WHERE product_category = ?",
+        conn, params=[GIFT_PACKAGE_CATEGORY],
+    )
+    gift_products = gift_products[gift_products["product_code"] != ""]
+    if gift_products.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    components = pd.read_sql_query(
+        """
+        SELECT
+            gpc.gift_product_id,
+            gpc.component_type,
+            gpc.component_product_code,
+            COALESCE(pm.product_name, ncp.product_name, gpc.component_product_code) AS product_name,
+            gpc.qty_per_set,
+            gpc.unit_cost_krw,
+            gpc.unit_price_krw
+        FROM gift_package_component gpc
+        LEFT JOIN product_mst pm
+            ON gpc.component_type = 'cigar' AND gpc.component_product_code = pm.product_code
+        LEFT JOIN non_cigar_product_mst ncp
+            ON gpc.component_type = 'non_cigar' AND gpc.component_product_code = ncp.product_code
+        WHERE COALESCE(gpc.is_active, 1) = 1
+        """,
+        conn,
+    )
+    if components.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    components = components.merge(
+        gift_products.rename(columns={"id": "gift_product_id", "product_code": "gift_code"}),
+        on="gift_product_id", how="inner",
+    )
+    if components.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    components["qty_per_set"] = pd.to_numeric(components["qty_per_set"], errors="coerce").fillna(0)
+    components["unit_cost_krw"] = pd.to_numeric(components["unit_cost_krw"], errors="coerce").fillna(0)
+    components["unit_price_krw"] = pd.to_numeric(components["unit_price_krw"], errors="coerce").fillna(0)
+
+    components["weight_basis"] = components["unit_price_krw"] * components["qty_per_set"]
+    weight_sum = components.groupby("gift_code")["weight_basis"].transform("sum")
+    qty_sum = components.groupby("gift_code")["qty_per_set"].transform("sum")
+
+    price_ok = weight_sum > 0
+    components["weight"] = 0.0
+    components.loc[price_ok, "weight"] = (
+        components.loc[price_ok, "weight_basis"] / weight_sum[price_ok]
+    )
+    qty_ok = (~price_ok) & (qty_sum > 0)
+    components.loc[qty_ok, "weight"] = (
+        components.loc[qty_ok, "qty_per_set"] / qty_sum[qty_ok]
+    )
+
+    codes = gift_products["product_code"].tolist()
+    sql = f"""
+        SELECT sale_date, TRIM(COALESCE(product_code, '')) AS product_code, qty, net_sales_amount
+        FROM retail_sales
+        WHERE TRIM(COALESCE(product_code, '')) IN ({",".join(["?"] * len(codes))})
+    """
+    params = list(codes)
+    if date_from:
+        sql += " AND sale_date >= ?"
+        params.append(date_from)
+    if date_to:
+        sql += " AND sale_date <= ?"
+        params.append(date_to)
+
+    sales = pd.read_sql_query(sql, conn, params=params)
+    if sales.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    sales["qty"] = pd.to_numeric(sales["qty"], errors="coerce").fillna(0)
+    sales["net_sales_amount"] = pd.to_numeric(sales["net_sales_amount"], errors="coerce").fillna(0)
+
+    merged = sales.merge(
+        components.rename(columns={"gift_code": "product_code"}),
+        on="product_code", how="inner",
+    )
+    if merged.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    merged["attributed_qty"] = merged["qty_per_set"] * merged["qty"]
+    merged["attributed_sales"] = merged["net_sales_amount"] * merged["weight"]
+    merged["attributed_cost"] = merged["unit_cost_krw"] * merged["qty_per_set"] * merged["qty"]
+    merged["attributed_profit"] = merged["attributed_sales"] - merged["attributed_cost"]
+
+    result = (
+        merged.groupby(["component_type", "component_product_code", "product_name"], as_index=False)
+        .agg(
+            qty=("attributed_qty", "sum"),
+            attributed_sales=("attributed_sales", "sum"),
+            attributed_cost=("attributed_cost", "sum"),
+            attributed_profit=("attributed_profit", "sum"),
+        )
+    )
+    return result

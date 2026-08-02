@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
-from db import get_stock_summary
+from db import get_stock_summary, get_gift_set_component_attribution
 
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
@@ -328,16 +328,16 @@ def render_pie_chart(
 
 def build_full_grouped_with_giftset(
     direct_grp: pd.DataFrame,
-    gift_qty_by_code: dict,
-    gift_name_by_code: dict,
+    gift_attr_by_code: dict,
 ) -> pd.DataFrame:
     """
-    build_product_grouped() 결과(직접판매: 소매+도매 실적)에 선물세트 수량을 더한다.
-    실제 회계상 매출·이익은 선물세트 자체에는 없지만(=기프트패키지 상품 매출로 이미 잡혀 있음),
-    "이 상품이 판매수량 대비 얼마나 매출·이익에 기여했는지"를 보여주기 위해
-    해당 상품의 직접판매 평균 단가(매출/판매량)·평균 단위이익(이익/판매량)에
-    선물세트 수량을 곱한 값을 "추정 매출/이익"으로 직접판매 실적에 더한다.
-    직접판매 이력이 전혀 없는 상품은 단가를 알 수 없어 추정 매출/이익을 0으로 처리한다.
+    build_product_grouped() 결과(직접판매: 소매+도매 실적)에 선물세트로 귀속된
+    매출·원가·이익을 더한다.
+
+    선물세트 귀속값은 db.get_gift_set_component_attribution()에서 산출한 실측치로,
+    gift_package_component에 등록된 구성품별 개당원가/개당판매가를 바탕으로
+    (개당판매가 × 세트당수량) 비중만큼 세트 실제판매금액을 나누고, 원가는
+    개당원가 × 세트당수량을 그대로 곱한 값이다 (평균단가 추정이 아니라 실측 배분).
     """
     base = {}
     if not direct_grp.empty:
@@ -350,30 +350,24 @@ def build_full_grouped_with_giftset(
                 "이익": float(r.get("이익", 0) or 0),
             }
 
-    all_codes = set(base.keys()) | set(gift_qty_by_code.keys())
+    all_codes = set(base.keys()) | set(gift_attr_by_code.keys())
     rows = []
     for code in all_codes:
+        attr = gift_attr_by_code.get(code, {})
         b = base.get(
             code,
-            {"product_name": gift_name_by_code.get(code, code), "판매량": 0.0, "매출": 0.0, "이익": 0.0},
+            {"product_name": attr.get("product_name", code), "판매량": 0.0, "매출": 0.0, "이익": 0.0},
         )
-        direct_qty = b["판매량"]
-        direct_sales = b["매출"]
-        direct_profit = b["이익"]
-        avg_price = (direct_sales / direct_qty) if direct_qty else 0.0
-        avg_profit = (direct_profit / direct_qty) if direct_qty else 0.0
-        gift_qty = float(gift_qty_by_code.get(code, 0) or 0)
-
-        total_qty = direct_qty + gift_qty
-        est_sales = direct_sales + avg_price * gift_qty
-        est_profit = direct_profit + avg_profit * gift_qty
+        gift_qty = float(attr.get("qty", 0) or 0)
+        gift_sales = float(attr.get("attributed_sales", 0) or 0)
+        gift_profit = float(attr.get("attributed_profit", 0) or 0)
 
         rows.append({
             "상품코드": code,
             "product_name": b["product_name"],
-            "판매량": total_qty,
-            "매출": est_sales,
-            "이익": est_profit,
+            "판매량": b["판매량"] + gift_qty,
+            "매출": b["매출"] + gift_sales,
+            "이익": b["이익"] + gift_profit,
         })
 
     result = pd.DataFrame(rows)
@@ -957,24 +951,30 @@ def render():
         cigar_product_count = cigar_df["product_code"].nunique() if not cigar_df.empty else 0
         gift_set_qty = gift_set_df["qty"].sum() if not gift_set_df.empty else 0
 
-        # ── 파이차트 전용: 선물세트 수량을 포함하고, 매출·이익은
-        # 해당 상품의 직접판매 평균 단가/단위이익 × 선물세트 수량으로 추정해 더한다.
-        # (KPI 카드와 위의 product_grouped(바차트용)는 실제 판매분만 사용해 그대로 둔다)
+        # ── 파이차트 전용: 선물세트로 귀속된 매출·이익을 실측치로 더한다.
+        # (KPI 카드와 위의 product_grouped(바차트용)는 직접 판매분만 사용해 그대로 둔다)
         # 선물세트는 채널 구분 정보가 없어 소매 채널로 간주해 소매 파이에 포함한다.
-        gift_qty_by_code = (
-            gift_set_df.groupby("product_code")["qty"].sum().to_dict()
-            if not gift_set_df.empty else {}
-        )
-        gift_name_by_code = (
-            gift_set_df.drop_duplicates("product_code")
-            .set_index("product_code")["product_name"].to_dict()
-            if not gift_set_df.empty else {}
-        )
+        gift_attr_df = get_gift_set_component_attribution(conn, date_from, date_to)
+        gift_attr_by_code = {}
+        if not gift_attr_df.empty:
+            gift_attr_df = gift_attr_df[gift_attr_df["component_type"] == "cigar"].copy()
+            gift_attr_df["component_product_code"] = normalize_code(gift_attr_df["component_product_code"])
+            if cigar_codes:
+                gift_attr_df = gift_attr_df[gift_attr_df["component_product_code"].isin(cigar_codes)]
+            gift_attr_by_code = {
+                row["component_product_code"]: {
+                    "product_name": row["product_name"],
+                    "qty": row["qty"],
+                    "attributed_sales": row["attributed_sales"],
+                    "attributed_profit": row["attributed_profit"],
+                }
+                for _, row in gift_attr_df.iterrows()
+            }
         retail_full_grp = build_full_grouped_with_giftset(
-            apply_discount_to_grouped(retail_product_grouped), gift_qty_by_code, gift_name_by_code
+            apply_discount_to_grouped(retail_product_grouped), gift_attr_by_code
         )
         combined_full_grp = build_full_grouped_with_giftset(
-            apply_discount_to_grouped(product_grouped), gift_qty_by_code, gift_name_by_code
+            apply_discount_to_grouped(product_grouped), gift_attr_by_code
         )
         # 도매 파이는 선물세트 병합이 없어 할인만 적용한 별도 사본을 사용한다.
         wholesale_pie_grp = apply_discount_to_grouped(wholesale_product_grouped)
@@ -1012,15 +1012,15 @@ def render():
 
         st.caption(
             "소매 파이는 선물세트 수량을 포함합니다(선물세트는 채널 구분이 없어 소매로 간주, "
-            "매출·이익은 상품별 직접판매 평균 단가·단위이익 기반 추정치). "
-            "도매는 선물세트 개념이 없어 도매 직접판매만 집계합니다."
+            "매출·이익은 기프트패키지 구성품 관리 화면에 등록된 개당원가/개당판매가 기준으로 "
+            "정밀 배분한 값). 도매는 선물세트 개념이 없어 도매 직접판매만 집계합니다."
         )
         render_pie_chart(
             make_product_pie_df(retail_full_grp),
             label_col="구분",
             value_col="금액",
             qty_col="판매수량",
-            title="시가상품별 매출금액 비중 (소매, 선물세트 포함 추정)",
+            title="시가상품별 매출금액 비중 (소매, 선물세트 포함)",
             value_label="매출금액",
             color_map=pie_color_map,
             height=560,
@@ -1043,12 +1043,12 @@ def render():
         st.divider()
 
         # ── 통합(소매+도매+선물세트) 지표별 파이차트 ─────────────────
-        st.markdown("### 소매·도매 통합 지표별 비중 (선물세트 수량 포함, 매출·이익은 추정치)")
+        st.markdown("### 소매·도매 통합 지표별 비중 (선물세트 수량 포함)")
         st.caption(
             "판매수량은 선물세트로 나간 수량까지 포함합니다. 매출·이익은 선물세트분에 대해 "
-            "실제 회계상 매출이 없는 대신, 해당 상품의 직접판매 평균 단가·단위이익 × 선물세트 수량으로 "
-            "추정해 더한 값입니다(직접판매 이력이 없는 상품은 추정 불가로 0 처리). "
-            "모든 조각 위에 상품코드·값·비율을 함께 표시합니다."
+            "실제 회계상 매출이 세트 자체에는 없는 대신, 기프트패키지 구성품 관리 화면에 등록된 "
+            "개당원가/개당판매가를 바탕으로 세트 실제판매금액을 구성품별 비중대로 정밀 배분한 값입니다"
+            "(구성품이 등록되지 않은 세트는 0 처리). 모든 조각 위에 상품코드·값·비율을 함께 표시합니다."
         )
 
         sales_pie_all = make_full_pie_df(combined_full_grp, "매출", "판매량")
