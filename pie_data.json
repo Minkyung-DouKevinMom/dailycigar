@@ -2,294 +2,672 @@
   "sales": [
     {
       "label": "DJUA(R)",
-      "value": 15735591,
+      "value": 16192870,
       "pct": 13.5,
-      "color": "2FBB1B"
+      "color": "399ED0"
     },
     {
       "label": "ALH(R)",
-      "value": 13517247,
-      "pct": 11.6,
-      "color": "D0AB39"
+      "value": 13573913,
+      "pct": 11.3,
+      "color": "39D06B"
     },
     {
       "label": "TABFF(PURITOS)",
-      "value": 10486989,
-      "pct": 9.0,
-      "color": "A71BBB"
+      "value": 10547022,
+      "pct": 8.8,
+      "color": "BB1B6B"
     },
     {
       "label": "TAB(R)",
-      "value": 10263995,
-      "pct": 8.8,
-      "color": "39D0D0"
+      "value": 10400560,
+      "pct": 8.7,
+      "color": "361BBB"
     },
     {
       "label": "1881(C)",
-      "value": 9966331,
+      "value": 10277463,
       "pct": 8.6,
       "color": "D03939"
     },
     {
       "label": "TABE(R)",
-      "value": 6804953,
-      "pct": 5.8,
-      "color": "395FD0"
+      "value": 7113953,
+      "pct": 5.9,
+      "color": "9E39D0"
     },
     {
       "label": "DJUA(C)",
-      "value": 6222246,
+      "value": 6311372,
       "pct": 5.3,
-      "color": "85D039"
+      "color": "1BA1BB"
     },
     {
       "label": "ALH(C)",
-      "value": 5092913,
-      "pct": 4.4,
-      "color": "BB571B"
+      "value": 5128406,
+      "pct": 4.3,
+      "color": "39D039"
     },
     {
       "label": "TAB(HC)",
-      "value": 3761877,
+      "value": 3822987,
       "pct": 3.2,
-      "color": "1BBB7F"
-    },
-    {
-      "label": "TABFF(CHOCO)",
-      "value": 3478620,
-      "pct": 3.0,
-      "color": "8539D0"
-    },
-    {
-      "label": "TABFF(VANILLA)",
-      "value": 3287797,
-      "pct": 2.8,
-      "color": "D039AB"
+      "color": "3939D0"
     },
     {
       "label": "TABR(R)",
-      "value": 3241000,
-      "pct": 2.8,
-      "color": "BB1B57"
+      "value": 3757500,
+      "pct": 3.1,
+      "color": "BB1B36"
+    },
+    {
+      "label": "TABFF(CHOCO)",
+      "value": 3612407,
+      "pct": 3.0,
+      "color": "D0399E"
+    },
+    {
+      "label": "TABFF(VANILLA)",
+      "value": 3511754,
+      "pct": 2.9,
+      "color": "D0396B"
     },
     {
       "label": "DJUA(T)",
-      "value": 3175000,
+      "value": 3251000,
       "pct": 2.7,
-      "color": "39D05F"
+      "color": "1B6BBB"
     },
     {
       "label": "TABFF(CAFE)",
-      "value": 2441310,
+      "value": 2514709,
       "pct": 2.1,
-      "color": "2F1BBB"
+      "color": "D039D0"
     },
     {
-      "label": "기타",
-      "value": 18849636,
-      "pct": 16.2,
-      "color": "B0B0B0"
+      "label": "DJU(C)",
+      "value": 2412000,
+      "pct": 2.0,
+      "color": "1BBB6B"
+    },
+    {
+      "label": "1881PBM(SR)",
+      "value": 2382400,
+      "pct": 2.0,
+      "color": "9ED039"
+    },
+    {
+      "label": "TABE(C)",
+      "value": 2112500,
+      "pct": 1.8,
+      "color": "6B39D0"
+    },
+    {
+      "label": "TABFF(CARAMEL)",
+      "value": 2025000,
+      "pct": 1.7,
+      "color": "BB1BA1"
+    },
+    {
+      "label": "1881(TP)",
+      "value": 1466600,
+      "pct": 1.2,
+      "color": "D06B39"
+    },
+    {
+      "label": "1881PM(TP)",
+      "value": 1286000,
+      "pct": 1.1,
+      "color": "36BB1B"
+    },
+    {
+      "label": "1881PB(TP)",
+      "value": 1081000,
+      "pct": 0.9,
+      "color": "D0D039"
+    },
+    {
+      "label": "1881PM(SR)",
+      "value": 913082,
+      "pct": 0.8,
+      "color": "6BD039"
+    },
+    {
+      "label": "1881PM(R)",
+      "value": 748000,
+      "pct": 0.6,
+      "color": "6BBB1B"
+    },
+    {
+      "label": "DJU(R)",
+      "value": 729000,
+      "pct": 0.6,
+      "color": "39D0D0"
+    },
+    {
+      "label": "TABE(T)",
+      "value": 728000,
+      "pct": 0.6,
+      "color": "A11BBB"
+    },
+    {
+      "label": "1881P(TP)",
+      "value": 718200,
+      "pct": 0.6,
+      "color": "D09E39"
+    },
+    {
+      "label": "1881(R)",
+      "value": 667000,
+      "pct": 0.6,
+      "color": "BB361B"
+    },
+    {
+      "label": "DJU(P)",
+      "value": 587000,
+      "pct": 0.5,
+      "color": "1BBBA1"
+    },
+    {
+      "label": "DJU(CC)",
+      "value": 472000,
+      "pct": 0.4,
+      "color": "39D09E"
+    },
+    {
+      "label": "TABE(P)",
+      "value": 471000,
+      "pct": 0.4,
+      "color": "6B1BBB"
+    },
+    {
+      "label": "1881P(R)",
+      "value": 353400,
+      "pct": 0.3,
+      "color": "BB6B1B"
+    },
+    {
+      "label": "TAB(C)",
+      "value": 244286,
+      "pct": 0.2,
+      "color": "396BD0"
+    },
+    {
+      "label": "ALH(CS7)",
+      "value": 190000,
+      "pct": 0.2,
+      "color": "1BBB36"
+    },
+    {
+      "label": "1881PBM(R)",
+      "value": 167800,
+      "pct": 0.1,
+      "color": "A1BB1B"
+    },
+    {
+      "label": "1881PB(SR)",
+      "value": 87800,
+      "pct": 0.1,
+      "color": "BBA11B"
+    },
+    {
+      "label": "TAB(CL)",
+      "value": 84000,
+      "pct": 0.1,
+      "color": "1B36BB"
     }
   ],
   "profit": [
     {
       "label": "DJUA(R)",
-      "value": 9518272,
-      "pct": 14.6,
-      "color": "2FBB1B"
+      "value": 9903604,
+      "pct": 14.7,
+      "color": "399ED0"
     },
     {
       "label": "ALH(R)",
-      "value": 7139088,
-      "pct": 10.9,
-      "color": "D0AB39"
+      "value": 7266808,
+      "pct": 10.8,
+      "color": "39D06B"
     },
     {
       "label": "1881(C)",
-      "value": 6334779,
+      "value": 6543430,
       "pct": 9.7,
       "color": "D03939"
     },
     {
       "label": "TABFF(PURITOS)",
-      "value": 5274689,
-      "pct": 8.1,
-      "color": "A71BBB"
+      "value": 5305164,
+      "pct": 7.9,
+      "color": "BB1B6B"
     },
     {
       "label": "TAB(R)",
-      "value": 4886450,
-      "pct": 7.5,
-      "color": "39D0D0"
+      "value": 5020851,
+      "pct": 7.4,
+      "color": "361BBB"
     },
     {
       "label": "TABE(R)",
-      "value": 4414566,
-      "pct": 6.8,
-      "color": "395FD0"
+      "value": 4641663,
+      "pct": 6.9,
+      "color": "9E39D0"
     },
     {
       "label": "DJUA(C)",
-      "value": 3711156,
+      "value": 3851217,
       "pct": 5.7,
-      "color": "85D039"
+      "color": "1BA1BB"
     },
     {
       "label": "ALH(C)",
-      "value": 3228932,
-      "pct": 4.9,
-      "color": "BB571B"
+      "value": 3251077,
+      "pct": 4.8,
+      "color": "39D039"
     },
     {
       "label": "DJUA(T)",
-      "value": 2077193,
-      "pct": 3.2,
-      "color": "39D05F"
+      "value": 2110172,
+      "pct": 3.1,
+      "color": "1B6BBB"
     },
     {
       "label": "TAB(HC)",
-      "value": 1904138,
+      "value": 1941026,
       "pct": 2.9,
-      "color": "1BBB7F"
+      "color": "3939D0"
     },
     {
       "label": "TABFF(CHOCO)",
-      "value": 1624430,
-      "pct": 2.5,
-      "color": "8539D0"
+      "value": 1616956,
+      "pct": 2.4,
+      "color": "D0399E"
     },
     {
       "label": "TABFF(VANILLA)",
-      "value": 1558158,
+      "value": 1587448,
       "pct": 2.4,
-      "color": "D039AB"
+      "color": "D0396B"
+    },
+    {
+      "label": "1881PBM(SR)",
+      "value": 1569510,
+      "pct": 2.3,
+      "color": "9ED039"
     },
     {
       "label": "DJU(C)",
-      "value": 1538226,
-      "pct": 2.4,
-      "color": "A7BB1B"
+      "value": 1553764,
+      "pct": 2.3,
+      "color": "1BBB6B"
     },
     {
       "label": "TABE(C)",
-      "value": 1417282,
-      "pct": 2.2,
-      "color": "1B7FBB"
+      "value": 1437823,
+      "pct": 2.1,
+      "color": "6B39D0"
     },
     {
-      "label": "기타",
-      "value": 10626614,
-      "pct": 16.3,
-      "color": "B0B0B0"
+      "label": "TABFF(CAFE)",
+      "value": 1141477,
+      "pct": 1.7,
+      "color": "D039D0"
+    },
+    {
+      "label": "TABR(R)",
+      "value": 924855,
+      "pct": 1.4,
+      "color": "BB1B36"
+    },
+    {
+      "label": "1881(TP)",
+      "value": 913267,
+      "pct": 1.4,
+      "color": "D06B39"
+    },
+    {
+      "label": "TABFF(CARAMEL)",
+      "value": 900391,
+      "pct": 1.3,
+      "color": "BB1BA1"
+    },
+    {
+      "label": "1881PM(TP)",
+      "value": 835253,
+      "pct": 1.2,
+      "color": "36BB1B"
+    },
+    {
+      "label": "1881PB(TP)",
+      "value": 662445,
+      "pct": 1.0,
+      "color": "D0D039"
+    },
+    {
+      "label": "1881PM(SR)",
+      "value": 592635,
+      "pct": 0.9,
+      "color": "6BD039"
+    },
+    {
+      "label": "TABE(T)",
+      "value": 509443,
+      "pct": 0.8,
+      "color": "A11BBB"
+    },
+    {
+      "label": "1881PM(R)",
+      "value": 472652,
+      "pct": 0.7,
+      "color": "6BBB1B"
+    },
+    {
+      "label": "DJU(R)",
+      "value": 453128,
+      "pct": 0.7,
+      "color": "39D0D0"
+    },
+    {
+      "label": "1881(R)",
+      "value": 404070,
+      "pct": 0.6,
+      "color": "BB361B"
+    },
+    {
+      "label": "1881P(TP)",
+      "value": 385496,
+      "pct": 0.6,
+      "color": "D09E39"
+    },
+    {
+      "label": "DJU(P)",
+      "value": 345962,
+      "pct": 0.5,
+      "color": "1BBBA1"
+    },
+    {
+      "label": "TABE(P)",
+      "value": 334686,
+      "pct": 0.5,
+      "color": "6B1BBB"
+    },
+    {
+      "label": "DJU(CC)",
+      "value": 327064,
+      "pct": 0.5,
+      "color": "39D09E"
+    },
+    {
+      "label": "1881P(R)",
+      "value": 204009,
+      "pct": 0.3,
+      "color": "BB6B1B"
+    },
+    {
+      "label": "TAB(C)",
+      "value": 141183,
+      "pct": 0.2,
+      "color": "396BD0"
+    },
+    {
+      "label": "ALH(CS7)",
+      "value": 129888,
+      "pct": 0.2,
+      "color": "1BBB36"
+    },
+    {
+      "label": "1881PBM(R)",
+      "value": 98868,
+      "pct": 0.1,
+      "color": "A1BB1B"
+    },
+    {
+      "label": "TAB(CL)",
+      "value": 54045,
+      "pct": 0.1,
+      "color": "1B36BB"
+    },
+    {
+      "label": "1881PB(SR)",
+      "value": 0,
+      "pct": 0.0,
+      "color": "BBA11B"
     }
   ],
   "qty": [
     {
       "label": "ALH(R)",
-      "value": 833,
-      "pct": 15.3,
-      "color": "D0AB39"
+      "value": 837,
+      "pct": 15.0,
+      "color": "39D06B"
     },
     {
       "label": "TAB(R)",
-      "value": 681,
-      "pct": 12.5,
-      "color": "39D0D0"
+      "value": 690,
+      "pct": 12.4,
+      "color": "361BBB"
     },
     {
       "label": "TAB(HC)",
-      "value": 633,
-      "pct": 11.6,
-      "color": "1BBB7F"
+      "value": 642,
+      "pct": 11.5,
+      "color": "3939D0"
     },
     {
       "label": "DJUA(R)",
-      "value": 597,
-      "pct": 10.9,
-      "color": "2FBB1B"
+      "value": 614,
+      "pct": 11.0,
+      "color": "399ED0"
     },
     {
       "label": "1881(C)",
-      "value": 463,
+      "value": 475,
       "pct": 8.5,
       "color": "D03939"
     },
     {
       "label": "TABFF(PURITOS)",
-      "value": 368,
-      "pct": 6.7,
-      "color": "A71BBB"
+      "value": 370,
+      "pct": 6.6,
+      "color": "BB1B6B"
     },
     {
       "label": "ALH(C)",
-      "value": 332,
-      "pct": 6.1,
-      "color": "BB571B"
+      "value": 336,
+      "pct": 6.0,
+      "color": "39D039"
     },
     {
       "label": "DJUA(C)",
-      "value": 313,
+      "value": 319,
       "pct": 5.7,
-      "color": "85D039"
+      "color": "1BA1BB"
     },
     {
       "label": "TABE(R)",
-      "value": 177,
-      "pct": 3.2,
-      "color": "395FD0"
+      "value": 185,
+      "pct": 3.3,
+      "color": "9E39D0"
     },
     {
       "label": "TABFF(CHOCO)",
-      "value": 133,
-      "pct": 2.4,
-      "color": "8539D0"
+      "value": 138,
+      "pct": 2.5,
+      "color": "D0399E"
     },
     {
       "label": "TABFF(VANILLA)",
-      "value": 122,
-      "pct": 2.2,
-      "color": "D039AB"
+      "value": 130,
+      "pct": 2.3,
+      "color": "D0396B"
     },
     {
       "label": "DJU(C)",
-      "value": 99,
+      "value": 100,
       "pct": 1.8,
-      "color": "A7BB1B"
+      "color": "1BBB6B"
     },
     {
       "label": "TABFF(CAFE)",
-      "value": 91,
+      "value": 94,
       "pct": 1.7,
-      "color": "2F1BBB"
+      "color": "D039D0"
     },
     {
       "label": "DJUA(T)",
-      "value": 89,
+      "value": 91,
       "pct": 1.6,
-      "color": "39D05F"
+      "color": "1B6BBB"
     },
     {
-      "label": "기타",
-      "value": 529,
-      "pct": 9.7,
-      "color": "B0B0B0"
+      "label": "TABFF(CARAMEL)",
+      "value": 81,
+      "pct": 1.5,
+      "color": "BB1BA1"
+    },
+    {
+      "label": "TABE(C)",
+      "value": 70,
+      "pct": 1.3,
+      "color": "6B39D0"
+    },
+    {
+      "label": "TABR(R)",
+      "value": 65,
+      "pct": 1.2,
+      "color": "BB1B36"
+    },
+    {
+      "label": "1881PBM(SR)",
+      "value": 49,
+      "pct": 0.9,
+      "color": "9ED039"
+    },
+    {
+      "label": "1881(TP)",
+      "value": 40,
+      "pct": 0.7,
+      "color": "D06B39"
+    },
+    {
+      "label": "1881PB(TP)",
+      "value": 31,
+      "pct": 0.6,
+      "color": "D0D039"
+    },
+    {
+      "label": "DJU(R)",
+      "value": 25,
+      "pct": 0.4,
+      "color": "39D0D0"
+    },
+    {
+      "label": "1881(R)",
+      "value": 25,
+      "pct": 0.4,
+      "color": "BB361B"
+    },
+    {
+      "label": "1881PM(TP)",
+      "value": 25,
+      "pct": 0.4,
+      "color": "36BB1B"
+    },
+    {
+      "label": "1881PM(SR)",
+      "value": 23,
+      "pct": 0.4,
+      "color": "6BD039"
+    },
+    {
+      "label": "1881P(TP)",
+      "value": 22,
+      "pct": 0.4,
+      "color": "D09E39"
+    },
+    {
+      "label": "1881PM(R)",
+      "value": 16,
+      "pct": 0.3,
+      "color": "6BBB1B"
+    },
+    {
+      "label": "TAB(C)",
+      "value": 15,
+      "pct": 0.3,
+      "color": "396BD0"
+    },
+    {
+      "label": "DJU(P)",
+      "value": 14,
+      "pct": 0.3,
+      "color": "1BBBA1"
+    },
+    {
+      "label": "TABE(T)",
+      "value": 14,
+      "pct": 0.3,
+      "color": "A11BBB"
+    },
+    {
+      "label": "1881P(R)",
+      "value": 11,
+      "pct": 0.2,
+      "color": "BB6B1B"
+    },
+    {
+      "label": "DJU(CC)",
+      "value": 11,
+      "pct": 0.2,
+      "color": "39D09E"
+    },
+    {
+      "label": "TABE(P)",
+      "value": 10,
+      "pct": 0.2,
+      "color": "6B1BBB"
+    },
+    {
+      "label": "ALH(CS7)",
+      "value": 7,
+      "pct": 0.1,
+      "color": "1BBB36"
+    },
+    {
+      "label": "1881PBM(R)",
+      "value": 4,
+      "pct": 0.1,
+      "color": "A1BB1B"
+    },
+    {
+      "label": "1881PB(SR)",
+      "value": 3,
+      "pct": 0.1,
+      "color": "BBA11B"
+    },
+    {
+      "label": "TAB(CL)",
+      "value": 3,
+      "pct": 0.1,
+      "color": "1B36BB"
     }
   ],
   "insights": {
     "period_from": "2025.07",
-    "period_to": "2026.07",
+    "period_to": "2026.08",
     "sales_top1_code": "DJUA(R)",
     "profit_top1_code": "DJUA(R)",
     "sales_top1_pct": 13.5,
-    "profit_top1_pct": 14.6,
-    "sales_top5_share": 51.6,
+    "profit_top1_pct": 14.7,
+    "sales_top5_share": 50.9,
     "qty_top1_code": "ALH(R)",
-    "qty_top1_pct": 15.3,
-    "overall_margin_pct": 56.1,
+    "qty_top1_pct": 15.0,
+    "overall_margin_pct": 56.2,
     "recommendations": [
-      "상위 5개 상품이 전체 매출의 51.6%를 차지해 편중도가 높습니다. 6위 이하 상품의 노출·프로모션을 늘려 판매 채널을 다각화하는 것을 권장합니다.",
+      "상위 5개 상품이 전체 매출의 50.9%를 차지해 편중도가 높습니다. 6위 이하 상품의 노출·프로모션을 늘려 판매 채널을 다각화하는 것을 권장합니다.",
       "매출 1위는 DJUA(R), 판매수량 1위는 ALH(R)로 서로 다릅니다. ALH(R) 구매 고객에게 DJUA(R) 등 고단가 상품을 함께 제안하는 업셀링 전략을 고려해 보세요.",
-      "전체 평균 마진율이 56.1%로 양호합니다. 현재의 상품 믹스와 가격 정책을 유지하세요."
+      "전체 평균 마진율이 56.2%로 양호합니다. 현재의 상품 믹스와 가격 정책을 유지하세요."
     ]
   }
 }

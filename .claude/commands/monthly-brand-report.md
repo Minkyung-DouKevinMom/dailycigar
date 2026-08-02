@@ -1,5 +1,5 @@
 ---
-description: cigar.db 기반 시가 브랜드 매출/이익/판매수량 파이차트 월간 PDF 리포트 생성
+description: cigar.db 기반 시가 브랜드 매출/이익/판매수량 막대그래프 월간 PDF 리포트 생성
 ---
 
 다음 순서로 월간 브랜드 분석 PDF를 생성한다. 최종 산출물은 PPTX가 아닌 PDF 한 개만 남긴다.
@@ -12,7 +12,8 @@ description: cigar.db 기반 시가 브랜드 매출/이익/판매수량 파이�
 
 2. `node build_pie_report.js pie_data.json "<스크래치패드경로>\daily_cigar_brand_report_<오늘날짜YYYYMMDD>.pptx"` 실행
    - PPTX는 최종 산출물이 아니므로 스크래치패드(임시) 경로에 생성
-   - 표지 1장(집계기간·핵심 인사이트 한줄평 자동 계산) + 매출/이익/판매수량 파이차트 3장 생성
+   - 표지 1장(집계기간·핵심 인사이트 한줄평 + 인사이트 기반 자동 제안) + 매출/이익/판매수량 세로 막대그래프 3장 생성
+   - 막대그래프는 "기타" 그룹화 없이 전체 상품을 값 내림차순으로 다 보여준다(compute_pie_data.py의 group_minor_as_others는 top_n=None으로 호출됨). 하단 라벨=상품명(회전), 막대 상단 라벨=실제 값+비율(%). 막대 색상은 상품코드 기준으로 3개 차트 전체에서 동일하게 유지된다.
    - 파일명에 오늘 날짜를 YYYYMMDD 형식으로 포함
 
 3. PowerShell + PowerPoint COM 자동화로 PPTX를 PDF로 변환하여 최종 폴더에 저장하고, 임시 PPTX는 삭제한다.

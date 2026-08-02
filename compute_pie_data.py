@@ -41,10 +41,11 @@ def view_exists(conn, name: str) -> bool:
     return cur.fetchone() is not None
 
 
-def group_minor_as_others(df: pd.DataFrame, value_col: str, top_n: int = 10) -> pd.DataFrame:
+def group_minor_as_others(df: pd.DataFrame, value_col: str, top_n: int = None) -> pd.DataFrame:
+    """top_n=None이면 그룹화 없이 전체 상품코드를 값 내림차순으로 반환한다(기타 없음)."""
     work = df[["상품코드", value_col]].groupby("상품코드", as_index=False).sum()
     work = work.sort_values(value_col, ascending=False)
-    if len(work) <= top_n:
+    if top_n is None or len(work) <= top_n:
         return work
     top = work.head(top_n).copy()
     others_sum = work.iloc[top_n:][value_col].sum()
@@ -191,9 +192,9 @@ def main():
 
     combined = pd.DataFrame(rows).sort_values("매출", ascending=False).reset_index(drop=True)
 
-    sales_pie = group_minor_as_others(combined, "매출", top_n=14)
-    profit_pie = group_minor_as_others(combined, "이익", top_n=14)
-    qty_pie = group_minor_as_others(combined, "판매량", top_n=14)
+    sales_pie = group_minor_as_others(combined, "매출", top_n=None)
+    profit_pie = group_minor_as_others(combined, "이익", top_n=None)
+    qty_pie = group_minor_as_others(combined, "판매량", top_n=None)
 
     # ── 색상: 세 차트에 등장하는 라벨 합집합 기준으로 고유 배정 (동일 상품 = 동일 색) ──
     all_labels = set(sales_pie["상품코드"]) | set(profit_pie["상품코드"]) | set(qty_pie["상품코드"])
