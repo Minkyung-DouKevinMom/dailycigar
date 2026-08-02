@@ -51,12 +51,47 @@ def get_non_cigar_purchase_price_map(conn) -> dict:
     return dict(zip(df["product_code"], df["purchase_price"]))
 
 
+def get_gift_package_cost_map(conn) -> dict:
+    """
+    기프트패키지 product_code -> 세트당 구성품 원가 합계(개당원가 × 세트당수량, 활성 구성품만).
+
+    apply_non_cigar_margin_logic()에서 기프트패키지의 원가를
+    non_cigar_product_mst.purchase_price(수동 입력값, 미입력 시 0) 대신
+    이 구성품 기반 원가로 우선 대체하는 데 사용한다.
+    구성품이 하나도 등록되지 않은 기프트패키지는 이 맵에 포함되지 않으며,
+    그런 경우 apply_non_cigar_margin_logic()은 기존처럼 purchase_price로 폴백한다.
+    """
+    sql = """
+        SELECT
+            ncp.product_code AS gift_code,
+            SUM(gpc.unit_cost_krw * gpc.qty_per_set) AS total_cost
+        FROM gift_package_component gpc
+        JOIN non_cigar_product_mst ncp ON gpc.gift_product_id = ncp.id
+        WHERE COALESCE(gpc.is_active, 1) = 1
+        GROUP BY ncp.product_code
+    """
+    try:
+        df = pd.read_sql_query(sql, conn)
+    except Exception:
+        return {}
+    if df.empty:
+        return {}
+
+    df["gift_code"] = df["gift_code"].fillna("").astype(str).str.strip()
+    df = df[df["gift_code"] != ""].copy()
+    df["total_cost"] = pd.to_numeric(df["total_cost"], errors="coerce").fillna(0)
+
+    return dict(zip(df["gift_code"], df["total_cost"]))
+
+
 def apply_non_cigar_margin_logic(df: pd.DataFrame, conn) -> pd.DataFrame:
     """
-    소매 판매 데이터프레임에서 시가 외(non_cigar) 항목만 매입가(purchase_price) 기준으로
-    원가/마진을 재계산해서 덮어쓴다. 시가(cigar) 항목은 그대로 둔다.
+    소매 판매 데이터프레임에서 시가 외(non_cigar) 항목만 원가/마진을 재계산해서 덮어쓴다.
+    시가(cigar) 항목은 그대로 둔다.
 
-    - total_korea_cost_krw = purchase_price * qty
+    - 일반 시가 외 상품: total_korea_cost_krw = purchase_price * qty
+    - 기프트패키지(구성품이 등록된 경우): total_korea_cost_krw = 구성품 원가 합계(개당원가 × 세트당수량) * qty
+      (구성품이 하나도 없으면 일반 상품과 동일하게 purchase_price로 폴백)
     - retail_gross_profit_krw = net_sales_amount - total_korea_cost_krw
 
     ⚠️ 이 함수가 유일한 정본(canonical) 구현입니다. (get_non_cigar_purchase_price_map과 동일)
@@ -70,7 +105,8 @@ def apply_non_cigar_margin_logic(df: pd.DataFrame, conn) -> pd.DataFrame:
         return out
 
     purchase_price_map = get_non_cigar_purchase_price_map(conn)
-    if not purchase_price_map:
+    gift_cost_map = get_gift_package_cost_map(conn)
+    if not purchase_price_map and not gift_cost_map:
         return out
 
     if "qty" not in out.columns:
@@ -96,8 +132,21 @@ def apply_non_cigar_margin_logic(df: pd.DataFrame, conn) -> pd.DataFrame:
     out.loc[non_cigar_mask, "total_korea_cost_krw"] = (
         out.loc[non_cigar_mask, "_purchase_price"] * out.loc[non_cigar_mask, "qty"]
     )
-    out.loc[non_cigar_mask, "retail_gross_profit_krw"] = (
-        out.loc[non_cigar_mask, "net_sales_amount"] - out.loc[non_cigar_mask, "total_korea_cost_krw"]
+
+    # 기프트패키지는 구성품 원가 합계로 덮어씀 (purchase_price보다 우선)
+    gift_mask = out["product_code"].isin(gift_cost_map.keys())
+    if gift_mask.any():
+        out.loc[gift_mask, "_gift_unit_cost"] = (
+            out.loc[gift_mask, "product_code"].map(gift_cost_map).fillna(0)
+        )
+        out.loc[gift_mask, "total_korea_cost_krw"] = (
+            out.loc[gift_mask, "_gift_unit_cost"] * out.loc[gift_mask, "qty"]
+        )
+        out = out.drop(columns=["_gift_unit_cost"])
+
+    combined_mask = non_cigar_mask | gift_mask
+    out.loc[combined_mask, "retail_gross_profit_krw"] = (
+        out.loc[combined_mask, "net_sales_amount"] - out.loc[combined_mask, "total_korea_cost_krw"]
     )
 
     if "_purchase_price" in out.columns:
