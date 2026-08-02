@@ -68,7 +68,9 @@
       "Bash(python -m pyflakes modules/dashboard/dashboard_finance_summary.py)",
       "Bash(python -m py_compile db.py)",
       "Bash(python -m pyflakes db.py)",
-      "Bash(python -c 'import ast,glob *)"
+      "Bash(python -c 'import ast,glob *)",
+      "Bash(python -m py_compile modules/management/retail_upload.py)",
+      "Bash(python -m pyflakes modules/management/retail_upload.py)"
     ]
   }
 }

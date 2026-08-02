@@ -6,6 +6,8 @@ from typing import Dict, Optional, Set, Tuple
 import pandas as pd
 import streamlit as st
 
+import db
+
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
 ITEM_SHEET_NAME = "상품 주문 상세내역"
@@ -250,48 +252,6 @@ def delete_existing_period_data(conn: sqlite3.Connection, start_date: str, end_d
 # ──────────────────────────────────────────────
 # 기프트패키지 자동 재고 차감
 # ──────────────────────────────────────────────
-
-def ensure_gift_package_tables(conn: sqlite3.Connection):
-    """
-    gift_package_component 테이블, stock_out 테이블(및 source_order_no/source_type 컬럼)이
-    없으면 생성/추가한다. 기존 데이터는 영향받지 않는다.
-    """
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS gift_package_component (
-            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
-            gift_product_id         INTEGER NOT NULL,
-            component_product_code  TEXT    NOT NULL,
-            qty_per_set             INTEGER NOT NULL DEFAULT 1 CHECK(qty_per_set > 0),
-            is_active               INTEGER NOT NULL DEFAULT 1,
-            notes                   TEXT,
-            created_at              TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at              TEXT DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (gift_product_id) REFERENCES non_cigar_product_mst(id)
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS stock_out (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            out_date         TEXT    NOT NULL,
-            product_code     TEXT    NOT NULL,
-            qty              INTEGER NOT NULL CHECK(qty > 0),
-            out_type         TEXT    NOT NULL
-                                 CHECK(out_type IN ('sample','gift_set','disposal','etc')),
-            partner_id       INTEGER,
-            note             TEXT,
-            source_order_no  TEXT,
-            source_type      TEXT,
-            created_at       TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at       TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(stock_out)").fetchall()}
-    if "source_order_no" not in cols:
-        conn.execute("ALTER TABLE stock_out ADD COLUMN source_order_no TEXT")
-    if "source_type" not in cols:
-        conn.execute("ALTER TABLE stock_out ADD COLUMN source_type TEXT")
-    conn.commit()
-
 
 def load_gift_package_map(conn: sqlite3.Connection) -> Dict[str, list]:
     """기프트패키지 상품코드 -> [{component_product_code, qty_per_set}, ...] 매핑"""
@@ -1081,7 +1041,8 @@ def render():
             return
 
         # 기프트패키지 자동 재고 차감에 필요한 테이블/컬럼 확인 (기존 데이터에는 영향 없음)
-        ensure_gift_package_tables(conn)
+        db.init_gift_package_component_table()
+        db.init_stock_out_table()
         gift_map = load_gift_package_map(conn)
         gift_names = load_gift_package_names(conn)
 
