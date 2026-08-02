@@ -924,6 +924,11 @@ def render_estimate_export():
         f"현재 등급: {partner_info.get('grade_code', '-')}"
         f" / 시가 견적 할인율: {int(estimate_discount_rate * 100)}%"
     )
+    st.caption(
+        "⚠️ 이 할인율은 현재 등급 기준 단일 할인율입니다. 실제 도매 판매 시에는 "
+        "주문 금액이 등급 구간을 넘어가면 구간별로 할인율이 혼합 적용되므로, "
+        "대량 주문의 경우 견적서 할인율과 실제 적용 할인율이 다를 수 있습니다."
+    )
 
     use_proposal_retail_price = st.checkbox(
         "견적서 소비자가를 제안소비자가로 대체",

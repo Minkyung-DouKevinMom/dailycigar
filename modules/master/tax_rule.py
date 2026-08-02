@@ -3,7 +3,6 @@ import pandas as pd
 from db import get_all_tax_rule, update_tax_rule, upsert_tax_rule, delete_tax_rule
 def render():
     st.subheader("세금 규칙 관리")
-    st.set_page_config(page_title="Tax Rule", layout="wide")
     st.caption("표에서 직접 수정 후 저장할 수 있습니다.")
 
     df = get_all_tax_rule()

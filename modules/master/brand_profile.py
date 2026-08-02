@@ -10,7 +10,6 @@ from db import (
 
 def render():
     st.subheader("블렌드 프로파일 관리")
-    st.set_page_config(page_title="Blend Profile MST", layout="wide")
     st.caption("표에서는 기본 정보만 관리하고, 선택한 행의 메뉴설명/상세설명은 아래에서 길게 편집할 수 있습니다.")
 
     # ── 원본 전체 데이터 로드 ──────────────────────────────────────────

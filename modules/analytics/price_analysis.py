@@ -247,7 +247,6 @@ def build_price_analysis_excel(df: pd.DataFrame) -> io.BytesIO:
 
 
 def render():
-    st.set_page_config(page_title="가격분석 통합조회", layout="wide")
     st.subheader("가격분석 통합조회")
 
     setup_korean_font()

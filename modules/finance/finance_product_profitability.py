@@ -5,6 +5,8 @@ import pandas as pd
 import streamlit as st
 import plotly.express as px
 
+from db import apply_non_cigar_margin_logic
+
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
 
@@ -49,6 +51,8 @@ def get_retail(conn):
         """, conn)
     except:
         return pd.DataFrame()
+
+    df = apply_non_cigar_margin_logic(df, conn)
 
     return df
 

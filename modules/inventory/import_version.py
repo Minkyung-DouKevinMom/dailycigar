@@ -32,7 +32,6 @@ def _build_tax_rule_options():
 
 def render():
     st.subheader("수입 버전 관리")
-    st.set_page_config(page_title="Import Batch", layout="wide")
 
     tab_list, tab_create, tab_edit, tab_delete = st.tabs(
         ["조회", "신규 등록", "수정", "삭제"]

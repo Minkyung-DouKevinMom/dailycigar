@@ -35,7 +35,23 @@
       "Bash(node -c build_pie_report.js)",
       "Bash(python3 -m pip install --quiet pymupdf)",
       "Bash(node build_pie_report.js pie_data.json /c/Users/lovec/AppData/Local/Temp/claude/C--DAILYCIGAR-DB/5f0b3e2a-48d5-479e-b575-aa7f0ea7ff6c/scratchpad/preview.pptx)",
-      "Bash(rm -f \"/c/Users/lovec/AppData/Local/Temp/claude/C--DAILYCIGAR-DB/5f0b3e2a-48d5-479e-b575-aa7f0ea7ff6c/scratchpad/preview.pptx\" \\\\ *)"
+      "Bash(rm -f \"/c/Users/lovec/AppData/Local/Temp/claude/C--DAILYCIGAR-DB/5f0b3e2a-48d5-479e-b575-aa7f0ea7ff6c/scratchpad/preview.pptx\" \\\\ *)",
+      "Bash(grep -E '\\\\.py$')",
+      "Bash(xargs wc -l)",
+      "Bash(python -m pyflakes --version)",
+      "Bash(python -m vulture --version)",
+      "Bash(pip show *)",
+      "Bash(python -m pip install pyflakes vulture --quiet)",
+      "Bash(python -m pyflakes DAILY_CIGAR.py compute_partner_data.py compute_pie_data.py db.py report.py import modules)",
+      "Bash(python -m vulture DAILY_CIGAR.py compute_partner_data.py compute_pie_data.py db.py report.py import modules --min-confidence 80)",
+      "Bash(python -m vulture DAILY_CIGAR.py compute_partner_data.py compute_pie_data.py db.py report.py import modules --min-confidence 60)",
+      "Bash(python -m py_compile modules/finance/finance_product_profitability.py modules/inventory/import_version.py modules/master/tax_rule.py modules/master/brand_profile.py modules/analytics/price_analysis.py)",
+      "Bash(python -m streamlit --version)",
+      "Bash(mkdir -p .claude)",
+      "Bash(python -m py_compile modules/export/document_export.py)",
+      "Bash(grep -i \"cigar.db$\\\\|\\\\.db$\")",
+      "Bash(xargs -0 git rm -r --cached -q)",
+      "Bash(git add *)"
     ]
   }
 }
