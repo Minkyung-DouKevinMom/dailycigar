@@ -2,7 +2,6 @@ import os
 import sqlite3
 import pandas as pd
 import streamlit as st
-from db import get_table_count, table_exists
 
 st.set_page_config(page_title="Daily Cigar DB", layout="wide")
 
@@ -789,7 +788,7 @@ try:
         k4,
         "객단가",
         fmt_krw(avg_ticket),
-        f"최근 30일 매출 ÷ 거래건수",
+        "최근 30일 매출 ÷ 거래건수",
     )
 
     st.divider()

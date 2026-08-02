@@ -9,8 +9,6 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font, Border, Side, Alignment
 from openpyxl.cell.cell import MergedCell
 from copy import copy
-from openpyxl.styles import Alignment
-from matplotlib.ticker import FuncFormatter
 from db import get_all_import_batch, get_price_analysis_view
 
 def align_product_name_center(ws, start_row: int, end_row: int, product_col: int = 1):

@@ -102,7 +102,6 @@ def main():
         else None
     )
 
-    max_date = df["sale_date"].astype(str).max()
     today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
     is_latest_month_partial = latest_month == today_str[:7]
 

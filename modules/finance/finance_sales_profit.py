@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 
-from db import get_non_cigar_purchase_price_map, apply_non_cigar_margin_logic as apply_non_cigar_cost_logic
+from db import apply_non_cigar_margin_logic as apply_non_cigar_cost_logic
 
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 

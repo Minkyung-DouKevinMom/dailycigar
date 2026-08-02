@@ -2,7 +2,6 @@ import sqlite3
 import openpyxl
 import json
 import os
-import re
 from collections import defaultdict
 
 DB_PATH = r"C:\DAILYCIGAR_DB\cigar.db"

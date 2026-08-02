@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from db import get_non_cigar_purchase_price_map, apply_non_cigar_margin_logic
+from db import apply_non_cigar_margin_logic
 
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 

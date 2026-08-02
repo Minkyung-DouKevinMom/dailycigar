@@ -687,8 +687,6 @@ def render_manual_input(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
     df = clean_item_df(raw_df)
     row = df.iloc[0]
 
-    validation = validate_item_df(df)
-
     error_messages = []
     if safe_str(row["order_no"]) == "":
         error_messages.append("주문번호를 입력해주세요.")

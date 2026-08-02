@@ -120,7 +120,7 @@ def render():
     with col_s3:
         st.write("")
         st.write("")
-        refresh = st.button("🔄 새로고침", use_container_width=True, key="ppm_refresh")
+        st.button("🔄 새로고침", use_container_width=True, key="ppm_refresh")
 
     if not df.empty:
         if kw.strip():

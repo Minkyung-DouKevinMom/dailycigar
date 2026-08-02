@@ -758,8 +758,6 @@ def render():
                     height=360,
                 )
 
-                import altair as alt
-
                 st.markdown("###### 월별 매출 추이")
                 sales_melt = trend_df[["월", "소매매출", "도매매출", "총매출"]].melt(
                     id_vars="월", var_name="구분", value_name="금액"

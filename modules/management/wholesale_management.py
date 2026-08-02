@@ -8,7 +8,7 @@ from io import BytesIO
 import pandas as pd
 import streamlit as st
 from openpyxl import load_workbook
-from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.styles import Alignment
 from openpyxl.cell.cell import MergedCell
 
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -302,35 +302,6 @@ def load_grade_codes(conn) -> list[str]:
     return [str(x) for x in df["grade_code"].dropna().tolist()]
 
 
-def load_grade_discount_rate_map(conn) -> dict:
-    """
-    등급코드(grade_code) -> 견적/도매 자동 할인율(estimate_discount_rate) 매핑.
-    예: {"silver": 0.05, "gold": 0.1, ...}
-    partner_grade_mst 테이블 또는 필요한 컬럼이 없으면 빈 dict 반환 (할인 미적용).
-    """
-    if not table_exists(conn, "partner_grade_mst"):
-        return {}
-
-    cols = get_table_columns(conn, "partner_grade_mst")
-    code_col = find_existing_column(cols, ["grade_code", "partner_grade_code", "code"])
-    rate_col = find_existing_column(cols, ["estimate_discount_rate", "discount_rate"])
-    if not code_col or not rate_col:
-        return {}
-
-    sql = f"SELECT {code_col} AS grade_code, {rate_col} AS discount_rate FROM partner_grade_mst"
-    df = pd.read_sql(sql, conn)
-    if df.empty:
-        return {}
-
-    result = {}
-    for _, row in df.iterrows():
-        code = str(row.get("grade_code", "") or "").strip()
-        if not code:
-            continue
-        result[code] = _safe_float(row.get("discount_rate", 0), 0)
-    return result
-
-
 def ensure_partner_grade_tables(conn):
     """
     파트너 등급 이력 테이블(partner_grade_history)을 생성하고,
@@ -449,36 +420,6 @@ def load_partner_grade_thresholds(conn) -> pd.DataFrame:
         # 5, 10, 20처럼 퍼센트 단위로 저장된 값을 0.05, 0.10, 0.20 소수로 정규화
         df["discount_rate"] = df["discount_rate"] / 100.0
     return df
-
-
-def determine_grade_for_amount(thresholds_df: pd.DataFrame, cumulative_amount: float) -> Optional[dict]:
-    """누적 구매액에 해당하는 최고 등급을 반환한다 (thresholds_df는 min_purchase_amount 오름차순 정렬 상태여야 함)"""
-    if thresholds_df.empty:
-        return None
-    eligible = thresholds_df[thresholds_df["min_purchase_amount"] <= cumulative_amount]
-    row = eligible.iloc[-1] if not eligible.empty else thresholds_df.iloc[0]
-    return {
-        "grade_code": str(row["grade_code"]),
-        "min_purchase_amount": float(row["min_purchase_amount"]),
-        "discount_rate": float(row["discount_rate"]),
-    }
-
-
-def get_partner_active_grade_history(conn, partner_id: int, as_of_date: str = None) -> Optional[dict]:
-    """오늘(as_of_date) 기준으로 유효한 partner_grade_history 1건 조회"""
-    ensure_partner_grade_tables(conn)
-    as_of = as_of_date or pd.Timestamp.today().strftime("%Y-%m-%d")
-    sql = """
-        SELECT id, partner_id, grade_code, start_date, end_date, base_amount, notes
-        FROM partner_grade_history
-        WHERE partner_id = ?
-          AND start_date <= ?
-          AND (end_date IS NULL OR end_date >= ?)
-        ORDER BY start_date DESC
-        LIMIT 1
-    """
-    df = pd.read_sql(sql, conn, params=[partner_id, as_of, as_of])
-    return df.iloc[0].to_dict() if not df.empty else None
 
 
 def load_partner_active_grade_map(conn) -> pd.DataFrame:
@@ -1791,7 +1732,6 @@ def render_wholesale_management(conn):
 
         cigar_product_id = None
         non_cigar_product_id = None
-        product_name = ""
         product_code = ""
         auto_unit_price = 0.0
         auto_supply_price = 0.0
@@ -1814,7 +1754,6 @@ def render_wholesale_management(conn):
             selected_display = st.selectbox("시가 상품", display_options["display_name"].tolist(), key="wh_cigar_product")
             selected_product = display_options.loc[display_options["display_name"] == selected_display].iloc[0]
             cigar_product_id = _safe_int(selected_product["id"])
-            product_name = str(selected_product["product_name"] or "")
             product_code = str(selected_product["product_code"] or "")
 
             base_unit_price = _safe_float(selected_product.get("retail_price_krw", 0))
@@ -1848,7 +1787,6 @@ def render_wholesale_management(conn):
             selected_name = st.selectbox("시가 외 상품", non_cigar_products["product_name"].tolist(), key="wh_non_cigar_product")
             selected_product = non_cigar_products.loc[non_cigar_products["product_name"] == selected_name].iloc[0]
             non_cigar_product_id = _safe_int(selected_product["id"])
-            product_name = str(selected_name)
 
             base_unit_price = _safe_float(selected_product.get("retail_price_krw", 0))
             base_supply_price = _safe_float(selected_product.get("supply_price_krw", 0))
@@ -1970,7 +1908,7 @@ def render_wholesale_management(conn):
                 discount_rate_applied=float(discount_rate_applied),
                 normal_supply_amount=float(normal_supply_amount),
             )
-            st.success("도매 판매 이력이 저장되었습니다." + (f" (비고에 혼합할인 내역 자동 기록됨)" if auto_note else ""))
+            st.success("도매 판매 이력이 저장되었습니다." + (" (비고에 혼합할인 내역 자동 기록됨)" if auto_note else ""))
             st.rerun()
         else:
             _render_amount_summary(qty, unit_price, supply_price, unit_cost)

@@ -1,10 +1,12 @@
 import os
 import sqlite3
-from typing import Optional, Tuple
+from typing import Tuple
 
 import altair as alt
 import pandas as pd
 import streamlit as st
+
+from db import get_non_cigar_purchase_price_map
 
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
@@ -69,7 +71,7 @@ def fmt_delta_krw(curr: float, prev: float) -> str:
     elif diff < 0:
         return f"-₩{abs(diff):,.0f} / {pct:+.1f}%"
     else:
-        return f"₩0 / 0.0%"
+        return "₩0 / 0.0%"
 
 
 def fmt_delta_count(curr: float, prev: float) -> str:
@@ -79,39 +81,7 @@ def fmt_delta_count(curr: float, prev: float) -> str:
     elif diff < 0:
         return f"-{int(abs(diff)):,}건 / {pct:+.1f}%"
     else:
-        return f"0건 / 0.0%"
-
-
-# =========================
-# 시가 외 상품 매입가 맵 (소매관리와 동일 로직)
-# =========================
-def get_non_cigar_purchase_price_map(conn: sqlite3.Connection) -> dict:
-    if not table_exists(conn, "non_cigar_product_mst"):
-        return {}
-
-    cols = get_table_columns(conn, "non_cigar_product_mst")
-    if "product_code" not in cols or "purchase_price" not in cols:
-        return {}
-
-    sql = """
-        SELECT
-            TRIM(COALESCE(product_code, '')) AS product_code,
-            COALESCE(purchase_price, 0) AS purchase_price
-        FROM non_cigar_product_mst
-    """
-    try:
-        df = pd.read_sql_query(sql, conn)
-    except Exception:
-        return {}
-
-    if df.empty:
-        return {}
-
-    df["product_code"] = df["product_code"].astype(str).str.strip()
-    df["purchase_price"] = pd.to_numeric(df["purchase_price"], errors="coerce").fillna(0)
-    df = df[df["product_code"] != ""].copy()
-
-    return dict(zip(df["product_code"], df["purchase_price"]))
+        return "0건 / 0.0%"
 
 
 # =========================

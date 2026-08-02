@@ -1,6 +1,5 @@
 import os
 import sqlite3
-from typing import List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 import plotly.express as px

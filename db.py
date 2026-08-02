@@ -2319,32 +2319,3 @@ def update_gift_package_component(
 
 def delete_gift_package_component(row_id: int):
     execute("DELETE FROM gift_package_component WHERE id = ?", [row_id])
-
-
-def get_gift_package_map_by_code() -> dict:
-    """
-    기프트패키지 product_code -> [{component_product_code, qty_per_set}, ...] 매핑.
-    retail_upload.py 에서 판매 상품코드가 기프트패키지인지 판별하고
-    자동 차감 대상/수량을 조회하는 데 사용.
-    """
-    sql = """
-        SELECT
-            ncp.product_code AS gift_code,
-            gpc.component_product_code,
-            gpc.qty_per_set
-        FROM gift_package_component gpc
-        JOIN non_cigar_product_mst ncp ON gpc.gift_product_id = ncp.id
-        WHERE COALESCE(gpc.is_active, 1) = 1
-          AND COALESCE(ncp.is_active, 1) = 1
-    """
-    df = run_query(sql)
-    result: dict = {}
-    for _, row in df.iterrows():
-        code = str(row["gift_code"] or "").strip().upper()
-        if not code:
-            continue
-        result.setdefault(code, []).append({
-            "component_product_code": row["component_product_code"],
-            "qty_per_set": int(row["qty_per_set"]),
-        })
-    return result

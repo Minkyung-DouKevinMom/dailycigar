@@ -53,21 +53,6 @@ def setup_korean_font():
 
 plt.rcParams["axes.unicode_minus"] = False
 
-# ── 브랜드 매핑 (product_code 접두어 기준, 실제 라인업에 맞게 조정) ──
-def brand_of(code: str) -> str:
-    c = (code or "").upper()
-    if c.startswith("1881"):
-        return "1881"
-    if c.startswith("ALH"):
-        return "Alhambra"
-    if c.startswith("DJUA") or c.startswith("DJU"):
-        return "Don Juan Urquijo"
-    if c.startswith("TABFF"):
-        return "Flor Fina"
-    if c.startswith("TABE") or c.startswith("TABR") or c.startswith("TAB"):
-        return "Tabacalera"
-    return "기타"
-
 
 def get_conn(db_path: str) -> sqlite3.Connection:
     if not os.path.exists(db_path):

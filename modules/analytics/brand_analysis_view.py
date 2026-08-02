@@ -443,47 +443,6 @@ def get_cigar_product_codes(conn) -> set:
     return set(df["product_code"].dropna().tolist())
 
 
-def get_non_cigar_category_map(conn) -> dict:
-    if not table_exists(conn, "non_cigar_product_mst"):
-        return {}
-
-    cols = get_table_columns(conn, "non_cigar_product_mst")
-    cols_lower = {c.lower(): c for c in cols}
-
-    code_col = cols_lower.get("product_code")
-    if not code_col:
-        return {}
-
-    category_col = None
-    for candidate in ["category", "product_category", "item_category", "product_type"]:
-        if candidate in cols_lower:
-            category_col = cols_lower[candidate]
-            break
-
-    if not category_col:
-        return {}
-
-    sql = f"""
-    SELECT
-        UPPER(TRIM(COALESCE({code_col}, ''))) AS product_code,
-        COALESCE({category_col}, '미분류') AS category
-    FROM non_cigar_product_mst
-    WHERE TRIM(COALESCE({code_col}, '')) <> ''
-    """
-
-    df = pd.read_sql_query(sql, conn)
-
-    if df.empty:
-        return {}
-
-    df["product_code"] = df["product_code"].fillna("").astype(str).str.strip().str.upper()
-    df["category"] = df["category"].fillna("미분류").astype(str).str.strip()
-    df.loc[df["category"] == "", "category"] = "미분류"
-    df = df.drop_duplicates(subset=["product_code"], keep="first")
-
-    return dict(zip(df["product_code"], df["category"]))
-
-
 def get_retail_brand_product_data(conn, date_from: str | None, date_to: str | None) -> pd.DataFrame:
     if not view_exists(conn, "v_retail_sales_enriched"):
         return pd.DataFrame(
@@ -871,7 +830,6 @@ def render():
 
         # ── 시가 상품만 대상으로 필터링 (재고관리 총출고와 집계 기준 통일) ──
         cigar_codes = get_cigar_product_codes(conn)
-        non_cigar_category_map = get_non_cigar_category_map(conn)
 
         # 상품코드 -> 고정 색상 매핑 (모든 파이차트에서 동일 상품 = 동일 색)
         pie_color_map = build_product_color_map(cigar_codes)
@@ -1375,7 +1333,7 @@ def render():
 
                         if not no_out.empty:
                             st.caption(
-                                f"※ 기간 내 출고 이력 없음 → 잔여 개월 계산 불가 제품: "
+                                "※ 기간 내 출고 이력 없음 → 잔여 개월 계산 불가 제품: "
                                 + ", ".join(no_out["product_code"].tolist())
                             )
 

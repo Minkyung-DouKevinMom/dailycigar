@@ -51,7 +51,24 @@
       "Bash(python -m py_compile modules/export/document_export.py)",
       "Bash(grep -i \"cigar.db$\\\\|\\\\.db$\")",
       "Bash(xargs -0 git rm -r --cached -q)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git rm *)",
+      "Bash(python -m py_compile modules/management/wholesale_management.py report.py)",
+      "Bash(python -m py_compile DAILY_CIGAR.py import/import_price_analysis.py import/import_versioned_imports.py modules/analytics/period_compare_view.py modules/analytics/price_analysis.py modules/finance/finance_product_profitability.py modules/finance/finance_sales_profit.py modules/management/retail_sales_view.py modules/inventory/import_detail.py modules/management/partner_grade_history_management.py modules/management/wholesale_management.py)",
+      "Bash(python -m pyflakes modules/management/wholesale_management.py)",
+      "Bash(awk -F: '$1>=1600 && $1<=1950')",
+      "Bash(python -m pyflakes modules/analytics/brand_analysis_view.py)",
+      "Bash(python -m py_compile compute_partner_data.py modules/analytics/brand_analysis_view.py modules/management/retail_upload.py modules/master/product_price_mst.py DAILY_CIGAR.py modules/analytics/period_compare_view.py modules/management/wholesale_management.py)",
+      "Bash(python -m py_compile modules/analytics/retail_sales_analysis_view.py)",
+      "Bash(python -m pyflakes modules/analytics/retail_sales_analysis_view.py)",
+      "Bash(python -m py_compile modules/analytics/period_compare_view.py)",
+      "Bash(python -m pyflakes modules/analytics/period_compare_view.py)",
+      "Bash(python -m py_compile modules/dashboard/dashboard_finance_summary.py)",
+      "Bash(python -m pyflakes modules/dashboard/dashboard_finance_summary.py)",
+      "Bash(python -m py_compile db.py)",
+      "Bash(python -m pyflakes db.py)",
+      "Bash(python -c 'import ast,glob *)"
     ]
   }
 }
