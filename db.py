@@ -2266,19 +2266,25 @@ def get_gift_package_products() -> pd.DataFrame:
 
 
 def get_gift_package_components(gift_product_id: int) -> pd.DataFrame:
-    """특정 기프트패키지의 구성품(시가) 목록"""
+    """특정 기프트패키지의 구성품(시가 + 기타) 목록"""
     sql = """
         SELECT
             gpc.id,
+            gpc.component_type,
             gpc.component_product_code,
-            pm.product_name,
+            COALESCE(pm.product_name, ncp.product_name) AS product_name,
             pm.size_name,
             gpc.qty_per_set,
+            gpc.unit_cost_krw,
+            gpc.unit_price_krw,
             gpc.is_active,
             gpc.notes,
             gpc.updated_at
         FROM gift_package_component gpc
-        LEFT JOIN product_mst pm ON gpc.component_product_code = pm.product_code
+        LEFT JOIN product_mst pm
+            ON gpc.component_type = 'cigar' AND gpc.component_product_code = pm.product_code
+        LEFT JOIN non_cigar_product_mst ncp
+            ON gpc.component_type = 'non_cigar' AND gpc.component_product_code = ncp.product_code
         WHERE gpc.gift_product_id = ?
         ORDER BY gpc.id
     """
@@ -2287,33 +2293,41 @@ def get_gift_package_components(gift_product_id: int) -> pd.DataFrame:
 
 def insert_gift_package_component(
     gift_product_id: int,
+    component_type: str,
     component_product_code: str,
     qty_per_set: int,
+    unit_cost_krw: float = 0,
+    unit_price_krw: float = 0,
     notes: str = None,
 ):
     execute(
         """
         INSERT INTO gift_package_component
-            (gift_product_id, component_product_code, qty_per_set, notes)
-        VALUES (?, ?, ?, ?)
+            (gift_product_id, component_type, component_product_code, qty_per_set,
+             unit_cost_krw, unit_price_krw, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        [gift_product_id, component_product_code, qty_per_set, notes],
+        [gift_product_id, component_type, component_product_code, qty_per_set,
+         unit_cost_krw, unit_price_krw, notes],
     )
 
 
 def update_gift_package_component(
     row_id: int,
     qty_per_set: int,
+    unit_cost_krw: float,
+    unit_price_krw: float,
     is_active: int,
     notes: str = None,
 ):
     execute(
         """
         UPDATE gift_package_component
-        SET qty_per_set = ?, is_active = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+        SET qty_per_set = ?, unit_cost_krw = ?, unit_price_krw = ?,
+            is_active = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
         """,
-        [qty_per_set, is_active, notes, row_id],
+        [qty_per_set, unit_cost_krw, unit_price_krw, is_active, notes, row_id],
     )
 
 

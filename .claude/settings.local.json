@@ -70,7 +70,11 @@
       "Bash(python -m pyflakes db.py)",
       "Bash(python -c 'import ast,glob *)",
       "Bash(python -m py_compile modules/management/retail_upload.py)",
-      "Bash(python -m pyflakes modules/management/retail_upload.py)"
+      "Bash(python -m pyflakes modules/management/retail_upload.py)",
+      "Bash(git push *)",
+      "Bash(python -c ' *)",
+      "Bash(python -m py_compile db.py modules/management/gift_package_component.py)",
+      "Bash(python -m pyflakes db.py modules/management/gift_package_component.py)"
     ]
   }
 }
