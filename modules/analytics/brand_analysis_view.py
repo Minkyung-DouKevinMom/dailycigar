@@ -456,7 +456,7 @@ def get_retail_brand_product_data(conn, date_from: str | None, date_to: str | No
         COALESCE(product_code, product_code_raw, '') AS product_code,
         COALESCE(mst_product_name, product_code_raw, '미분류') AS product_name,
         COALESCE(qty, 0) AS qty,
-        COALESCE(net_sales_amount, 0) AS sales,
+        COALESCE(sales_supply_amount_krw, 0) AS sales,
         COALESCE(retail_gross_profit_krw, 0) AS profit
     FROM v_retail_sales_enriched
     {where}

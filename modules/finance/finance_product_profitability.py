@@ -43,7 +43,7 @@ def get_retail(conn):
                 mst_size_name AS size_name,
                 category,
                 qty,
-                net_sales_amount,
+                sales_supply_amount_krw AS net_sales_amount,
                 total_korea_cost_krw,
                 retail_gross_profit_krw
             FROM v_retail_sales_enriched

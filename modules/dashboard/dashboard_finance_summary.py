@@ -169,7 +169,7 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
         vcols = get_table_columns(conn, "v_retail_sales_enriched")
 
         sale_date_col = pick_col(vcols, ["sale_date", "sales_date", "dt"])
-        sales_col = pick_col(vcols, ["net_sales_amount", "sales_amount", "amount"])
+        sales_col = pick_col(vcols, ["sales_supply_amount_krw", "net_sales_amount", "sales_amount", "amount"])
         cost_col = pick_col(vcols, ["total_korea_cost_krw", "total_cost_krw"])
         gp_col = pick_col(vcols, ["retail_gross_profit_krw", "gross_profit_krw", "margin_amount"])
         product_code_col = pick_col(vcols, ["product_code", "product_code_raw"])
@@ -478,8 +478,8 @@ def get_recent_expenses(conn, limit: int = 10) -> pd.DataFrame:
 
 def get_recent_sales_with_margin(conn, limit: int = 20) -> pd.DataFrame:
     """
-    - 시가는 기존 마진 유지
-    - 시가 외만 판매금액 - (매입가 × 수량)
+    - 시가는 v_retail_sales_enriched의 retail_gross_profit_krw(부가세 제외 공급가액 기준) 그대로 사용
+    - 시가 외만 판매금액(부가세 제외) - (매입가 × 수량)으로 재계산
     """
     empty = pd.DataFrame(
         columns=[
@@ -488,16 +488,18 @@ def get_recent_sales_with_margin(conn, limit: int = 20) -> pd.DataFrame:
         ]
     )
 
-    if not table_exists(conn, "retail_sales"):
+    use_view = view_exists(conn, "v_retail_sales_enriched")
+    source = "v_retail_sales_enriched" if use_view else "retail_sales"
+    if not use_view and not table_exists(conn, "retail_sales"):
         return empty
 
-    cols = get_table_columns(conn, "retail_sales")
+    cols = get_table_columns(conn, source)
     sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
     product_code_col = pick_col(cols, ["product_code", "product_code_raw"])
-    product_name_col = pick_col(cols, ["product_name", "mst_product_name", "item_name"])
+    product_name_col = pick_col(cols, ["mst_product_name", "product_name", "item_name"])
     qty_col = pick_col(cols, ["qty", "quantity"])
     unit_price_col = pick_col(cols, ["unit_price", "price"])
-    sales_col = pick_col(cols, ["net_sales_amount", "sales_amount", "amount"])
+    sales_col = pick_col(cols, ["sales_supply_amount_krw", "net_sales_amount", "sales_amount", "amount"])
     margin_col = pick_col(cols, ["retail_gross_profit_krw", "gross_profit_krw", "margin_amount"])
 
     if not sale_date_col or not sales_col:
@@ -512,7 +514,7 @@ def get_recent_sales_with_margin(conn, limit: int = 20) -> pd.DataFrame:
             {"COALESCE(" + unit_price_col + ", 0)" if unit_price_col else "0"} AS unit_price,
             COALESCE({sales_col}, 0) AS net_sales_amount,
             {"COALESCE(" + margin_col + ", 0)" if margin_col else "0"} AS base_margin
-        FROM retail_sales
+        FROM {source}
         ORDER BY {sale_date_col} DESC, id DESC
         LIMIT ?
     """
@@ -558,7 +560,7 @@ def get_recent_sales_with_margin(conn, limit: int = 20) -> pd.DataFrame:
 def get_top_products(conn, date_from: str, date_to: str, limit: int = 10, metric: str = "sales") -> pd.DataFrame:
     frames = []
 
-    retail_metric_sql = "COALESCE(net_sales_amount, 0)"
+    retail_metric_sql = "COALESCE(sales_supply_amount_krw, 0)"
     wholesale_metric_sql = "COALESCE(sales_amount, 0)"
     metric_col_name = "metric_value"
 

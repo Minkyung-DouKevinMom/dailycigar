@@ -95,7 +95,7 @@ def get_retail_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
             COALESCE(order_no, '') AS order_no,
             TRIM(COALESCE(product_code, '')) AS product_code,
             COALESCE(qty, 0) AS qty,
-            COALESCE(net_sales_amount, 0) AS sales_amount,
+            COALESCE(sales_supply_amount_krw, 0) AS sales_amount,
             COALESCE(total_korea_cost_krw, 0) AS cost_amount,
             COALESCE(retail_gross_profit_krw, 0) AS profit_amount
         FROM v_retail_sales_enriched

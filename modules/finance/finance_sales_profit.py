@@ -94,7 +94,13 @@ def get_retail_data(conn, date_from: Optional[str], date_to: Optional[str]) -> T
     mst_size_name_col = "mst_size_name" if "mst_size_name" in cols else "size_name" if "size_name" in cols else None
     category_col = "category" if "category" in cols else None
     qty_col = "qty" if "qty" in cols else "quantity" if "quantity" in cols else None
-    net_sales_col = "net_sales_amount" if "net_sales_amount" in cols else "sales_amount" if "sales_amount" in cols else "amount" if "amount" in cols else None
+    net_sales_col = (
+        "sales_supply_amount_krw" if "sales_supply_amount_krw" in cols
+        else "net_sales_amount" if "net_sales_amount" in cols
+        else "sales_amount" if "sales_amount" in cols
+        else "amount" if "amount" in cols
+        else None
+    )
     vat_col = "vat_amount" if "vat_amount" in cols else "vat" if "vat" in cols else None
     cost_col = "total_korea_cost_krw" if "total_korea_cost_krw" in cols else None
     gp_col = "retail_gross_profit_krw" if "retail_gross_profit_krw" in cols else "gross_profit_krw" if "gross_profit_krw" in cols else "margin_amount" if "margin_amount" in cols else None

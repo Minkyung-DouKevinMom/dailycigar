@@ -310,6 +310,10 @@ def render():
             st.warning("조회된 데이터가 없습니다.")
             return
 
+        # 매출은 부가세를 제외한 공급가액 기준으로 통일 (이익 계산 기준과 일치시킴)
+        if has_view and "sales_supply_amount_krw" in df.columns:
+            df["net_sales_amount"] = df["sales_supply_amount_krw"]
+
         # 핵심 보정: 시가 외 항목만 매입가 기준 재계산
         df = apply_non_cigar_margin_logic(df, conn)
 

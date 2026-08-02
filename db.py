@@ -2390,7 +2390,7 @@ def get_gift_set_component_attribution(conn, date_from: str = None, date_to: str
 
     - 세트 안에서 구성품별 배분비중 = (개당판매가 × 세트당수량) / Σ(개당판매가 × 세트당수량)
       (세트의 모든 구성품 개당판매가 합이 0이면 세트당수량 기준 균등 배분으로 폴백)
-    - 귀속매출 = 세트 실제판매금액(retail_sales.net_sales_amount) × 배분비중
+    - 귀속매출 = 세트 실제판매금액(부가세 제외 공급가액, 과세 건은 net_sales_amount - vat_amount) × 배분비중
     - 귀속원가 = 개당원가 × 세트당수량 × 판매된 세트수(qty)
     - 귀속이익 = 귀속매출 - 귀속원가
 
@@ -2460,7 +2460,15 @@ def get_gift_set_component_attribution(conn, date_from: str = None, date_to: str
 
     codes = gift_products["product_code"].tolist()
     sql = f"""
-        SELECT sale_date, TRIM(COALESCE(product_code, '')) AS product_code, qty, net_sales_amount
+        SELECT
+            sale_date,
+            TRIM(COALESCE(product_code, '')) AS product_code,
+            qty,
+            CASE
+                WHEN COALESCE(taxable_yn, '과세') = '과세'
+                THEN COALESCE(net_sales_amount, 0) - COALESCE(vat_amount, 0)
+                ELSE COALESCE(net_sales_amount, 0)
+            END AS net_sales_amount
         FROM retail_sales
         WHERE TRIM(COALESCE(product_code, '')) IN ({",".join(["?"] * len(codes))})
     """

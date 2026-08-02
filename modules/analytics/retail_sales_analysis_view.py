@@ -259,16 +259,26 @@ def get_delivery_trend_data(conn) -> pd.DataFrame:
 
     sale_date_col = cols_lower.get("sale_date")
     net_sales_col = cols_lower.get("net_sales_amount")
+    vat_col = cols_lower.get("vat_amount")
+    taxable_col = cols_lower.get("taxable_yn")
     delivery_col = cols_lower.get("delivery_yn")
 
     # delivery_yn 컬럼이 없으면 빈 결과 반환 (ALTER TABLE 적용 전인 경우)
     if not delivery_col or not sale_date_col or not net_sales_col:
         return pd.DataFrame(columns=["sale_month", "배송구분", "금액"])
 
+    net_sales_expr = (
+        f"CASE WHEN COALESCE({taxable_col}, '과세') = '과세' "
+        f"THEN COALESCE({net_sales_col}, 0) - COALESCE({vat_col}, 0) "
+        f"ELSE COALESCE({net_sales_col}, 0) END"
+        if vat_col and taxable_col
+        else f"COALESCE({net_sales_col}, 0)"
+    )
+
     sql = f"""
     SELECT
         {sale_date_col} AS sale_date,
-        COALESCE({net_sales_col}, 0) AS net_sales_amount,
+        {net_sales_expr} AS net_sales_amount,
         UPPER(TRIM(COALESCE({delivery_col}, 'N'))) AS delivery_yn
     FROM retail_sales
     WHERE COALESCE({sale_date_col}, '') <> ''
@@ -416,7 +426,7 @@ def get_retail_brand_product_data(conn, date_from: str, date_to: str) -> pd.Data
         COALESCE(product_code, product_code_raw, '') AS product_code,
         COALESCE(mst_product_name, product_code_raw, '미분류') AS product_name,
         COALESCE(qty, 0) AS qty,
-        COALESCE(net_sales_amount, 0) AS sales,
+        COALESCE(sales_supply_amount_krw, 0) AS sales,
         COALESCE(retail_gross_profit_krw, 0) AS profit
     FROM v_retail_sales_enriched
     WHERE sale_date BETWEEN ? AND ?
