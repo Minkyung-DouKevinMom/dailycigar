@@ -75,7 +75,9 @@
       "Bash(python -c ' *)",
       "Bash(python -m py_compile db.py modules/management/gift_package_component.py)",
       "Bash(python -m pyflakes db.py modules/management/gift_package_component.py)",
-      "Bash(python -m py_compile modules/analytics/brand_analysis_view.py)"
+      "Bash(python -m py_compile modules/analytics/brand_analysis_view.py)",
+      "Bash(iconv -f cp949 -t utf-8)",
+      "Bash(python -m py_compile modules/management/wholesale_management.py)"
     ]
   }
 }

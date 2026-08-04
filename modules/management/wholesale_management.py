@@ -494,25 +494,18 @@ def compute_tiered_order_pricing(
         else order_date
     )
 
-    last_grade_row = pd.read_sql(
-        """
-        SELECT start_date
-        FROM partner_grade_history
-        WHERE partner_id = ?
-        ORDER BY start_date DESC
-        LIMIT 1
-        """,
-        conn,
-        params=[partner_id],
-    )
-    window_start = str(last_grade_row.iloc[0]["start_date"]) if not last_grade_row.empty else join_date
+    # 누적 기준일은 항상 가입일(join_date)로 고정한다. 등급 구간표(thresholds)가
+    # "가입 이후 전체 누적액" 기준으로 설계되어 있으므로, 여기서 최근 등급 변경일로
+    # 기준을 리셋하면 등급이 오른 직후 누적액이 다시 낮게 잡혀 방금 오른 등급의
+    # 할인이 적용되지 않는 회귀가 생긴다 (실제로 확인된 버그).
+    window_start = join_date
 
     # 아직 저장 전인 이번 주문 자체는 DB에 없으므로, 주문일을 포함해서 합산해도
     # 이번 주문과 중복 계산되지 않는다. (기존에는 '주문일 하루 전까지'로 제한해서
     # 같은 날짜에 먼저 저장된 다른 주문 건까지 함께 누락되는 버그가 있었음)
     cumulative_before = get_partner_purchase_sum(conn, partner_id, window_start, order_date)
     if pd.to_datetime(order_date) < pd.to_datetime(window_start):
-        cumulative_before = 0.0  # 주문일이 window_start보다 이전인 경우 방어
+        cumulative_before = 0.0  # 주문일이 join_date보다 이전인 경우 방어
 
     order_normal_supply_amount = float(qty) * float(base_supply_price)
 
