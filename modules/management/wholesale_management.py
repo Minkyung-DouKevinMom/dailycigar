@@ -452,6 +452,37 @@ def get_partner_purchase_sum(conn, partner_id: int, start_date: str, end_date: s
     return _safe_float(df.iloc[0]["total"], 0) if not df.empty else 0.0
 
 
+def get_partner_floor_grade_threshold(
+    conn, partner_id: int, order_date: str, thresholds: pd.DataFrame
+) -> float:
+    """
+    파트너 프로그램 정책(달성일 기준 12개월 유지, 만료 전엔 등급 하락 없음)에 따라
+    "이 주문일 기준으로 최소한 보장되는 등급"의 문턱 금액을 반환한다.
+
+    partner_grade_history에서 order_date가 start_date~end_date 사이인
+    (아직 만료되지 않은) 활성 등급 이력이 있으면, 그 등급의 min_purchase_amount를
+    floor(최소 보장 누적액)로 사용한다. 활성 이력이 없으면 0(최하위 등급 취급).
+    """
+    ensure_partner_grade_tables(conn)
+    active_df = pd.read_sql(
+        """
+        SELECT grade_code
+        FROM partner_grade_history
+        WHERE partner_id = ?
+          AND start_date <= ?
+          AND (end_date IS NULL OR end_date >= ?)
+        ORDER BY start_date DESC
+        LIMIT 1
+        """,
+        conn,
+        params=[partner_id, order_date, order_date],
+    )
+    if active_df.empty or thresholds.empty:
+        return 0.0
+
+    grade_code = str(active_df.iloc[0]["grade_code"])
+    match = thresholds.loc[thresholds["grade_code"] == grade_code, "min_purchase_amount"]
+    return float(match.iloc[0]) if not match.empty else 0.0
 
 
 def compute_tiered_order_pricing(
@@ -463,13 +494,20 @@ def compute_tiered_order_pricing(
     order_date: str = None,
 ) -> dict:
     """
-    한 건의 주문(상품 1종 × 수량)에 대해 누적 구매액 문턱을 실시간으로 계산하여,
-    문턱을 넘는 지점을 기준으로 구간별 할인율을 정밀 적용한 혼합(가중평균) 단가/공급가를 산출한다.
+    한 건의 주문(상품 1종 × 수량)에 대해 누적 구매액 문턱을 파트너 프로그램 정책대로
+    계산하여, 문턱을 넘는 지점을 기준으로 구간별 할인율을 정밀 적용한 혼합(가중평균)
+    단가/공급가를 산출한다.
 
-    - '등급 재계산' 버튼과 무관하게 항상 실제 wholesale_sales 누적치를 기준으로 계산한다
-      (즉, 관리자가 재계산을 누르지 않았어도 매 주문마다 정확한 구간별 할인이 적용됨).
-    - 한 주문이 여러 등급 문턱을 동시에 넘는 경우 각 구간의 금액에 해당 구간의 할인율을
-      각각 적용한 뒤 합산한다.
+    파트너 프로그램 정책(최근 12개월 누적 구매액 기준 등급, 달성일로부터 12개월 유지,
+    유지 기간 중엔 등급 하락 없음, 만료 시 지난 1년 구매액으로 재산정)에 맞춰:
+    - "최근 12개월 누적 구매액"을 실시간으로 계산하고,
+    - partner_grade_history에 아직 만료되지 않은(order_date가 유효기간 내인) 등급
+      이력이 있으면, 그 등급의 문턱 금액을 최소 보장선(floor)으로 삼는다
+      (최근 실적이 부진해 12개월 누적이 문턱 아래로 내려가도 만료 전까지는
+      할인이 유지되도록).
+    - 두 값 중 큰 쪽을 이번 주문의 누적 기준점으로 사용해, 한 주문이 여러 등급
+      문턱을 동시에 넘는 경우 각 구간의 금액에 해당 구간의 할인율을 각각
+      적용한 뒤 합산한다 (기존 정밀 배분 기능은 그대로 유지).
     """
     ensure_partner_grade_tables(conn)
     thresholds = load_partner_grade_thresholds(conn)
@@ -494,18 +532,20 @@ def compute_tiered_order_pricing(
         else order_date
     )
 
-    # 누적 기준일은 항상 가입일(join_date)로 고정한다. 등급 구간표(thresholds)가
-    # "가입 이후 전체 누적액" 기준으로 설계되어 있으므로, 여기서 최근 등급 변경일로
-    # 기준을 리셋하면 등급이 오른 직후 누적액이 다시 낮게 잡혀 방금 오른 등급의
-    # 할인이 적용되지 않는 회귀가 생긴다 (실제로 확인된 버그).
-    window_start = join_date
+    if pd.to_datetime(order_date) < pd.to_datetime(join_date):
+        cumulative_before = 0.0  # 주문일이 가입일보다 이전인 경우 방어
+    else:
+        # ① 최근 12개월(달성일 기준 정책과 동일하게 rolling) 누적 구매액
+        rolling_start = (
+            pd.Timestamp(order_date) - pd.DateOffset(months=12) + pd.Timedelta(days=1)
+        ).strftime("%Y-%m-%d")
+        rolling_start = max(rolling_start, join_date)
+        rolling_cumulative = get_partner_purchase_sum(conn, partner_id, rolling_start, order_date)
 
-    # 아직 저장 전인 이번 주문 자체는 DB에 없으므로, 주문일을 포함해서 합산해도
-    # 이번 주문과 중복 계산되지 않는다. (기존에는 '주문일 하루 전까지'로 제한해서
-    # 같은 날짜에 먼저 저장된 다른 주문 건까지 함께 누락되는 버그가 있었음)
-    cumulative_before = get_partner_purchase_sum(conn, partner_id, window_start, order_date)
-    if pd.to_datetime(order_date) < pd.to_datetime(window_start):
-        cumulative_before = 0.0  # 주문일이 join_date보다 이전인 경우 방어
+        # ② 만료 전인 현재 등급이 있으면 그 등급의 문턱을 최소 보장선(floor)으로 사용
+        floor_threshold = get_partner_floor_grade_threshold(conn, partner_id, order_date, thresholds)
+
+        cumulative_before = max(rolling_cumulative, floor_threshold)
 
     order_normal_supply_amount = float(qty) * float(base_supply_price)
 
