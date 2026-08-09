@@ -511,9 +511,10 @@ def render_expense_tab(conn):
             )
             amount = st.number_input(
                 "금액 *",
-                min_value=0.0,
-                value=float(selected.get("amount", 0) or 0) if selected else 0.0,
-                step=1000.0,
+                min_value=0,
+                value=int(selected.get("amount", 0) or 0) if selected else 0,
+                step=1000,
+                format="%d",
             )
             vendor_name = st.text_input(
                 "거래처/사용처",
