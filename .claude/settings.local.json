@@ -77,7 +77,30 @@
       "Bash(python -m pyflakes db.py modules/management/gift_package_component.py)",
       "Bash(python -m py_compile modules/analytics/brand_analysis_view.py)",
       "Bash(iconv -f cp949 -t utf-8)",
-      "Bash(python -m py_compile modules/management/wholesale_management.py)"
+      "Bash(python -m py_compile modules/management/wholesale_management.py)",
+      "Bash(python -m vulture modules/analytics/brand_analysis_view.py --min-confidence 70)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c ' *)",
+      "Bash(python -m py_compile db.py modules/inventory/import_version.py)",
+      "Bash(python -m pyflakes db.py modules/inventory/import_version.py)",
+      "Bash(python -c \"import streamlit; print\\(streamlit.__version__\\); print\\(streamlit.__file__\\)\")",
+      "Bash(grep -o \".\\\\{100\\\\}sprintf.\\\\{300\\\\}\" \"C:\\\\Users\\\\lovec\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\Lib\\\\site-packages\\\\streamlit\\\\static\\\\static\\\\js\\\\formatNumber.BdmueDpm.js\" | head -5)",
+      "Bash(grep -o \"re *= *[^;]\\\\{0,400\\\\}\" \"C:\\\\Users\\\\lovec\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\Lib\\\\site-packages\\\\streamlit\\\\static\\\\static\\\\js\\\\sprintfjs.DSsuEWyc.js\")",
+      "Bash(grep -o \"sign.\\\\{0,60\\\\}\" \"C:\\\\Users\\\\lovec\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\Lib\\\\site-packages\\\\streamlit\\\\static\\\\static\\\\js\\\\sprintfjs.DSsuEWyc.js\")",
+      "Bash(grep -o \"let a *= *{[\\\\s\\\\S]\\\\{0,900\\\\}\" \"C:\\\\Users\\\\lovec\\\\AppData\\\\Local\\\\Python\\\\pythoncore-3.14-64\\\\Lib\\\\site-packages\\\\streamlit\\\\static\\\\static\\\\js\\\\sprintfjs.DSsuEWyc.js\")",
+      "Bash(python -m py_compile modules/inventory/import_version.py modules/analytics/price_analysis.py modules/export/document_export.py modules/store/store_menu_board.py)",
+      "Bash(python -m pyflakes modules/inventory/import_version.py modules/analytics/price_analysis.py modules/export/document_export.py modules/store/store_menu_board.py)",
+      "Bash(mkdir -p /tmp/version_check)",
+      "Bash(git show *)",
+      "Bash(python -m py_compile modules/inventory/import_detail.py)",
+      "Bash(python -m pyflakes modules/inventory/import_detail.py)",
+      "Bash(python -m py_compile db.py modules/inventory/import_detail.py)",
+      "Bash(python -m pyflakes db.py modules/inventory/import_detail.py)",
+      "Bash(python -m py_compile modules/inventory/export_price_view.py)",
+      "Bash(python -m pyflakes modules/inventory/export_price_view.py)",
+      "Bash(python -m py_compile modules/finance/finance_sales_profit.py modules/dashboard/dashboard_finance_summary.py)",
+      "Bash(python -m pyflakes modules/finance/finance_sales_profit.py modules/dashboard/dashboard_finance_summary.py)",
+      "Bash(python -m py_compile modules/finance/finance_expense_management.py)",
+      "Bash(python -m pyflakes modules/finance/finance_expense_management.py)"
     ]
   }
 }
