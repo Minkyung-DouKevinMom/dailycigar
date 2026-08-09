@@ -236,17 +236,22 @@ def make_product_bar_df(
     grp: pd.DataFrame,
     value_col_name: str,
     qty_col_name: str | None = "판매량",
+    order_col_name: str | None = None,
 ) -> pd.DataFrame:
     """
     상품별 집계(grp)에서 바차트용 DataFrame을 만든다. 파이차트용 make_product_pie_df와
-    달리 "기타"로 묶지 않고 전체 상품을 다 넘기며, 정렬 기준으로 쓸 이익(_order) 컬럼을
-    항상 함께 가져온다(value_col_name이 이익이 아니어도 이익 순 정렬이 가능하도록).
+    달리 "기타"로 묶지 않고 전체 상품을 다 넘기며, 정렬 기준으로 쓸 _order 컬럼을
+    항상 함께 가져온다. order_col_name을 지정하면 그 컬럼 기준으로 정렬하고,
+    지정하지 않으면 기존처럼 이익(있으면) 순으로 정렬한다.
     """
     if grp.empty or "상품코드" not in grp.columns or value_col_name not in grp.columns:
         return pd.DataFrame(columns=["구분", "값", "_order", "판매수량"])
 
     work = grp.copy()
-    work["_order"] = work["이익"] if "이익" in work.columns else work[value_col_name]
+    if order_col_name and order_col_name in work.columns:
+        work["_order"] = work[order_col_name]
+    else:
+        work["_order"] = work["이익"] if "이익" in work.columns else work[value_col_name]
 
     include_qty = bool(qty_col_name) and qty_col_name != value_col_name and qty_col_name in work.columns
     cols_needed = ["상품코드", value_col_name, "_order"]
@@ -924,24 +929,31 @@ def render():
         st.divider()
 
         # ── 통합(소매+도매+선물세트) 지표별 바차트 ─────────────────
-        st.markdown("### 소매·도매 통합 지표별 (선물세트 수량 포함 · 이익 많은 순)")
+        st.markdown("### 소매·도매 통합 지표별 (선물세트 수량 포함)")
         st.caption(
             "판매수량은 선물세트로 나간 수량까지 포함합니다. 매출·이익은 선물세트분에 대해 "
             "실제 회계상 매출이 세트 자체에는 없는 대신, 기프트패키지 구성품 관리 화면에 등록된 "
             "개당원가/개당판매가를 바탕으로 세트 실제판매금액을 구성품별 비중대로 정밀 배분한 값입니다"
-            "(구성품이 등록되지 않은 세트는 0 처리). 세 그래프 모두 이익이 많은 상품 순으로 정렬됩니다."
+            "(구성품이 등록되지 않은 세트는 0 처리). 매출·이익 그래프는 이익이 많은 순, "
+            "판매수량 그래프는 판매수량이 많은 순, 개당 이익금액 그래프는 개당 이익이 많은 순으로 "
+            "각각 정렬됩니다."
         )
 
         sales_bar_all = make_product_bar_df(combined_full_grp, "매출", "판매량")
         profit_bar_all = make_product_bar_df(combined_full_grp, "이익", "판매량")
-        qty_bar_all = make_product_bar_df(combined_full_grp, "판매량", None)
+        qty_bar_all = make_product_bar_df(
+            combined_full_grp, "판매량", None, order_col_name="판매량"
+        )
+        unit_profit_bar_all = make_product_bar_df(
+            combined_full_grp, "개당마진금액", "판매량", order_col_name="개당마진금액"
+        )
 
         render_ranked_bar_chart(
             sales_bar_all,
             label_col="구분",
             value_col="값",
             qty_col="판매수량",
-            title="시가상품별 매출금액 (전체)",
+            title="시가상품별 매출금액 (전체 · 이익 많은 순)",
             value_label="매출금액",
             color_map=pie_color_map,
             label_value_formatter=fmt_krw_short,
@@ -951,7 +963,7 @@ def render():
             label_col="구분",
             value_col="값",
             qty_col="판매수량",
-            title="시가상품별 이익 (전체)",
+            title="시가상품별 이익 (전체 · 이익 많은 순)",
             value_label="이익금액",
             color_map=pie_color_map,
             label_value_formatter=fmt_krw_short,
@@ -961,11 +973,21 @@ def render():
             label_col="구분",
             value_col="값",
             qty_col=None,
-            title="시가상품별 판매수량 (전체)",
+            title="시가상품별 판매수량 (전체 · 판매수량 많은 순)",
             value_label="판매수량",
             value_format=",.0f",
             color_map=pie_color_map,
             label_value_formatter=fmt_qty_short,
+        )
+        render_ranked_bar_chart(
+            unit_profit_bar_all,
+            label_col="구분",
+            value_col="값",
+            qty_col="판매수량",
+            title="시가상품별 개당 이익금액 (전체 이익 ÷ 판매수량 · 개당 이익 많은 순)",
+            value_label="개당이익금액",
+            color_map=pie_color_map,
+            label_value_formatter=fmt_krw_short,
         )
 
         st.divider()
