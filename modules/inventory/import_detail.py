@@ -9,6 +9,7 @@ from db import (
     get_all_import_batch,
     get_import_batch_one,
     get_import_item_list_filtered,
+    get_import_item_list_all_batches,
     get_import_item_detail,
     get_import_item_defaults_by_product_code,
     get_import_item_defaults_by_name_size,
@@ -740,6 +741,30 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
         "최종 수출가격(USD, 박스기준)",
         f"{_preview_discounted:,.4f}",
     )
+
+    with st.popover("🔍 원본 행번호 참고 검색 (유사 상품 찾기)"):
+        st.caption(
+            "전체 수입 버전에 등록된 품목의 원본 행번호를 검색해서, "
+            "아래 폼의 '원본 행번호' 입력 시 참고하세요. (행번호는 버전마다 별도로 매겨집니다)"
+        )
+        row_search_kw = st.text_input(
+            "상품명 / 사이즈 / 코드로 검색",
+            key=f"row_no_search_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
+        )
+        ref_df = get_import_item_list_all_batches(row_search_kw.strip())
+        if ref_df is None or ref_df.empty:
+            st.info("검색 결과가 없습니다." if row_search_kw.strip() else "등록된 품목이 없습니다.")
+        else:
+            ref_df = ref_df.rename(
+                columns={
+                    "version_name": "수입버전",
+                    "source_row_no": "원본행번호",
+                    "product_name": "상품명",
+                    "size_name": "사이즈",
+                    "product_code": "상품코드",
+                }
+            )[["수입버전", "원본행번호", "상품명", "사이즈", "상품코드"]]
+            st.dataframe(ref_df, use_container_width=True, hide_index=True, height=240)
 
     st.divider()
 

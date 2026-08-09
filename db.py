@@ -560,6 +560,43 @@ def get_import_item_list_filtered(batch_id, keyword=""):
     sql += " ORDER BY source_row_no, id DESC"
     return run_query(sql, params)
 
+
+def get_import_item_list_all_batches(keyword=""):
+    """
+    수입 버전 구분 없이 전체 import_item을 조회한다.
+    원본 행번호는 버전(batch)마다 별도로 매겨지므로, 어느 버전의 몇 번인지
+    구분할 수 있도록 version_name을 함께 반환한다.
+    """
+    sql = """
+    SELECT
+        i.batch_id,
+        b.version_name,
+        i.product_code,
+        i.product_name,
+        i.size_name,
+        i.source_row_no
+    FROM import_item i
+    LEFT JOIN import_batch b ON i.batch_id = b.id
+    WHERE 1=1
+    """
+    params = []
+
+    if keyword and str(keyword).strip():
+        sql += """
+        AND (
+            i.product_name LIKE ?
+            OR i.size_name LIKE ?
+            OR i.product_code LIKE ?
+            OR i.notes LIKE ?
+        )
+        """
+        like_kw = f"%{keyword.strip()}%"
+        params.extend([like_kw, like_kw, like_kw, like_kw])
+
+    sql += " ORDER BY i.batch_id DESC, i.source_row_no, i.id DESC"
+    return run_query(sql, params)
+
+
 def get_export_price_item_filtered(keyword=None, package_type=None, package_qty=None):
     conditions = []
     params = []
