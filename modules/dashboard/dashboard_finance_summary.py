@@ -10,6 +10,11 @@ from db import get_non_cigar_purchase_price_map, apply_non_cigar_margin_logic
 
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
+# 대시보드는 "순수 판매 성과"만 보여주는 목적이라, 투자비(자산성 구매)·물류비처럼
+# 개별 판매와 직접 연결되지 않는 지출그룹은 월 지출/영업이익 계산과 최근 지출 목록에서
+# 제외한다. 전체 지출(투자비·물류비 포함)은 재무관리 화면에서만 확인한다.
+DASHBOARD_EXCLUDED_EXPENSE_GROUPS = {"투자비", "물류비"}
+
 
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -323,21 +328,46 @@ def get_expense_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     cols = get_table_columns(conn, "expense_txn")
     date_col = pick_col(cols, ["expense_date", "date", "txn_date"])
     amount_col = pick_col(cols, ["amount", "expense_amount"])
+    category_id_col = pick_col(cols, ["expense_category_id", "category_id"])
 
     if not date_col or not amount_col:
         return pd.DataFrame()
 
-    sql = f"""
-        SELECT
-            {date_col} AS expense_date,
-            COALESCE({amount_col}, 0) AS amount
-        FROM expense_txn
-        WHERE {date_col} BETWEEN ? AND ?
-    """
+    cat_exists = table_exists(conn, "expense_category_mst")
+    cat_cols = get_table_columns(conn, "expense_category_mst") if cat_exists else []
+    group_col = pick_col(cat_cols, ["expense_group", "group_name"])
+    name_col = pick_col(cat_cols, ["expense_name", "category_name", "name"])
+
+    if cat_exists and category_id_col and (group_col or name_col):
+        sql = f"""
+            SELECT
+                t.{date_col} AS expense_date,
+                COALESCE(t.{amount_col}, 0) AS amount,
+                {"COALESCE(c." + group_col + ", '')" if group_col else "''"} AS expense_group,
+                {"COALESCE(c." + name_col + ", '')" if name_col else "''"} AS expense_name
+            FROM expense_txn t
+            LEFT JOIN expense_category_mst c ON t.{category_id_col} = c.id
+            WHERE t.{date_col} BETWEEN ? AND ?
+        """
+    else:
+        sql = f"""
+            SELECT
+                {date_col} AS expense_date,
+                COALESCE({amount_col}, 0) AS amount,
+                '' AS expense_group,
+                '' AS expense_name
+            FROM expense_txn
+            WHERE {date_col} BETWEEN ? AND ?
+        """
     df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
 
     if not df.empty:
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
+        excluded = (
+            df["expense_group"].astype(str).str.strip().isin(DASHBOARD_EXCLUDED_EXPENSE_GROUPS)
+            | df["expense_name"].astype(str).str.strip().isin(DASHBOARD_EXCLUDED_EXPENSE_GROUPS)
+        )
+        df = df[~excluded].copy()
 
     return df
 
@@ -437,6 +467,8 @@ def get_recent_expenses(conn, limit: int = 10) -> pd.DataFrame:
         vendor_expr = f"COALESCE(t.{vendor_col}, '')" if vendor_col else "''"
         payment_expr = f"COALESCE(t.{payment_col}, '')" if payment_col else "''"
 
+        excluded_group_placeholders = ",".join(["?"] * len(DASHBOARD_EXCLUDED_EXPENSE_GROUPS))
+        excluded_name_placeholders = ",".join(["?"] * len(DASHBOARD_EXCLUDED_EXPENSE_GROUPS))
         sql = f"""
             SELECT
                 t.{expense_date_col} AS expense_date,
@@ -448,9 +480,16 @@ def get_recent_expenses(conn, limit: int = 10) -> pd.DataFrame:
             FROM expense_txn t
             LEFT JOIN expense_category_mst c
               ON t.{category_id_col} = c.id
+            WHERE COALESCE({group_expr}, '') NOT IN ({excluded_group_placeholders})
+              AND COALESCE({name_expr}, '') NOT IN ({excluded_name_placeholders})
             ORDER BY t.{expense_date_col} DESC, t.id DESC
             LIMIT ?
         """
+        params = [
+            *DASHBOARD_EXCLUDED_EXPENSE_GROUPS,
+            *DASHBOARD_EXCLUDED_EXPENSE_GROUPS,
+            limit,
+        ]
     else:
         vendor_expr = f"COALESCE({vendor_col}, '')" if vendor_col else "''"
         payment_expr = f"COALESCE({payment_col}, '')" if payment_col else "''"
@@ -467,8 +506,9 @@ def get_recent_expenses(conn, limit: int = 10) -> pd.DataFrame:
             ORDER BY {expense_date_col} DESC, id DESC
             LIMIT ?
         """
+        params = [limit]
 
-    df = pd.read_sql_query(sql, conn, params=[limit])
+    df = pd.read_sql_query(sql, conn, params=params)
 
     if not df.empty:
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
@@ -740,6 +780,10 @@ def render():
         st.caption(
             f"기준기간: {current['date_from']} ~ {current['date_to']} / "
             f"비교기간: {previous['date_from']} ~ {previous['date_to']}"
+        )
+        st.caption(
+            "※ 월 지출/영업이익은 순수 판매 성과를 보기 위해 투자비·물류비 지출그룹을 제외한 값입니다. "
+            "전체 지출(투자비·물류비 포함)은 재무관리 화면에서 확인해 주세요."
         )
 
         tab1, tab2, tab3, tab4 = st.tabs(["월별 추이", "최근 판매 내역", "최근 지출", "상위 제품"])

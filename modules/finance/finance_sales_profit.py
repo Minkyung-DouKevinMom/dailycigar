@@ -568,8 +568,18 @@ def render_profit_loss():
         if not expense_df.empty:
             x = expense_df.copy()
             x["월"] = monthify(x["expense_date"])
-            g = x.groupby("월", dropna=False)["amount"].sum().reset_index(name="지출")
-            monthly_frames.append(g)
+            is_capex = x["expense_group"].fillna("").astype(str).str.strip() == "투자비"
+            x["_expense_class"] = is_capex.map({True: "투자비", False: "경상지출"})
+            g = (
+                x.groupby(["월", "_expense_class"], dropna=False)["amount"]
+                .sum()
+                .unstack(fill_value=0.0)
+                .reset_index()
+            )
+            for col in ["경상지출", "투자비"]:
+                if col not in g.columns:
+                    g[col] = 0.0
+            monthly_frames.append(g[["월", "경상지출", "투자비"]])
 
         if not monthly_frames:
             st.info("손익분석에 사용할 데이터가 없습니다.")
@@ -579,7 +589,7 @@ def render_profit_loss():
         for extra in monthly_frames[1:]:
             df_pl = df_pl.merge(extra, on="월", how="outer")
 
-        for c in ["소매매출", "소매원가", "소매이익", "도매매출", "도매원가", "도매이익", "지출"]:
+        for c in ["소매매출", "소매원가", "소매이익", "도매매출", "도매원가", "도매이익", "경상지출", "투자비"]:
             if c not in df_pl.columns:
                 df_pl[c] = 0.0
             df_pl[c] = pd.to_numeric(df_pl[c], errors="coerce").fillna(0)
@@ -587,30 +597,46 @@ def render_profit_loss():
         df_pl["총매출"] = df_pl["소매매출"] + df_pl["도매매출"]
         df_pl["총원가"] = df_pl["소매원가"] + df_pl["도매원가"]
         df_pl["매출총이익"] = df_pl["소매이익"] + df_pl["도매이익"]
-        df_pl["영업이익"] = df_pl["매출총이익"] - df_pl["지출"]
+        df_pl["총지출"] = df_pl["경상지출"] + df_pl["투자비"]
+        df_pl["경상영업이익"] = df_pl["매출총이익"] - df_pl["경상지출"]
+        df_pl["영업이익"] = df_pl["매출총이익"] - df_pl["총지출"]
         df_pl = df_pl.sort_values("월")
 
         total_sales = float(df_pl["총매출"].sum())
         total_gp = float(df_pl["매출총이익"].sum())
-        total_exp = float(df_pl["지출"].sum())
+        total_recurring_exp = float(df_pl["경상지출"].sum())
+        total_capex = float(df_pl["투자비"].sum())
+        total_recurring_op = float(df_pl["경상영업이익"].sum())
         total_op = float(df_pl["영업이익"].sum())
         total_retail_profit = float(df_pl["소매이익"].sum()) if "소매이익" in df_pl.columns else 0
         total_wholesale_profit = float(df_pl["도매이익"].sum()) if "도매이익" in df_pl.columns else 0
 
-        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1, m2, m3, m4 = st.columns(4)
         m1.metric("총매출", fmt_krw(total_sales))
         m2.metric("소매이익", fmt_krw(total_retail_profit))
         m3.metric("도매이익", fmt_krw(total_wholesale_profit))
         m4.metric("매출총이익", fmt_krw(total_gp))
-        m5.metric("지출", fmt_krw(total_exp))
-        m6.metric("영업이익", fmt_krw(total_op))
+
+        n1, n2, n3, n4 = st.columns(4)
+        n1.metric("경상지출", fmt_krw(total_recurring_exp))
+        n2.metric("투자비(비경상)", fmt_krw(total_capex))
+        n3.metric("경상영업이익", fmt_krw(total_recurring_op))
+        n4.metric("영업이익(투자비 포함)", fmt_krw(total_op))
+        st.caption(
+            "※ 지출항목 관리에서 지출그룹을 \"투자비\"로 등록한 항목(예: 휴미더·가구 등 자산성 구매)은 "
+            "경상지출/경상영업이익에서 제외됩니다. 실제 운영 정상화 여부는 경상영업이익 기준으로 보시는 것을 권장합니다."
+        )
 
         tab1, tab2 = st.tabs(["월별 손익", "지출 상세"])
 
         with tab1:
             show = apply_currency_format(
                 df_pl,
-                ["소매매출", "소매원가", "소매이익", "도매매출", "도매원가", "도매이익", "총매출", "총원가", "매출총이익", "지출", "영업이익"],
+                [
+                    "소매매출", "소매원가", "소매이익", "도매매출", "도매원가", "도매이익",
+                    "총매출", "총원가", "매출총이익",
+                    "경상지출", "투자비", "총지출", "경상영업이익", "영업이익",
+                ],
             )
             st.dataframe(show, use_container_width=True, hide_index=True, height=420)
 
