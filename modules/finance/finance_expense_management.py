@@ -199,23 +199,23 @@ def render_category_tab(conn):
         with st.form(f"cat_form_{st.session_state.exp_cat_form_reset_key}"):
             expense_group = st.text_input(
                 "지출그룹",
-                value=selected.get("expense_group", "") if selected else "",
+                value=(selected.get("expense_group") or "") if selected else "",
                 placeholder="예: 고정비 / 변동비 / 마케팅 / 운영비",
             )
             expense_name = st.text_input(
                 "지출항목명 *",
-                value=selected.get("expense_name", "") if selected else "",
+                value=(selected.get("expense_name") or "") if selected else "",
                 placeholder="예: 임대료 / 택배비 / 광고비 / 소모품비",
             )
             is_active = st.selectbox(
                 "사용여부",
                 options=[1, 0],
                 format_func=lambda x: "사용" if x == 1 else "미사용",
-                index=0 if not selected else (0 if int(selected.get("is_active", 1)) == 1 else 1),
+                index=0 if not selected else (0 if int(selected.get("is_active", 1) or 1) == 1 else 1),
             )
             notes = st.text_area(
                 "비고",
-                value=selected.get("notes", "") if selected else "",
+                value=(selected.get("notes") or "") if selected else "",
                 height=120,
             )
 
@@ -518,17 +518,17 @@ def render_expense_tab(conn):
             )
             vendor_name = st.text_input(
                 "거래처/사용처",
-                value=selected.get("vendor_name", "") if selected else "",
+                value=(selected.get("vendor_name") or "") if selected else "",
                 placeholder="예: 네이버, 쿠팡, 택배사, 건물주",
             )
             payment_method = st.text_input(
                 "결제수단",
-                value=selected.get("payment_method", "") if selected else "",
+                value=(selected.get("payment_method") or "") if selected else "",
                 placeholder="예: 카드, 계좌이체, 현금",
             )
             notes = st.text_area(
                 "비고",
-                value=selected.get("notes", "") if selected else "",
+                value=(selected.get("notes") or "") if selected else "",
                 height=120,
             )
 
