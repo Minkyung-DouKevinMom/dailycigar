@@ -715,6 +715,32 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
         product_weight = _n(product_info.get("unit_weight_g"), 0.0)
         st.metric("상품마스터 개당 무게(g)", f"{product_weight:,.1f}")
 
+    # 할인율은 form 밖에서 즉시 반영되도록 처리 (form 안에 있으면 저장 전까지
+    # 값이 바뀌어도 아래 미리보기/자동계산 결과가 갱신되지 않는 문제가 있었음)
+    # DB discount_rate = discount_factor(남는 비율): 20% 할인 → 0.8 저장
+    # NULL이면 할인 없음(0%)
+    _raw_dr = detail_row.get("discount_rate") if detail_row else None
+    if _raw_dr is None or _raw_dr == "":
+        default_discount_percent = 0.0
+    else:
+        default_discount_percent = round((1.0 - _n(_raw_dr, 1.0)) * 100, 4)
+
+    discount_rate = st.number_input(
+        "할인율(%)",
+        min_value=0.0,
+        max_value=100.0,
+        value=float(default_discount_percent),
+        step=0.1,
+        help="20 입력 → 20% 할인. DB에는 할인계수(0.8)로 저장됩니다.",
+        key=f"discount_rate_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}",
+    )
+
+    _preview_discounted = export_box_price_usd * (1 - discount_rate / 100.0)
+    st.metric(
+        "최종 수출가격(USD, 박스기준)",
+        f"{_preview_discounted:,.4f}",
+    )
+
     st.divider()
 
     # ──────────────────────────────────────────────────────────────────
@@ -757,30 +783,6 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
                 min_value=0,
                 value=max(_i(detail_row.get("import_unit_qty"), package_qty), 0),
                 step=1,
-            )
-
-            # DB discount_rate = discount_factor (남는 비율): 20% 할인 → 0.8 저장
-            # NULL이면 할인 없음(0%)
-            _raw_dr = detail_row.get("discount_rate") if detail_row else None
-            if _raw_dr is None or _raw_dr == "":
-                default_discount_percent = 0.0
-            else:
-                default_discount_percent = round((1.0 - _n(_raw_dr, 1.0)) * 100, 4)
-
-            discount_rate = st.number_input(
-                "할인율(%)",
-                min_value=0.0,
-                max_value=100.0,
-                value=float(default_discount_percent),
-                step=0.1,
-                help="20 입력 → 20% 할인. DB에는 할인계수(0.8)로 저장됩니다.",
-            )
-
-            # 최종 수출가격: discount_rate 위젯 현재값 기준으로 즉시 계산해서 표시
-            _preview_discounted = export_box_price_usd * (1 - discount_rate / 100.0)
-            st.metric(
-                "최종 수출가격(USD, 박스기준)",
-                f"{_preview_discounted:,.4f}",
             )
 
             # 기존 저장값이 있으면(같은 상품코드) 원본 행번호 디폴트로 표기
