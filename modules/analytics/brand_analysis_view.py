@@ -89,57 +89,6 @@ def apply_discount_to_grouped(
     return grp
 
 
-def group_minor_as_others(
-    df: pd.DataFrame,
-    label_col: str,
-    value_col: str,
-    qty_col: str | None = None,
-    extra_cols: list[str] | None = None,
-    top_n: int = 6,
-) -> pd.DataFrame:
-    """
-    extra_cols: value_col/qty_col 외에 함께 합산해서 유지하고 싶은 컬럼들
-    (예: 직접판매량, 선물세트수량 같은 브레이크다운용 컬럼). "기타" 행에도 합산되어 반영된다.
-    """
-    if df.empty:
-        return df.copy()
-
-    extra_cols = [c for c in (extra_cols or []) if c in df.columns and c not in (value_col, qty_col)]
-
-    agg_cols = [label_col, value_col]
-    if qty_col and qty_col in df.columns:
-        agg_cols.append(qty_col)
-    agg_cols += extra_cols
-
-    work = df[agg_cols].copy()
-    agg_dict = {value_col: "sum"}
-    if qty_col and qty_col in df.columns:
-        agg_dict[qty_col] = "sum"
-    for c in extra_cols:
-        agg_dict[c] = "sum"
-    work = work.groupby(label_col, as_index=False).agg(agg_dict)
-    work = work.sort_values(value_col, ascending=False)
-
-    if len(work) <= top_n:
-        return work
-
-    top_df = work.head(top_n).copy()
-    others_row = {label_col: "기타", value_col: work.iloc[top_n:][value_col].sum()}
-    if qty_col and qty_col in work.columns:
-        others_row[qty_col] = work.iloc[top_n:][qty_col].sum()
-    for c in extra_cols:
-        others_row[c] = work.iloc[top_n:][c].sum()
-
-    if others_row[value_col] > 0:
-        top_df = pd.concat(
-            [top_df, pd.DataFrame([others_row])],
-            ignore_index=True,
-        )
-    return top_df
-
-
-PIE_OTHER_COLOR = "#B0B0B0"
-
 
 def _hsl_to_hex(h: float, s: float, l: float) -> str:
     """h: 0~360, s/l: 0~1. HSL -> #RRGGBB 변환."""
@@ -214,116 +163,101 @@ def fmt_qty_short(x: float) -> str:
         return str(x)
 
 
-def render_pie_chart(
+def render_ranked_bar_chart(
     df: pd.DataFrame,
     label_col: str,
     value_col: str,
     title: str,
+    order_col: str = "_order",
     qty_col: str | None = None,
     value_label: str = "금액",
     value_format: str = ",.0f",
     color_map: dict | None = None,
-    height: int = 340,
-    show_top_labels: bool = False,
-    top_label_n: int | None = None,
     label_value_formatter=None,
 ):
     """
-    파이차트 렌더링. 범례는 표시하지 않고, 대신 조각 안에 상품코드/값/비율 라벨을 직접 표시한다.
-    툴팁에도 항목명 / 값(금액 또는 수량) / 전체 대비 비율(%)을 함께 담는다.
-    value_label, value_format 으로 매출/이익/수량 등 지표에 맞는 라벨·포맷을 지정할 수 있다.
-    color_map 이 주어지면 상품코드 기준 고정 색상을 사용해, 여러 파이차트에 걸쳐
-    동일 상품이 항상 같은 색으로 보이도록 한다. "기타"는 항상 회색으로 고정한다.
-    color_map 이 없거나 해당 라벨이 맵에 없으면 순서대로 팔레트를 배정하는 기존 방식으로 대체한다.
-
-    height: 차트 높이(px). 크게 보고 싶을 때 키운다.
-    show_top_labels: True면 조각 위에 "상품코드 / 값 / 비율%" 라벨을 직접 표시한다.
-    top_label_n: 라벨을 표시할 상위 개수 제한. None이면 전체 조각에 라벨을 표시한다.
-    label_value_formatter: 라벨에 쓸 값 축약 포맷 함수 (예: fmt_krw_short). 없으면 value_format으로 표시.
+    상품코드별 값을 order_col(기본: 이익) 내림차순으로 정렬한 가로 막대그래프.
+    파이차트와 달리 "기타"로 묶지 않고 전체 항목을 다 보여주며, 막대 옆에 값을
+    직접 표시해 항목이 많아도 값을 읽기 쉽게 한다. 항목 수에 비례해 높이가 늘어난다.
     """
     if df.empty or df[value_col].sum() == 0:
         st.info("데이터가 없습니다.")
         return
 
-    total = df[value_col].sum()
-    df = df.copy()
-    df["_pct"] = (df[value_col] / total * 100) if total else 0
+    work = df.sort_values(order_col, ascending=False).reset_index(drop=True).copy()
+    order = work[label_col].astype(str).tolist()
+    n = len(work)
+    chart_height = max(320, 28 * n)
+
+    fmt_fn = label_value_formatter or (lambda v: format(v, value_format))
+    work["_label"] = work[value_col].apply(fmt_fn)
 
     tooltip = [
         alt.Tooltip(label_col, title="구분"),
         alt.Tooltip(value_col, title=value_label, format=value_format),
-        alt.Tooltip("_pct:Q", title="비율(%)", format=".1f"),
     ]
-    if qty_col and qty_col in df.columns:
+    if qty_col and qty_col in work.columns:
         tooltip.append(alt.Tooltip(qty_col, title="판매수량", format=",.0f"))
 
-    # ── 색상 배정: color_map이 있으면 상품코드 고정 색상, 없으면 이 차트 안에서
-    #    동적으로 색상환을 균등 분할해 배정 (겹치지 않도록) ──
-    domain = df[label_col].astype(str).tolist()
-    fallback_labels = [d for d in domain if d != "기타" and not (color_map and d in color_map)]
-    fallback_map = {}
-    if fallback_labels:
-        n_fb = len(fallback_labels)
-        for i, lbl in enumerate(fallback_labels):
-            hue = (i * 360.0 / n_fb) % 360
-            fallback_map[lbl] = _hsl_to_hex(hue, 0.65, 0.5)
+    if color_map:
+        color_range = [color_map.get(d, "#5B8DEF") for d in order]
+    else:
+        n_d = max(len(order), 1)
+        color_range = [_hsl_to_hex((i * 360.0 / n_d) % 360, 0.65, 0.5) for i in range(len(order))]
 
-    color_range = []
-    for d in domain:
-        if d == "기타":
-            color_range.append(PIE_OTHER_COLOR)
-        elif color_map and d in color_map:
-            color_range.append(color_map[d])
-        else:
-            color_range.append(fallback_map[d])
+    y_enc = alt.Y(f"{label_col}:N", sort=order, title=None)
+    x_enc = alt.X(f"{value_col}:Q", title=value_label)
 
-    outer_radius = max(90, height // 2 - 70)
-    inner_radius = min(50, outer_radius - 30) if outer_radius > 30 else 0
-
-    base = alt.Chart(df).encode(
-        theta=alt.Theta(field=value_col, type="quantitative", stack=True),
-        color=alt.Color(
-            field=label_col,
-            type="nominal",
-            scale=alt.Scale(domain=domain, range=color_range),
-            legend=None,  # 범례 제거 — 조각 위 라벨로 항목을 식별한다.
-        ),
-        order=alt.Order(value_col, sort="descending"),
+    bar = (
+        alt.Chart(work)
+        .mark_bar()
+        .encode(
+            y=y_enc,
+            x=x_enc,
+            color=alt.Color(
+                f"{label_col}:N",
+                scale=alt.Scale(domain=order, range=color_range),
+                legend=None,
+            ),
+            tooltip=tooltip,
+        )
+    )
+    text = (
+        alt.Chart(work)
+        .mark_text(align="left", dx=4, fontWeight="bold")
+        .encode(y=y_enc, x=x_enc, text=alt.Text("_label:N"))
     )
 
-    arc = base.mark_arc(innerRadius=inner_radius, outerRadius=outer_radius).encode(tooltip=tooltip)
-
-    layers = [arc]
-
-    if show_top_labels:
-        fmt_fn = label_value_formatter or (lambda v: format(v, value_format))
-        n_limit = top_label_n if top_label_n is not None else len(df)
-        rank = df[value_col].rank(method="first", ascending=False)
-        df["_label"] = [
-            f"{lbl}\n{fmt_fn(v)}\n({p:.1f}%)" if r <= n_limit else ""
-            for lbl, v, p, r in zip(df[label_col].astype(str), df[value_col], df["_pct"], rank)
-        ]
-        # 라벨을 도넛 정중앙보다는 바깥쪽(70% 지점)에 둬서 조각 색 영역 안에서
-        # 최대한 넓은 공간을 확보한다 (85%까지 보내면 3줄 텍스트 높이 때문에
-        # 조각 밖 흰 배경과 겹쳐 안 보이는 문제가 있어 70%로 당김).
-        # 검은 외곽선(stroke)은 fill과 겹쳐 글자가 두 겹으로 보이는 부작용이 있어 제거하고
-        # 단색 흰 글씨로 표시한다.
-        label_radius = inner_radius + (outer_radius - inner_radius) * 0.70
-        text = alt.Chart(df).encode(
-            theta=alt.Theta(field=value_col, type="quantitative", stack=True),
-            order=alt.Order(value_col, sort="descending"),
-            text=alt.Text("_label:N"),
-        ).mark_text(
-            radius=label_radius,
-            size=11,
-            fontWeight="bold",
-            color="white",
-            lineBreak="\n",
-        )
-        layers.append(text)
-
-    chart = alt.layer(*layers).properties(title=title, height=height)
+    chart = (bar + text).properties(title=title, height=chart_height)
     st.altair_chart(chart, use_container_width=True)
+
+
+def make_product_bar_df(
+    grp: pd.DataFrame,
+    value_col_name: str,
+    qty_col_name: str | None = "판매량",
+) -> pd.DataFrame:
+    """
+    상품별 집계(grp)에서 바차트용 DataFrame을 만든다. 파이차트용 make_product_pie_df와
+    달리 "기타"로 묶지 않고 전체 상품을 다 넘기며, 정렬 기준으로 쓸 이익(_order) 컬럼을
+    항상 함께 가져온다(value_col_name이 이익이 아니어도 이익 순 정렬이 가능하도록).
+    """
+    if grp.empty or "상품코드" not in grp.columns or value_col_name not in grp.columns:
+        return pd.DataFrame(columns=["구분", "값", "_order", "판매수량"])
+
+    work = grp.copy()
+    work["_order"] = work["이익"] if "이익" in work.columns else work[value_col_name]
+
+    include_qty = bool(qty_col_name) and qty_col_name != value_col_name and qty_col_name in work.columns
+    cols_needed = ["상품코드", value_col_name, "_order"]
+    if include_qty:
+        cols_needed.append(qty_col_name)
+
+    work = work[cols_needed].copy()
+    rename_map = {"상품코드": "구분", value_col_name: "값"}
+    if include_qty:
+        rename_map[qty_col_name] = "판매수량"
+    return work.rename(columns=rename_map)
 
 
 def build_full_grouped_with_giftset(
@@ -381,45 +315,6 @@ def build_full_grouped_with_giftset(
         lambda x: round(x["이익"] / x["판매량"], 0) if x["판매량"] else 0, axis=1
     )
     return result.sort_values("매출", ascending=False).reset_index(drop=True)
-
-
-def make_full_pie_df(
-    grp: pd.DataFrame,
-    value_col_name: str,
-    qty_col_name: str | None = "판매량",
-    top_n: int = 10,
-) -> pd.DataFrame:
-    """
-    상품별 집계(product_grouped: 소매+도매+선물세트 통합) 기준으로
-    특정 지표(매출/이익/판매량) 파이차트용 DataFrame 을 만든다.
-    qty_col_name 이 value_col_name 과 같으면(예: 판매량 자체를 값으로 쓰는 경우)
-    중복 표시를 피하기 위해 수량 툴팁은 생략한다.
-    """
-    if grp.empty or "상품코드" not in grp.columns or value_col_name not in grp.columns:
-        cols = ["구분", "값"]
-        if qty_col_name and qty_col_name != value_col_name:
-            cols.append("판매수량")
-        return pd.DataFrame(columns=cols)
-
-    include_qty = bool(qty_col_name) and qty_col_name != value_col_name and qty_col_name in grp.columns
-
-    cols_needed = ["상품코드", value_col_name]
-    if include_qty:
-        cols_needed.append(qty_col_name)
-
-    work = grp[cols_needed].copy()
-    rename_map = {"상품코드": "구분", value_col_name: "값"}
-    if include_qty:
-        rename_map[qty_col_name] = "판매수량"
-    work = work.rename(columns=rename_map)
-
-    return group_minor_as_others(
-        work,
-        label_col="구분",
-        value_col="값",
-        qty_col="판매수량" if include_qty else None,
-        top_n=top_n,
-    )
 
 
 def get_cigar_product_codes(conn) -> set:
@@ -992,104 +887,84 @@ def render():
                if gift_set_qty else "")
         )
         st.caption(
-            "※ 아래 상품별 파이차트·바차트는 소매+도매 직접 판매분만 집계합니다 "
-            "(선물세트는 매출·이익이 0으로 잡혀 상품별 비교를 왜곡하므로 제외)."
+            "※ 맨 아래 TOP 20 바차트(매출금액/개당 마진금액)는 소매+도매 직접 판매분만 집계합니다 "
+            "(선물세트는 매출·이익이 0으로 잡혀 상품별 비교를 왜곡하므로 제외). "
+            "그 외 아래 상품별 바차트는 모두 이익이 많은 순으로 정렬됩니다."
         )
         st.divider()
 
-        # ── 파이차트 ───────────────────────────────────────────────
-        def make_product_pie_df(grp: pd.DataFrame) -> pd.DataFrame:
-            if grp.empty:
-                return pd.DataFrame(columns=["구분", "금액", "판매수량"])
-            renamed = grp.rename(columns={"상품코드": "구분", "매출": "금액", "판매량": "판매수량"})
-            return group_minor_as_others(
-                renamed,
-                label_col="구분",
-                value_col="금액",
-                qty_col="판매수량",
-                top_n=10,
-            )
-
+        # ── 바차트 (상품별 매출/이익/판매량 비중) ─────────────────
         st.caption(
-            "소매 파이는 선물세트 수량을 포함합니다(선물세트는 채널 구분이 없어 소매로 간주, "
+            "소매 바차트는 선물세트 수량을 포함합니다(선물세트는 채널 구분이 없어 소매로 간주, "
             "매출·이익은 기프트패키지 구성품 관리 화면에 등록된 개당원가/개당판매가 기준으로 "
-            "정밀 배분한 값). 도매는 선물세트 개념이 없어 도매 직접판매만 집계합니다."
+            "정밀 배분한 값). 도매는 선물세트 개념이 없어 도매 직접판매만 집계합니다. "
+            "모든 막대는 이익이 많은 순으로 정렬됩니다."
         )
-        render_pie_chart(
-            make_product_pie_df(retail_full_grp),
+        render_ranked_bar_chart(
+            make_product_bar_df(retail_full_grp, "매출", "판매량"),
             label_col="구분",
-            value_col="금액",
+            value_col="값",
             qty_col="판매수량",
-            title="시가상품별 매출금액 비중 (소매, 선물세트 포함)",
+            title="시가상품별 매출금액 (소매, 선물세트 포함 · 이익 많은 순)",
             value_label="매출금액",
             color_map=pie_color_map,
-            height=560,
-            show_top_labels=True,
             label_value_formatter=fmt_krw_short,
         )
-        render_pie_chart(
-            make_product_pie_df(wholesale_pie_grp),
+        render_ranked_bar_chart(
+            make_product_bar_df(wholesale_pie_grp, "매출", "판매량"),
             label_col="구분",
-            value_col="금액",
+            value_col="값",
             qty_col="판매수량",
-            title="시가상품별 매출금액 비중 (도매)",
+            title="시가상품별 매출금액 (도매 · 이익 많은 순)",
             value_label="매출금액",
             color_map=pie_color_map,
-            height=560,
-            show_top_labels=True,
             label_value_formatter=fmt_krw_short,
         )
 
         st.divider()
 
-        # ── 통합(소매+도매+선물세트) 지표별 파이차트 ─────────────────
-        st.markdown("### 소매·도매 통합 지표별 비중 (선물세트 수량 포함)")
+        # ── 통합(소매+도매+선물세트) 지표별 바차트 ─────────────────
+        st.markdown("### 소매·도매 통합 지표별 (선물세트 수량 포함 · 이익 많은 순)")
         st.caption(
             "판매수량은 선물세트로 나간 수량까지 포함합니다. 매출·이익은 선물세트분에 대해 "
             "실제 회계상 매출이 세트 자체에는 없는 대신, 기프트패키지 구성품 관리 화면에 등록된 "
             "개당원가/개당판매가를 바탕으로 세트 실제판매금액을 구성품별 비중대로 정밀 배분한 값입니다"
-            "(구성품이 등록되지 않은 세트는 0 처리). 모든 조각 위에 상품코드·값·비율을 함께 표시합니다."
+            "(구성품이 등록되지 않은 세트는 0 처리). 세 그래프 모두 이익이 많은 상품 순으로 정렬됩니다."
         )
 
-        sales_pie_all = make_full_pie_df(combined_full_grp, "매출", "판매량")
-        profit_pie_all = make_full_pie_df(combined_full_grp, "이익", "판매량")
-        qty_pie_all = make_full_pie_df(combined_full_grp, "판매량", None)
+        sales_bar_all = make_product_bar_df(combined_full_grp, "매출", "판매량")
+        profit_bar_all = make_product_bar_df(combined_full_grp, "이익", "판매량")
+        qty_bar_all = make_product_bar_df(combined_full_grp, "판매량", None)
 
-        render_pie_chart(
-            sales_pie_all,
+        render_ranked_bar_chart(
+            sales_bar_all,
             label_col="구분",
             value_col="값",
             qty_col="판매수량",
-            title="시가상품별 매출금액 비중 (전체)",
+            title="시가상품별 매출금액 (전체)",
             value_label="매출금액",
             color_map=pie_color_map,
-            height=560,
-            show_top_labels=True,
             label_value_formatter=fmt_krw_short,
         )
-        render_pie_chart(
-            profit_pie_all,
+        render_ranked_bar_chart(
+            profit_bar_all,
             label_col="구분",
             value_col="값",
             qty_col="판매수량",
-            title="시가상품별 이익 비중 (전체)",
+            title="시가상품별 이익 (전체)",
             value_label="이익금액",
             color_map=pie_color_map,
-            height=560,
-            show_top_labels=True,
             label_value_formatter=fmt_krw_short,
         )
-        render_pie_chart(
-            qty_pie_all,
+        render_ranked_bar_chart(
+            qty_bar_all,
             label_col="구분",
             value_col="값",
             qty_col=None,
-            title="시가상품별 판매수량 비중 (전체)",
+            title="시가상품별 판매수량 (전체)",
             value_label="판매수량",
             value_format=",.0f",
             color_map=pie_color_map,
-            height=560,
-            show_top_labels=True,
             label_value_formatter=fmt_qty_short,
         )
 
