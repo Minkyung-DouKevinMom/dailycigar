@@ -873,15 +873,15 @@ def _get_estimate_editor_column_config(is_non_cigar: bool = False):
         "product_code": st.column_config.TextColumn("상품코드", disabled=True),
         "product_name": st.column_config.TextColumn("상품명", disabled=True),
         "size_name": st.column_config.TextColumn("사이즈", disabled=True),
-        "retail_price_krw": st.column_config.NumberColumn("소비자가", format="₩%.0f", disabled=True),
-        "proposal_retail_price_krw": st.column_config.NumberColumn("제안소비자가", format="₩%.0f", disabled=True),
-        "supply_price_krw": st.column_config.NumberColumn("원공급가", format="₩%.0f", disabled=True),
+        "retail_price_krw": st.column_config.NumberColumn("소비자가", format="₩%,.0f", disabled=True),
+        "proposal_retail_price_krw": st.column_config.NumberColumn("제안소비자가", format="₩%,.0f", disabled=True),
+        "supply_price_krw": st.column_config.NumberColumn("원공급가", format="₩%,.0f", disabled=True),
         "qty": st.column_config.NumberColumn("수량", min_value=0, step=1),
     }
 
     if not is_non_cigar:
         config["estimate_discount_rate_text"] = st.column_config.TextColumn("할인율", disabled=True)
-        config["estimate_supply_price_krw"] = st.column_config.NumberColumn("견적공급가", format="₩%.0f", disabled=True)
+        config["estimate_supply_price_krw"] = st.column_config.NumberColumn("견적공급가", format="₩%,.0f", disabled=True)
 
     return config
 

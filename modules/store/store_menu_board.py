@@ -355,8 +355,8 @@ def render():
             use_container_width=True,
             hide_index=True,
             column_config={
-                "매장운영가":   st.column_config.NumberColumn(format="₩ %d"),
-                "소비자제안가": st.column_config.NumberColumn(format="₩ %d"),
+                "매장운영가":   st.column_config.NumberColumn(format="₩ %,d"),
+                "소비자제안가": st.column_config.NumberColumn(format="₩ %,d"),
             }
         )
 

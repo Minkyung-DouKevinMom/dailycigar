@@ -297,6 +297,11 @@ def get_all_import_batch():
         total_amount_usd,
         total_amount_krw,
         total_tax_krw,
+        total_individual_tax_krw,
+        total_tobacco_tax_krw,
+        total_local_education_tax_krw,
+        total_health_charge_krw,
+        total_import_vat_krw,
         notes,
         created_at
     FROM import_batch
@@ -1449,7 +1454,12 @@ def refresh_import_batch_totals(batch_id):
             COALESCE(SUM(total_weight_g), 0) AS total_weight_g,
             COALESCE(SUM(COALESCE(export_unit_price_usd, 0) * COALESCE(import_unit_qty, 0)), 0) AS total_amount_usd,
             COALESCE(SUM(import_total_cost_krw), 0) AS total_amount_krw,
-            COALESCE(SUM(tax_total_all_krw), 0) AS total_tax_krw
+            COALESCE(SUM(tax_total_all_krw), 0) AS total_tax_krw,
+            COALESCE(SUM(COALESCE(individual_tax_krw, 0) * COALESCE(import_unit_qty, 0)), 0) AS total_individual_tax_krw,
+            COALESCE(SUM(COALESCE(tobacco_tax_krw, 0) * COALESCE(import_unit_qty, 0)), 0) AS total_tobacco_tax_krw,
+            COALESCE(SUM(COALESCE(local_education_tax_krw, 0) * COALESCE(import_unit_qty, 0)), 0) AS total_local_education_tax_krw,
+            COALESCE(SUM(COALESCE(health_charge_krw, 0) * COALESCE(import_unit_qty, 0)), 0) AS total_health_charge_krw,
+            COALESCE(SUM(COALESCE(import_vat_krw, 0) * COALESCE(import_unit_qty, 0)), 0) AS total_import_vat_krw
         FROM import_item
         WHERE batch_id = ?
         """,
@@ -1463,6 +1473,11 @@ def refresh_import_batch_totals(batch_id):
         total_amount_usd = 0
         total_amount_krw = 0
         total_tax_krw = 0
+        total_individual_tax_krw = 0
+        total_tobacco_tax_krw = 0
+        total_local_education_tax_krw = 0
+        total_health_charge_krw = 0
+        total_import_vat_krw = 0
     else:
         row = item_df.iloc[0]
         total_item_count = int(row["total_item_count"] or 0)
@@ -1471,6 +1486,11 @@ def refresh_import_batch_totals(batch_id):
         total_amount_usd = float(row["total_amount_usd"] or 0)
         total_amount_krw = float(row["total_amount_krw"] or 0)
         total_tax_krw = float(row["total_tax_krw"] or 0)
+        total_individual_tax_krw = float(row["total_individual_tax_krw"] or 0)
+        total_tobacco_tax_krw = float(row["total_tobacco_tax_krw"] or 0)
+        total_local_education_tax_krw = float(row["total_local_education_tax_krw"] or 0)
+        total_health_charge_krw = float(row["total_health_charge_krw"] or 0)
+        total_import_vat_krw = float(row["total_import_vat_krw"] or 0)
 
     cols_df = run_query("PRAGMA table_info(import_batch)")
     existing_cols = set(cols_df["name"].tolist()) if not cols_df.empty else set()
@@ -1501,6 +1521,26 @@ def refresh_import_batch_totals(batch_id):
     if "total_tax_krw" in existing_cols:
         update_parts.append("total_tax_krw = ?")
         params.append(total_tax_krw)
+
+    if "total_individual_tax_krw" in existing_cols:
+        update_parts.append("total_individual_tax_krw = ?")
+        params.append(total_individual_tax_krw)
+
+    if "total_tobacco_tax_krw" in existing_cols:
+        update_parts.append("total_tobacco_tax_krw = ?")
+        params.append(total_tobacco_tax_krw)
+
+    if "total_local_education_tax_krw" in existing_cols:
+        update_parts.append("total_local_education_tax_krw = ?")
+        params.append(total_local_education_tax_krw)
+
+    if "total_health_charge_krw" in existing_cols:
+        update_parts.append("total_health_charge_krw = ?")
+        params.append(total_health_charge_krw)
+
+    if "total_import_vat_krw" in existing_cols:
+        update_parts.append("total_import_vat_krw = ?")
+        params.append(total_import_vat_krw)
 
     if "updated_at" in existing_cols:
         update_parts.append("updated_at = CURRENT_TIMESTAMP")
