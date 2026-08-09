@@ -137,7 +137,7 @@ def render():
 
         sel = df.loc[df["id"] == selected_id].iloc[0]
 
-        with st.form("edit_item_form", clear_on_submit=False):
+        with st.form(f"edit_item_form_{selected_id}", clear_on_submit=False):
             e1, e2 = st.columns(2)
 
             new_price = e1.number_input(
@@ -146,14 +146,14 @@ def render():
                 min_value=0.0,
                 step=0.01,
                 format="%.2f",
-                key="edit_price",
+                key=f"edit_price_{selected_id}",
             )
 
             new_note = e2.text_input(
                 "비고 (Note)",
                 value=str(sel["note"]),
                 placeholder="예) 2025년 4월 인상 적용, 전월 대비 +0.50 USD",
-                key="edit_note",
+                key=f"edit_note_{selected_id}",
             )
 
             submitted = st.form_submit_button("저장", type="primary")
