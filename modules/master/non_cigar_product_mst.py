@@ -332,30 +332,31 @@ def render():
             with st.form(form_key, clear_on_submit=False):
                 product_code = st.text_input(
                     "상품코드 *",
-                    value=selected.get("product_code", "") if selected else "",
+                    value=(selected.get("product_code") or "") if selected else "",
                 )
                 product_name = st.text_input(
                     "상품명 *",
-                    value=selected.get("product_name", "") if selected else "",
+                    value=(selected.get("product_name") or "") if selected else "",
                 )
                 product_category = st.text_input(
                     "상품카테고리 *",
-                    value=selected.get("product_category", "") if selected else "",
+                    value=(selected.get("product_category") or "") if selected else "",
                     placeholder="예: 악세사리 / 기프트패키지 / 사이드 / 금액결제",
                 )
                 brand_name = st.text_input(
                     "브랜드명",
-                    value=selected.get("brand_name", "") if selected else "",
+                    value=(selected.get("brand_name") or "") if selected else "",
                 )
 
                 col_a, col_b = st.columns(2)
                 with col_a:
+                    unit_type_val = (selected.get("unit_type") or "EA") if selected else "EA"
                     unit_type = st.selectbox(
                         "단위",
                         options=["EA", "SET", "BOX", "PACK", "기타"],
                         index=(
-                            ["EA", "SET", "BOX", "PACK", "기타"].index(selected.get("unit_type", "EA"))
-                            if selected and selected.get("unit_type", "EA") in ["EA", "SET", "BOX", "PACK", "기타"]
+                            ["EA", "SET", "BOX", "PACK", "기타"].index(unit_type_val)
+                            if unit_type_val in ["EA", "SET", "BOX", "PACK", "기타"]
                             else 0
                         ),
                     )
@@ -364,12 +365,12 @@ def render():
                         "사용여부",
                         options=[1, 0],
                         format_func=lambda x: "사용" if x == 1 else "미사용",
-                        index=0 if not selected else (0 if int(selected.get("is_active", 1)) == 1 else 1),
+                        index=0 if not selected else (0 if int(selected.get("is_active") or 1) == 1 else 1),
                     )
 
                 spec = st.text_input(
                     "규격/사양",
-                    value=selected.get("spec", "") if selected else "",
+                    value=(selected.get("spec") or "") if selected else "",
                     placeholder="예: 블랙 / 3구 / 메탈 / 22x15x8cm",
                 )
 
@@ -418,7 +419,7 @@ def render():
 
                 notes = st.text_area(
                     "비고",
-                    value=selected.get("notes", "") if selected else "",
+                    value=(selected.get("notes") or "") if selected else "",
                     height=120,
                 )
 

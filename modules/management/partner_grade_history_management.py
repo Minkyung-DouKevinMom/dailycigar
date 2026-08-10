@@ -378,24 +378,26 @@ def render():
                             selected_label = gl
                             break
 
+                # 시작일은 form 밖에서 즉시 반영되도록 처리 (form 안에 있으면 저장 전까지
+                # 값이 바뀌어도 아래 "자동 종료일" 미리보기가 갱신되지 않는 문제가 있었음)
+                start_date = st.date_input(
+                    "시작일",
+                    value=pd.to_datetime(selected["start_date"]).date() if selected and selected.get("start_date") else pd.Timestamp.today().date(),
+                    key=f"pgh_start_date_{st.session_state.pgh_selected_history_id or 'new'}",
+                )
+                auto_end_date = add_12_months_minus_1day(start_date)
+                st.text_input("자동 종료일", value=str(auto_end_date), disabled=True)
+
                 with st.form(form_key):
                     grade_label = st.selectbox(
                         "등급",
                         options=grade_labels,
                         index=grade_labels.index(selected_label) if selected_label in grade_labels else 0,
                     )
-                    start_date = st.date_input(
-                        "시작일",
-                        value=pd.to_datetime(selected["start_date"]).date() if selected and selected.get("start_date") else pd.Timestamp.today().date(),
-                    )
-
-                    # ✅ 수정: auto_end_date를 폼 안에서 계산 후 변수 유지
-                    auto_end_date = add_12_months_minus_1day(start_date)
-                    st.text_input("자동 종료일", value=str(auto_end_date), disabled=True)
 
                     reason = st.text_area(
                         "사유",
-                        value=selected.get("reason", "") if selected else "",
+                        value=(selected.get("reason") or "") if selected else "",
                         height=100,
                     )
 

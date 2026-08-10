@@ -251,11 +251,11 @@ def render():
         e5, e6 = st.columns([1, 3])
         new_active = e5.selectbox(
             "활성 여부", ["활성", "비활성"],
-            index=0 if raw_row.get("is_active", 1) == 1 else 1,
-            key="ppm_active_sel"
+            index=0 if (raw_row.get("is_active") or 1) == 1 else 1,
+            key=f"ppm_active_sel_{selected_id}"
         )
         new_notes = e6.text_input(
-            "비고", value=str(raw_row.get("notes") or ""), key="ppm_notes"
+            "비고", value=str(raw_row.get("notes") or ""), key=f"ppm_notes_{selected_id}"
         )
 
         st.caption(

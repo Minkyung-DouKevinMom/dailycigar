@@ -799,153 +799,152 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
             if _defaults_df is not None and not _defaults_df.empty:
                 existing_item_row = _defaults_df.iloc[0].to_dict()
 
-    with st.form(f"import_item_form_{selected_batch_id}_{edit_mode}_{selected_item_id or 'new'}", clear_on_submit=False):
-        col1, col2, col3 = st.columns(3)
+    col1, col2, col3 = st.columns(3)
 
-        with col1:
-            import_unit_qty = st.number_input(
-                "총 수입 개수",
-                min_value=0,
-                value=max(_i(detail_row.get("import_unit_qty"), package_qty), 0),
-                step=1,
-            )
-
-            # 기존 저장값이 있으면(같은 상품코드) 원본 행번호 디폴트로 표기
-            _src_base = detail_row if detail_row else existing_item_row
-            default_source_row = _i(_src_base.get("source_row_no"), 0)
-
-            source_row_no = st.number_input(
-                "원본 행번호",
-                min_value=0,
-                value=default_source_row,
-                step=1,
-            )
-
-            item_notes = st.text_area(
-                "특징/코멘트",
-                value=str(detail_row.get("notes") or ""),
-                height=100,
-                placeholder="예: 시트러스 향이 강함 / 래퍼 상태 좋음 / 추천 포인트 등",
-            )
-
-        with col2:
-            usd_to_krw_rate = _n(batch_row.get("usd_to_krw_rate"), USD_TO_KRW_DEFAULT)
-            php_to_krw_rate = _n(batch_row.get("php_to_krw_rate"), PHP_TO_KRW_DEFAULT)
-
-            st.number_input("달러환율", value=usd_to_krw_rate, disabled=True)
-            st.number_input("페소환율", value=php_to_krw_rate, disabled=True)
-
-            # 기존 저장값이 있으면(같은 상품코드) 현지가격 디폴트로 표기
-            _php_base = detail_row if detail_row else existing_item_row
-            default_local_box_php = _n(_php_base.get("local_box_price_php"), 0.0)
-            default_local_unit_php = _n(_php_base.get("local_unit_price_php"), 0.0)
-
-            local_box_price_php = st.number_input(
-                "현지 박스가격(PHP)",
-                min_value=0.0,
-                value=default_local_box_php,
-                step=0.01,
-            )
-
-            local_unit_price_php = st.number_input(
-                "현지 유닛가격(PHP)",
-                min_value=0.0,
-                value=default_local_unit_php,
-                step=0.01,
-            )
-
-            local_unit_price_krw_preview = local_unit_price_php * php_to_krw_rate
-            st.number_input(
-                "현지 유닛가격(원화)",
-                min_value=0.0,
-                value=float(local_unit_price_krw_preview),
-                step=1.0,
-                disabled=True,
-            )
-
-        with col3:
-            default_unit_weight = _n(
-                detail_row.get("unit_weight_g"),
-                _n(product_info.get("unit_weight_g"), 0.0)
-            )
-            unit_weight_g = st.number_input(
-                "개당 무게(g)",
-                min_value=0.0,
-                value=default_unit_weight,
-                step=0.1,
-            )
-
-            # 신규 추가 시 product_price_mst에서 가져온 값을 기본값으로 표시
-            _price_base = detail_row if detail_row else existing_item_row
-
-            retail_price_krw = st.number_input(
-                "소비자가",
-                min_value=0,
-                value=int(round(_n(_price_base.get("retail_price_krw"), 0.0))),
-                step=100,
-                format="%d",
-            )
-
-            if edit_mode == "기존 수정" and detail_row:
-                proposal_retail_default = _n(detail_row.get("proposal_retail_price_krw"), 0.0)
-            else:
-                proposal_retail_default = _n(
-                    _price_base.get("proposal_retail_price_krw"),
-                    retail_price_krw if retail_price_krw > 0 else 0.0,
-                )
-
-            supply_price_krw = st.number_input(
-                "공급가",
-                min_value=0,
-                value=int(round(_n(_price_base.get("supply_price_krw"), 0.0))),
-                step=100,
-                format="%d",
-            )
-
-            if edit_mode == "기존 수정" and detail_row:
-                store_retail_default = _n(detail_row.get("store_retail_price_krw"), 0.0)
-            else:
-                store_retail_default = _n(
-                    _price_base.get("store_retail_price_krw"),
-                    retail_price_krw if retail_price_krw > 0 else 0.0,
-                )
-
-            store_retail_price_krw = st.number_input(
-                "매장 소매가",
-                min_value=0,
-                value=int(round(store_retail_default)),
-                step=100,
-                format="%d",
-            )
-
-            proposal_retail_price_krw = st.number_input(
-                "제안소비자가",
-                min_value=0,
-                value=int(round(proposal_retail_default)),
-                step=100,
-                format="%d",
-            )
-
-        calc = _calc_values(
-            export_price_usd=export_box_price_usd,
-            discount_percent=discount_rate,
-            import_unit_qty=import_unit_qty,
-            package_qty=package_qty,
-            unit_weight_g=unit_weight_g,
-            usd_to_krw_rate=usd_to_krw_rate,
-            tax_rule=tax_rule,
-            local_box_price_php=local_box_price_php,
-            local_unit_price_php=local_unit_price_php,
-            php_to_krw_rate=php_to_krw_rate,
-            retail_price_krw=retail_price_krw,
-            supply_price_krw=supply_price_krw,
-            store_retail_price_krw=store_retail_price_krw,
+    with col1:
+        import_unit_qty = st.number_input(
+            "총 수입 개수",
+            min_value=0,
+            value=max(_i(detail_row.get("import_unit_qty"), package_qty), 0),
+            step=1,
         )
 
-        margin_krw = retail_price_krw - supply_price_krw if (retail_price_krw or supply_price_krw) else 0.0
+        # 기존 저장값이 있으면(같은 상품코드) 원본 행번호 디폴트로 표기
+        _src_base = detail_row if detail_row else existing_item_row
+        default_source_row = _i(_src_base.get("source_row_no"), 0)
 
-        st.info(
-            f"""
+        source_row_no = st.number_input(
+            "원본 행번호",
+            min_value=0,
+            value=default_source_row,
+            step=1,
+        )
+
+        item_notes = st.text_area(
+            "특징/코멘트",
+            value=str(detail_row.get("notes") or ""),
+            height=100,
+            placeholder="예: 시트러스 향이 강함 / 래퍼 상태 좋음 / 추천 포인트 등",
+        )
+
+    with col2:
+        usd_to_krw_rate = _n(batch_row.get("usd_to_krw_rate"), USD_TO_KRW_DEFAULT)
+        php_to_krw_rate = _n(batch_row.get("php_to_krw_rate"), PHP_TO_KRW_DEFAULT)
+
+        st.number_input("달러환율", value=usd_to_krw_rate, disabled=True)
+        st.number_input("페소환율", value=php_to_krw_rate, disabled=True)
+
+        # 기존 저장값이 있으면(같은 상품코드) 현지가격 디폴트로 표기
+        _php_base = detail_row if detail_row else existing_item_row
+        default_local_box_php = _n(_php_base.get("local_box_price_php"), 0.0)
+        default_local_unit_php = _n(_php_base.get("local_unit_price_php"), 0.0)
+
+        local_box_price_php = st.number_input(
+            "현지 박스가격(PHP)",
+            min_value=0.0,
+            value=default_local_box_php,
+            step=0.01,
+        )
+
+        local_unit_price_php = st.number_input(
+            "현지 유닛가격(PHP)",
+            min_value=0.0,
+            value=default_local_unit_php,
+            step=0.01,
+        )
+
+        local_unit_price_krw_preview = local_unit_price_php * php_to_krw_rate
+        st.number_input(
+            "현지 유닛가격(원화)",
+            min_value=0.0,
+            value=float(local_unit_price_krw_preview),
+            step=1.0,
+            disabled=True,
+        )
+
+    with col3:
+        default_unit_weight = _n(
+            detail_row.get("unit_weight_g"),
+            _n(product_info.get("unit_weight_g"), 0.0)
+        )
+        unit_weight_g = st.number_input(
+            "개당 무게(g)",
+            min_value=0.0,
+            value=default_unit_weight,
+            step=0.1,
+        )
+
+        # 신규 추가 시 product_price_mst에서 가져온 값을 기본값으로 표시
+        _price_base = detail_row if detail_row else existing_item_row
+
+        retail_price_krw = st.number_input(
+            "소비자가",
+            min_value=0,
+            value=int(round(_n(_price_base.get("retail_price_krw"), 0.0))),
+            step=100,
+            format="%d",
+        )
+
+        if edit_mode == "기존 수정" and detail_row:
+            proposal_retail_default = _n(detail_row.get("proposal_retail_price_krw"), 0.0)
+        else:
+            proposal_retail_default = _n(
+                _price_base.get("proposal_retail_price_krw"),
+                retail_price_krw if retail_price_krw > 0 else 0.0,
+            )
+
+        supply_price_krw = st.number_input(
+            "공급가",
+            min_value=0,
+            value=int(round(_n(_price_base.get("supply_price_krw"), 0.0))),
+            step=100,
+            format="%d",
+        )
+
+        if edit_mode == "기존 수정" and detail_row:
+            store_retail_default = _n(detail_row.get("store_retail_price_krw"), 0.0)
+        else:
+            store_retail_default = _n(
+                _price_base.get("store_retail_price_krw"),
+                retail_price_krw if retail_price_krw > 0 else 0.0,
+            )
+
+        store_retail_price_krw = st.number_input(
+            "매장 소매가",
+            min_value=0,
+            value=int(round(store_retail_default)),
+            step=100,
+            format="%d",
+        )
+
+        proposal_retail_price_krw = st.number_input(
+            "제안소비자가",
+            min_value=0,
+            value=int(round(proposal_retail_default)),
+            step=100,
+            format="%d",
+        )
+
+    calc = _calc_values(
+        export_price_usd=export_box_price_usd,
+        discount_percent=discount_rate,
+        import_unit_qty=import_unit_qty,
+        package_qty=package_qty,
+        unit_weight_g=unit_weight_g,
+        usd_to_krw_rate=usd_to_krw_rate,
+        tax_rule=tax_rule,
+        local_box_price_php=local_box_price_php,
+        local_unit_price_php=local_unit_price_php,
+        php_to_krw_rate=php_to_krw_rate,
+        retail_price_krw=retail_price_krw,
+        supply_price_krw=supply_price_krw,
+        store_retail_price_krw=store_retail_price_krw,
+    )
+
+    margin_krw = retail_price_krw - supply_price_krw if (retail_price_krw or supply_price_krw) else 0.0
+
+    st.info(
+        f"""
 세금 계산식
 - 개별소비세(개당) = 개당무게 × 개별소비세비율 = {calc['individual_tax_krw']:,.0f}원
 - 담배소비세(개당) = 개당무게 × 담배소비세비율 = {calc['tobacco_tax_krw']:,.0f}원
@@ -955,149 +954,149 @@ def render_editor(df: pd.DataFrame, selected_batch_id: int, batch_row: dict, tax
 - 세금합계(개당) = {calc['tax_total_krw']:,.0f}원
 - 세금합계(총) = 개당세금합계 × 수입개수 = {calc['tax_total_all_krw']:,.0f}원
 - 한국원가(개당) = 개당수입원가 + 개당세금합계 = {calc['korea_cost_krw']:,.0f}원
-            """
+        """
+    )
+
+    st.markdown("### 자동 계산 결과")
+    r1, r2, r3, r4 = st.columns(4)
+    r1.metric("본사 박스가격(USD)", f"{export_box_price_usd:,.2f}")
+    r2.metric("할인적용 박스가격(USD)", f"{calc['discounted_box_price_usd']:,.2f}")
+    r3.metric("개당 수출단가(USD)", f"{calc['export_unit_price_usd']:,.2f}")
+    r4.metric("개당 수입원가(KRW)", f"₩{calc['import_unit_cost_krw']:,.0f}")
+
+    r5, r6, r7, r8 = st.columns(4)
+    r5.metric("총 수입금액(KRW)", f"₩{calc['import_total_cost_krw']:,.0f}")
+    r6.metric("총 무게(g)", f"{calc['total_weight_g']:,.1f}")
+    r7.metric("공급가 VAT", f"₩{calc['supply_vat_krw']:,.0f}")
+    r8.metric("공급가 합계", f"₩{calc['supply_total_krw']:,.0f}")
+
+    r9, r10, r11, r12 = st.columns(4)
+    r9.metric("세금합계(개당)", f"₩{calc['tax_total_krw']:,.0f}")
+    r10.metric("한국원가(개당)", f"₩{calc['korea_cost_krw']:,.0f}")
+    r11.metric("소비자가 마진율", f"{calc['retail_margin_rate']*100:,.1f}%")
+    r12.metric("공급가 마진율", f"{calc['wholesale_margin_rate']*100:,.1f}%")
+
+    r13, r14, r15, r16 = st.columns(4)
+    r13.metric("개별소비세(개당)", f"₩{calc['individual_tax_krw']:,.0f}")
+    r14.metric("담배소비세(개당)", f"₩{calc['tobacco_tax_krw']:,.0f}")
+    r15.metric("지방교육세(개당)", f"₩{calc['local_education_tax_krw']:,.0f}")
+    r16.metric("국민건강증진금(개당)", f"₩{calc['health_charge_krw']:,.0f}")
+
+    r17, r18, r19 = st.columns(3)
+    r17.metric("수입부가세(개당)", f"₩{calc['import_vat_krw']:,.0f}")
+    r18.metric("매장 소매가", f"₩{calc['store_retail_price_krw']:,.0f}")
+    r19.metric("마진", f"₩{margin_krw:,.0f}")
+
+    raw_row_json = detail_row.get("raw_row_json") or ""
+    raw_formula_json = detail_row.get("raw_formula_json") or ""
+
+    c1, c2 = st.columns(2)
+    save_btn = c1.button("저장", use_container_width=True, type="primary")
+    delete_btn = c2.button("삭제", use_container_width=True)
+    # 원본행번호 중복 체크
+    dup_df = df.copy() if df is not None else pd.DataFrame()
+
+    if save_btn:
+        if not str(product_name).strip():
+            st.warning("상품명을 입력해 주세요.")
+            st.stop()
+
+        if not str(size_name).strip():
+            st.warning("사이즈를 입력해 주세요.")
+            st.stop()
+
+        if manual_input and not str(product_code).strip():
+            st.warning("직접 입력 모드에서는 상품코드를 입력해 주세요.")
+            st.stop()
+        
+        if not dup_df.empty and "source_row_no" in dup_df.columns:
+            # 기존 수정이면 자기 자신은 제외
+            if edit_mode == "기존 수정" and selected_item_id is not None and "id" in dup_df.columns:
+                dup_df = dup_df[dup_df["id"] != selected_item_id]
+
+            dup_rows = dup_df[dup_df["source_row_no"] == source_row_no]
+
+            if not dup_rows.empty:
+                dup_names = []
+                if "product_name" in dup_rows.columns and "size_name" in dup_rows.columns:
+                    dup_names = [
+                        f'{r["product_name"]} / {r["size_name"]}'
+                        for _, r in dup_rows.iterrows()
+                    ]
+
+                dup_msg = ", ".join(dup_names) if dup_names else "기존 품목"
+
+                st.error(
+                    f"원본 행번호 {source_row_no} 는 이미 사용 중입니다. "
+                    f"중복 품목: {dup_msg}. 다른 번호를 입력해 주세요."
+                )
+                st.stop()
+
+        upsert_import_item_full(
+            item_id=selected_item_id,
+            batch_id=selected_batch_id,
+            product_name=product_name,
+            size_name=size_name,
+            product_code=_none_if_blank_text(product_code),
+            export_package_type=_none_if_blank_text(export_package_type),
+            export_package_qty=None if _i(export_package_qty, 0) == 0 else _i(export_package_qty, 0),
+            export_box_price_usd=_none_if_zero_num(export_box_price_usd),
+            discounted_box_price_usd=_none_if_zero_num(calc["discounted_box_price_usd"]),
+            discount_rate=_none_if_zero_num(calc["discount_factor"]),
+            import_unit_qty=import_unit_qty,
+            export_unit_price_usd=_none_if_zero_num(calc["export_unit_price_usd"]),
+            import_unit_cost_krw=_none_if_zero_num(calc["import_unit_cost_krw"]),
+            import_total_cost_krw=_none_if_zero_num(calc["import_total_cost_krw"]),
+            unit_weight_g=_none_if_zero_num(unit_weight_g),
+            total_weight_g=_none_if_zero_num(calc["total_weight_g"]),
+            individual_tax_krw=_none_if_zero_num(calc["individual_tax_krw"]),
+            tobacco_tax_krw=_none_if_zero_num(calc["tobacco_tax_krw"]),
+            local_education_tax_krw=_none_if_zero_num(calc["local_education_tax_krw"]),
+            health_charge_krw=_none_if_zero_num(calc["health_charge_krw"]),
+            import_vat_krw=_none_if_zero_num(calc["import_vat_krw"]),
+            tax_total_krw=_none_if_zero_num(calc["tax_total_krw"]),
+            tax_total_all_krw=_none_if_zero_num(calc["tax_total_all_krw"]),
+            korea_cost_krw=_none_if_zero_num(calc["korea_cost_krw"]),
+            local_box_price_php=_none_if_zero_num(calc["local_box_price_php"]),
+            local_unit_price_php=_none_if_zero_num(calc["local_unit_price_php"]),
+            local_unit_price_krw=_none_if_zero_num(calc["local_unit_price_krw"]),
+            retail_price_krw=_none_if_zero_num(retail_price_krw),
+            proposal_retail_price_krw=_none_if_zero_num(proposal_retail_price_krw),
+            supply_price_krw=_none_if_zero_num(supply_price_krw),
+            supply_vat_krw=_none_if_zero_num(calc["supply_vat_krw"]),
+            supply_total_krw=_none_if_zero_num(calc["supply_total_krw"]),
+            retail_margin_rate=_none_if_zero_num(calc["retail_margin_rate"]),
+            wholesale_margin_rate=_none_if_zero_num(calc["wholesale_margin_rate"]),
+            store_retail_price_krw=int(store_retail_price_krw) if store_retail_price_krw else None,
+            margin_krw=_none_if_zero_num(margin_krw),
+            source_row_no=None if source_row_no == 0 else source_row_no,
+            notes=_none_if_blank_text(item_notes),
+            raw_row_json=raw_row_json,
+            raw_formula_json=raw_formula_json,
         )
 
-        st.markdown("### 자동 계산 결과")
-        r1, r2, r3, r4 = st.columns(4)
-        r1.metric("본사 박스가격(USD)", f"{export_box_price_usd:,.2f}")
-        r2.metric("할인적용 박스가격(USD)", f"{calc['discounted_box_price_usd']:,.2f}")
-        r3.metric("개당 수출단가(USD)", f"{calc['export_unit_price_usd']:,.2f}")
-        r4.metric("개당 수입원가(KRW)", f"₩{calc['import_unit_cost_krw']:,.0f}")
+        # ── product_price_mst 자동 갱신 ──────────────────────────
+        upsert_product_price_mst(
+            product_name=product_name,
+            size_name=size_name,
+            product_code=_none_if_blank_text(product_code),
+            supply_price_krw=float(supply_price_krw or 0),
+            retail_price_krw=float(retail_price_krw or 0),
+            store_retail_price_krw=float(store_retail_price_krw or 0),
+            proposal_retail_price_krw=float(proposal_retail_price_krw or 0),
+            korea_cost_krw=float(calc["korea_cost_krw"] or 0),
+            batch_id=selected_batch_id,
+            notes=_none_if_blank_text(item_notes),
+        )
+        # ─────────────────────────────────────────────────────────
 
-        r5, r6, r7, r8 = st.columns(4)
-        r5.metric("총 수입금액(KRW)", f"₩{calc['import_total_cost_krw']:,.0f}")
-        r6.metric("총 무게(g)", f"{calc['total_weight_g']:,.1f}")
-        r7.metric("공급가 VAT", f"₩{calc['supply_vat_krw']:,.0f}")
-        r8.metric("공급가 합계", f"₩{calc['supply_total_krw']:,.0f}")
+        st.success("저장되었습니다.")
+        st.rerun()
 
-        r9, r10, r11, r12 = st.columns(4)
-        r9.metric("세금합계(개당)", f"₩{calc['tax_total_krw']:,.0f}")
-        r10.metric("한국원가(개당)", f"₩{calc['korea_cost_krw']:,.0f}")
-        r11.metric("소비자가 마진율", f"{calc['retail_margin_rate']*100:,.1f}%")
-        r12.metric("공급가 마진율", f"{calc['wholesale_margin_rate']*100:,.1f}%")
-
-        r13, r14, r15, r16 = st.columns(4)
-        r13.metric("개별소비세(개당)", f"₩{calc['individual_tax_krw']:,.0f}")
-        r14.metric("담배소비세(개당)", f"₩{calc['tobacco_tax_krw']:,.0f}")
-        r15.metric("지방교육세(개당)", f"₩{calc['local_education_tax_krw']:,.0f}")
-        r16.metric("국민건강증진금(개당)", f"₩{calc['health_charge_krw']:,.0f}")
-
-        r17, r18, r19 = st.columns(3)
-        r17.metric("수입부가세(개당)", f"₩{calc['import_vat_krw']:,.0f}")
-        r18.metric("매장 소매가", f"₩{calc['store_retail_price_krw']:,.0f}")
-        r19.metric("마진", f"₩{margin_krw:,.0f}")
-
-        raw_row_json = detail_row.get("raw_row_json") or ""
-        raw_formula_json = detail_row.get("raw_formula_json") or ""
-
-        c1, c2 = st.columns(2)
-        save_btn = c1.form_submit_button("저장", use_container_width=True, type="primary")
-        delete_btn = c2.form_submit_button("삭제", use_container_width=True)
-        # 원본행번호 중복 체크
-        dup_df = df.copy() if df is not None else pd.DataFrame()
-
-        if save_btn:
-            if not str(product_name).strip():
-                st.warning("상품명을 입력해 주세요.")
-                st.stop()
-
-            if not str(size_name).strip():
-                st.warning("사이즈를 입력해 주세요.")
-                st.stop()
-
-            if manual_input and not str(product_code).strip():
-                st.warning("직접 입력 모드에서는 상품코드를 입력해 주세요.")
-                st.stop()
-            
-            if not dup_df.empty and "source_row_no" in dup_df.columns:
-                # 기존 수정이면 자기 자신은 제외
-                if edit_mode == "기존 수정" and selected_item_id is not None and "id" in dup_df.columns:
-                    dup_df = dup_df[dup_df["id"] != selected_item_id]
-
-                dup_rows = dup_df[dup_df["source_row_no"] == source_row_no]
-
-                if not dup_rows.empty:
-                    dup_names = []
-                    if "product_name" in dup_rows.columns and "size_name" in dup_rows.columns:
-                        dup_names = [
-                            f'{r["product_name"]} / {r["size_name"]}'
-                            for _, r in dup_rows.iterrows()
-                        ]
-
-                    dup_msg = ", ".join(dup_names) if dup_names else "기존 품목"
-
-                    st.error(
-                        f"원본 행번호 {source_row_no} 는 이미 사용 중입니다. "
-                        f"중복 품목: {dup_msg}. 다른 번호를 입력해 주세요."
-                    )
-                    st.stop()
-
-            upsert_import_item_full(
-                item_id=selected_item_id,
-                batch_id=selected_batch_id,
-                product_name=product_name,
-                size_name=size_name,
-                product_code=_none_if_blank_text(product_code),
-                export_package_type=_none_if_blank_text(export_package_type),
-                export_package_qty=None if _i(export_package_qty, 0) == 0 else _i(export_package_qty, 0),
-                export_box_price_usd=_none_if_zero_num(export_box_price_usd),
-                discounted_box_price_usd=_none_if_zero_num(calc["discounted_box_price_usd"]),
-                discount_rate=_none_if_zero_num(calc["discount_factor"]),
-                import_unit_qty=import_unit_qty,
-                export_unit_price_usd=_none_if_zero_num(calc["export_unit_price_usd"]),
-                import_unit_cost_krw=_none_if_zero_num(calc["import_unit_cost_krw"]),
-                import_total_cost_krw=_none_if_zero_num(calc["import_total_cost_krw"]),
-                unit_weight_g=_none_if_zero_num(unit_weight_g),
-                total_weight_g=_none_if_zero_num(calc["total_weight_g"]),
-                individual_tax_krw=_none_if_zero_num(calc["individual_tax_krw"]),
-                tobacco_tax_krw=_none_if_zero_num(calc["tobacco_tax_krw"]),
-                local_education_tax_krw=_none_if_zero_num(calc["local_education_tax_krw"]),
-                health_charge_krw=_none_if_zero_num(calc["health_charge_krw"]),
-                import_vat_krw=_none_if_zero_num(calc["import_vat_krw"]),
-                tax_total_krw=_none_if_zero_num(calc["tax_total_krw"]),
-                tax_total_all_krw=_none_if_zero_num(calc["tax_total_all_krw"]),
-                korea_cost_krw=_none_if_zero_num(calc["korea_cost_krw"]),
-                local_box_price_php=_none_if_zero_num(calc["local_box_price_php"]),
-                local_unit_price_php=_none_if_zero_num(calc["local_unit_price_php"]),
-                local_unit_price_krw=_none_if_zero_num(calc["local_unit_price_krw"]),
-                retail_price_krw=_none_if_zero_num(retail_price_krw),
-                proposal_retail_price_krw=_none_if_zero_num(proposal_retail_price_krw),
-                supply_price_krw=_none_if_zero_num(supply_price_krw),
-                supply_vat_krw=_none_if_zero_num(calc["supply_vat_krw"]),
-                supply_total_krw=_none_if_zero_num(calc["supply_total_krw"]),
-                retail_margin_rate=_none_if_zero_num(calc["retail_margin_rate"]),
-                wholesale_margin_rate=_none_if_zero_num(calc["wholesale_margin_rate"]),
-                store_retail_price_krw=int(store_retail_price_krw) if store_retail_price_krw else None,
-                margin_krw=_none_if_zero_num(margin_krw),
-                source_row_no=None if source_row_no == 0 else source_row_no,
-                notes=_none_if_blank_text(item_notes),
-                raw_row_json=raw_row_json,
-                raw_formula_json=raw_formula_json,
-            )
-
-            # ── product_price_mst 자동 갱신 ──────────────────────────
-            upsert_product_price_mst(
-                product_name=product_name,
-                size_name=size_name,
-                product_code=_none_if_blank_text(product_code),
-                supply_price_krw=float(supply_price_krw or 0),
-                retail_price_krw=float(retail_price_krw or 0),
-                store_retail_price_krw=float(store_retail_price_krw or 0),
-                proposal_retail_price_krw=float(proposal_retail_price_krw or 0),
-                korea_cost_krw=float(calc["korea_cost_krw"] or 0),
-                batch_id=selected_batch_id,
-                notes=_none_if_blank_text(item_notes),
-            )
-            # ─────────────────────────────────────────────────────────
-
-            st.success("저장되었습니다.")
+    if delete_btn:
+        if selected_item_id is None:
+            st.warning("신규 추가 상태에서는 삭제할 항목이 없습니다.")
+        else:
+            delete_import_item(selected_item_id)
+            st.success("삭제되었습니다.")
             st.rerun()
-
-        if delete_btn:
-            if selected_item_id is None:
-                st.warning("신규 추가 상태에서는 삭제할 항목이 없습니다.")
-            else:
-                delete_import_item(selected_item_id)
-                st.success("삭제되었습니다.")
-                st.rerun()

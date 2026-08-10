@@ -352,7 +352,7 @@ def _tab_stock_out():
 
             note = st.text_area(
                 "비고",
-                value=selected.get("note", "") if selected else "",
+                value=(selected.get("note") or "") if selected else "",
                 height=80,
                 placeholder="예: 신규 거래처 시음용, 행사 증정 등",
             )

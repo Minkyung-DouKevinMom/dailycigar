@@ -562,6 +562,40 @@ def render_manual_input(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
 
     now_ts = pd.Timestamp.now()
 
+    # 실판매금액 계산에 쓰이는 입력값들은 form 밖에서 즉시 반영되도록 처리
+    # (form 안에 있으면 저장 전까지 값이 바뀌어도 아래 실판매금액 미리보기가 갱신되지 않았음)
+    c10, c11, c12 = st.columns(3)
+    qty = c10.number_input("수량", min_value=0, value=1, step=1, key="manual_qty")
+    unit_price = c11.number_input("상품가격", min_value=0, value=0, step=1000, key="manual_unit_price")
+    option_price = c12.number_input("옵션가격", min_value=0, value=0, step=1000, key="manual_option_price")
+
+    c13, c14 = st.columns(2)
+    product_discount_amt = c13.number_input(
+        "상품할인 금액", min_value=0, value=0, step=1000, key="manual_product_discount_amt"
+    )
+    order_discount_amt = c14.number_input(
+        "주문할인 금액", min_value=0, value=0, step=1000, key="manual_order_discount_amt"
+    )
+
+    auto_calc = st.checkbox("실판매금액 자동계산", value=True, key="manual_auto_calc")
+
+    if auto_calc:
+        net_sales_amount = max(
+            0.0,
+            float(qty) * (float(unit_price) + float(option_price))
+            - float(product_discount_amt)
+            - float(order_discount_amt),
+        )
+        st.info(f"실판매금액: {net_sales_amount:,.0f}원")
+    else:
+        net_sales_amount = st.number_input(
+            "실판매금액 (할인, 옵션 포함)",
+            min_value=0.0,
+            value=0.0,
+            step=1000.0,
+            key="manual_net_sales_amount",
+        )
+
     with st.form("retail_manual_input_form", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
         sale_date = c1.date_input("주문기준일자", value=now_ts.date())
@@ -578,15 +612,7 @@ def render_manual_input(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
         option_name = c8.text_input("옵션", value="")
         taxable_yn = c9.selectbox("과세여부", ["과세", "면세", "비과세", ""], index=0)
 
-        c10, c11, c12 = st.columns(3)
-        qty = c10.number_input("수량", min_value=0, value=1, step=1)
-        unit_price = c11.number_input("상품가격", min_value=0, value=0, step=1000)
-        option_price = c12.number_input("옵션가격", min_value=0, value=0, step=1000)
-
-        c13, c14, c15 = st.columns(3)
-        product_discount_amt = c13.number_input("상품할인 금액", min_value=0, value=0, step=1000)
-        order_discount_amt = c14.number_input("주문할인 금액", min_value=0, value=0, step=1000)
-        vat_amount = c15.number_input("부가세액", min_value=0, value=0, step=100)
+        vat_amount = st.number_input("부가세액", min_value=0, value=0, step=100)
 
         c16, c17 = st.columns(2)
         product_discount_name = c16.text_input("상품할인", value="")
@@ -597,24 +623,6 @@ def render_manual_input(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
             value=False,
             help="체크 시 이 매출은 택배 발송 건으로 기록됩니다 (delivery_yn = 'Y').",
         )
-
-        auto_calc = st.checkbox("실판매금액 자동계산", value=True)
-
-        if auto_calc:
-            net_sales_amount = max(
-                0.0,
-                float(qty) * (float(unit_price) + float(option_price))
-                - float(product_discount_amt)
-                - float(order_discount_amt),
-            )
-            st.info(f"실판매금액: {net_sales_amount:,.0f}원")
-        else:
-            net_sales_amount = st.number_input(
-                "실판매금액 (할인, 옵션 포함)",
-                min_value=0.0,
-                value=0.0,
-                step=1000.0,
-            )
 
         submitted = st.form_submit_button("직접 입력 저장", type="primary")
 
@@ -840,9 +848,48 @@ def render_edit_delete(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
         v = sel.get(col, default)
         return default if pd.isna(v) else v
 
-    with st.form("ed_edit_form", clear_on_submit=False):
-        st.markdown(f"**ID {selected_id} 수정**")
+    # 실판매금액 계산에 쓰이는 입력값들은 form 밖에서 즉시 반영되도록 처리
+    # (form 안에 있으면 저장 전까지 값이 바뀌어도 아래 실판매금액 미리보기가 갱신되지 않았음)
+    # key에 selected_id를 넣어, 수정할 행을 바꿀 때 이전 행 값이 남아있지 않도록 함
+    st.markdown(f"**ID {selected_id} 수정**")
 
+    e10, e11, e12 = st.columns(3)
+    ed_qty = e10.number_input("수량", value=int(_val("qty", 1)), step=1, key=f"ed_qty_{selected_id}")
+    ed_unit_price = e11.number_input(
+        "상품가격", value=int(_val("unit_price", 0)), step=1000, key=f"ed_unit_price_{selected_id}"
+    )
+    ed_option_price = e12.number_input(
+        "옵션가격", value=int(_val("option_price", 0)), step=1000, key=f"ed_option_price_{selected_id}"
+    )
+
+    e13, e14 = st.columns(2)
+    ed_product_discount_amt = e13.number_input(
+        "상품할인 금액", value=int(_val("product_discount_amt", 0)), step=1000,
+        key=f"ed_product_discount_amt_{selected_id}",
+    )
+    ed_order_discount_amt = e14.number_input(
+        "주문할인 금액", value=int(_val("order_discount_amt", 0)), step=1000,
+        key=f"ed_order_discount_amt_{selected_id}",
+    )
+
+    ed_auto_calc = st.checkbox("실판매금액 자동계산", value=True, key=f"ed_auto_calc_{selected_id}")
+    if ed_auto_calc:
+        # 취소/환불 행은 음수 금액일 수 있으므로 클램프하지 않음
+        ed_net = (
+            float(ed_qty) * (float(ed_unit_price) + float(ed_option_price))
+            - float(ed_product_discount_amt)
+            - float(ed_order_discount_amt)
+        )
+        st.info(f"실판매금액: {ed_net:,.0f}원")
+    else:
+        ed_net = st.number_input(
+            "실판매금액 (할인, 옵션 포함)",
+            value=float(_val("net_sales_amount", 0)),
+            step=1000.0,
+            key=f"ed_net_manual_{selected_id}",
+        )
+
+    with st.form("ed_edit_form", clear_on_submit=False):
         e1, e2, e3 = st.columns(3)
         ed_sale_date = e1.date_input(
             "주문기준일자",
@@ -876,15 +923,7 @@ def render_edit_delete(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
             else 0,
         )
 
-        e10, e11, e12 = st.columns(3)
-        ed_qty = e10.number_input("수량", value=int(_val("qty", 1)), step=1)
-        ed_unit_price = e11.number_input("상품가격", value=int(_val("unit_price", 0)), step=1000)
-        ed_option_price = e12.number_input("옵션가격", value=int(_val("option_price", 0)), step=1000)
-
-        e13, e14, e15 = st.columns(3)
-        ed_product_discount_amt = e13.number_input("상품할인 금액", value=int(_val("product_discount_amt", 0)), step=1000)
-        ed_order_discount_amt = e14.number_input("주문할인 금액", value=int(_val("order_discount_amt", 0)), step=1000)
-        ed_vat_amount = e15.number_input("부가세액", value=int(_val("vat_amount", 0)), step=100)
+        ed_vat_amount = st.number_input("부가세액", value=int(_val("vat_amount", 0)), step=100)
 
         e16, e17 = st.columns(2)
         ed_product_discount_name = e16.text_input("상품할인명", value=str(_val("product_discount_name", "")))
@@ -943,22 +982,6 @@ def render_edit_delete(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
             value=(str(_val("delivery_yn", "N")).upper() == "Y"),
             help="체크 시 택배판매로 기록됩니다 (delivery_yn = 'Y').",
         )
-
-        ed_auto_calc = st.checkbox("실판매금액 자동계산", value=True)
-        if ed_auto_calc:
-            # 취소/환불 행은 음수 금액일 수 있으므로 클램프하지 않음
-            ed_net = (
-                float(ed_qty) * (float(ed_unit_price) + float(ed_option_price))
-                - float(ed_product_discount_amt)
-                - float(ed_order_discount_amt)
-            )
-            st.info(f"실판매금액: {ed_net:,.0f}원")
-        else:
-            ed_net = st.number_input(
-                "실판매금액 (할인, 옵션 포함)",
-                value=float(_val("net_sales_amount", 0)),
-                step=1000.0,
-            )
 
         submitted = st.form_submit_button("수정 저장", type="primary")
 
