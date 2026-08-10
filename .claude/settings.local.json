@@ -100,7 +100,17 @@
       "Bash(python -m py_compile modules/finance/finance_sales_profit.py modules/dashboard/dashboard_finance_summary.py)",
       "Bash(python -m pyflakes modules/finance/finance_sales_profit.py modules/dashboard/dashboard_finance_summary.py)",
       "Bash(python -m py_compile modules/finance/finance_expense_management.py)",
-      "Bash(python -m pyflakes modules/finance/finance_expense_management.py)"
+      "Bash(python -m pyflakes modules/finance/finance_expense_management.py)",
+      "Bash(python3 -c \"import streamlit; print\\(streamlit.__version__\\)\")",
+      "Bash(python3 -m vulture modules pages db.py --min-confidence 80)",
+      "Bash(python -m py_compile modules/management/partner_grade_history_management.py)",
+      "Bash(python -m pyflakes modules/management/partner_grade_history_management.py)",
+      "Bash(python -m py_compile modules/master/non_cigar_product_mst.py)",
+      "Bash(python -m pyflakes modules/master/non_cigar_product_mst.py)",
+      "Bash(python -m py_compile modules/master/product_price_mst.py)",
+      "Bash(python -m pyflakes modules/master/product_price_mst.py)",
+      "Bash(python -m py_compile modules/management/inventory_management.py modules/inventory/import_detail.py modules/management/partner_grade_history_management.py modules/management/retail_upload.py modules/master/non_cigar_product_mst.py modules/master/product_price_mst.py)",
+      "Bash(python -m pyflakes modules/management/inventory_management.py modules/inventory/import_detail.py modules/management/partner_grade_history_management.py modules/management/retail_upload.py modules/master/non_cigar_product_mst.py modules/master/product_price_mst.py)"
     ]
   }
 }
