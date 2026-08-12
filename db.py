@@ -2008,6 +2008,140 @@ def init_label_size_mst_table():
     """)
 
 
+# 라벨 사이즈 산정 작업(제품별 규격표) 기준, 박스 치수(L, W, H, cm)로 그룹을 확정한 참고 목록.
+# product_mst.box_width_cm/box_depth_cm/box_height_cm 이 아래 L/W/H와 정확히 일치하는 제품에만
+# 자동으로 라벨 그룹을 매칭한다 (박스 크기가 다르면 자동 매칭하지 않고 사람이 직접 확인/등록).
+_LABEL_GROUP_REFERENCE_BOXES = [
+    # (참고용 품목명, L, W, H, group_code)
+    ("ALHRobustoStd25", 26.7, 14.5, 5, "A"),
+    ("TABRobustoStd25", 26.7, 14.5, 5, "A"),
+    ("DJUAniversarioRobustoStd25", 26.7, 14.5, 5, "A"),
+    ("DJUAniversarioCoronasStd25", 23.2, 15.5, 4.6, "A"),
+    ("1881CoronasStd25", 23.2, 15.5, 4.6, "A"),
+    ("TABEdicionMaduroCoronasStd25", 23.2, 15.5, 4.6, "A"),
+    ("ALHCoronasStd25", 23.2, 15.5, 4.6, "A"),
+    ("DJUCoronasBN25", 18.4, 17.9, 6.9, "A"),
+    ("TABEdicionMaduroRobustoStd25", 28.7, 14.5, 6, "A"),
+    ("1881PeriqueBoldTorpedo Mad.Std25", 28.6, 14.4, 5.9, "A"),
+    ("1881PeriqueBoldTorpedoStd25", 28.6, 14.4, 5.9, "A"),
+    ("1881PeriqueRobustoStd25", 28.6, 14.4, 5.9, "A"),
+    ("TAB. CoronasStd25", 23.5, 15.5, 4.5, "A"),
+    ("DJURobustoBn25", 19.6, 16.2, 7, "A"),
+    ("TABHalfCoronasStd25", 20, 11.2, 4, "B"),
+    ("TAB. HalfCoronasStd25", 19.8, 11.4, 4, "B"),
+    ("1881PeriqueShortRobustoMaduroStd25", 28.7, 12, 5.8, "C"),
+    ("DJUHalfCoronasBn25", 21, 13, 4.4, "C"),
+    ("TABCoronasLargasStd25", 24.5, 18.7, 4.9, "E"),
+    ("ALHCoronasSumatra7Std25", 24.3, 18.8, 4.8, "E"),
+    ("1881TorpedoStd25", 28.1, 17.2, 5.5, "E"),
+    ("1881TraditionalStd25", 22.6, 20.2, 4.5, "E"),
+    ("DJUAniv.ToroStd25", 27.9, 16.7, 5.1, "E"),
+    ("TABEd.MaduropyramidStd25", 28.5, 14.4, 5.9, "E"),
+    ("TABEd.MaduroToroStd26", 27.9, 16.7, 5.1, "E"),
+    ("TABFlorfinaCigarillosChocolateTin10s", 9.6, 9.9, 1.2, "F"),
+    ("Flavored Tin10s", 9, 9.9, 1.2, "F"),
+    ("1881RobustoStd25", 26.7, 14.2, 4.7, "G"),
+    ("TAB. RobustoStd25", 26.5, 14.2, 4.7, "G"),
+    ("ALHRobustoStd25 (신규-Daily4)", 26.4, 14.2, 4.8, "G"),
+]
+
+
+def _dims_close(a, b, tol=0.01):
+    return a is not None and b is not None and abs(a - b) <= tol
+
+
+def preview_label_group_auto_matches():
+    """
+    product_mst의 박스 치수(box_width_cm/box_depth_cm/box_height_cm)가
+    _LABEL_GROUP_REFERENCE_BOXES 의 L/W/H와 정확히(오차 0.01cm 이내) 일치하는 제품을 찾는다.
+    실제 저장은 하지 않고 미리보기 결과만 반환한다.
+
+    반환: dict(matches=[...], conflicts=[...])
+      - matches: 이미 label_group_code가 비어있고, 유일한 그룹으로 매칭되는 건
+      - conflicts: 매칭은 되지만 이미 다른 그룹이 저장되어 있어 자동 갱신하지 않는 건
+    """
+    ensure_product_mst_label_group_column()
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, product_name, size_name, product_code,
+                   box_width_cm, box_depth_cm, box_height_cm, label_group_code
+            FROM product_mst
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    matches, conflicts = [], []
+    for r in rows:
+        w, d, h = r["box_width_cm"], r["box_depth_cm"], r["box_height_cm"]
+        if not w or not d or not h:
+            continue
+
+        found_groups = set()
+        ref_names = []
+        for ref_name, L, W, H, g in _LABEL_GROUP_REFERENCE_BOXES:
+            if _dims_close(w, L) and _dims_close(d, W) and _dims_close(h, H):
+                found_groups.add(g)
+                ref_names.append(ref_name)
+
+        if len(found_groups) != 1:
+            continue  # 매칭 없음, 또는 애매(여러 그룹과 동시 일치)하면 건너뜀
+
+        matched_group = next(iter(found_groups))
+        item = {
+            "id": r["id"],
+            "product_name": r["product_name"],
+            "size_name": r["size_name"],
+            "product_code": r["product_code"],
+            "box_width_cm": w,
+            "box_depth_cm": d,
+            "box_height_cm": h,
+            "matched_group": matched_group,
+            "reference_items": ref_names,
+            "current_group": r["label_group_code"],
+        }
+        if not r["label_group_code"]:
+            matches.append(item)
+        elif r["label_group_code"] != matched_group:
+            conflicts.append(item)
+
+    return {"matches": matches, "conflicts": conflicts}
+
+
+def apply_label_group_auto_matches(product_ids=None):
+    """
+    preview_label_group_auto_matches() 의 matches 중 product_ids(없으면 전체)에 대해
+    실제로 product_mst.label_group_code 를 저장한다. 이미 그룹이 지정된 제품은 건드리지 않는다.
+    반환: 실제로 갱신된 (id, product_name, size_name, matched_group) 목록
+    """
+    preview = preview_label_group_auto_matches()
+    targets = preview["matches"]
+    if product_ids is not None:
+        id_set = set(product_ids)
+        targets = [t for t in targets if t["id"] in id_set]
+
+    applied = []
+    if not targets:
+        return applied
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        for t in targets:
+            cur.execute(
+                "UPDATE product_mst SET label_group_code = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (t["matched_group"], t["id"]),
+            )
+            applied.append((t["id"], t["product_name"], t["size_name"], t["matched_group"]))
+        conn.commit()
+    finally:
+        conn.close()
+
+    return applied
+
+
 # ──────────────────────────────────────────────
 # 2. 재고 현황 조회
 # ──────────────────────────────────────────────
