@@ -711,7 +711,38 @@ def delete_blend_profile(row_id):
     sql = "DELETE FROM blend_profile_mst WHERE id = ?"
     execute(sql, [row_id])
 
+def ensure_product_mst_label_group_column():
+    """
+    product_mst에 label_group_code 컬럼이 없으면 추가.
+    label_size_mst.group_code를 참조하는 느슨한 참조(soft FK)이며,
+    기존 행은 모두 NULL(미지정)로 유지된다.
+    """
+    conn = get_conn()
+    try:
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(product_mst)").fetchall()}
+        if "label_group_code" not in cols:
+            conn.execute("ALTER TABLE product_mst ADD COLUMN label_group_code TEXT")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_all_label_groups_for_select():
+    """라벨 그룹 선택용 목록: [{group_code, group_name}, ...] (사용중인 그룹만)"""
+    if not table_exists("label_size_mst"):
+        return []
+    sql = """
+        SELECT group_code, group_name
+        FROM label_size_mst
+        WHERE is_active = 1
+        ORDER BY group_code
+    """
+    df = run_query(sql)
+    return df.to_dict("records") if df is not None else []
+
+
 def get_all_product_mst_for_edit():
+    ensure_product_mst_label_group_column()
     sql = """
         SELECT
             id,
@@ -726,6 +757,7 @@ def get_all_product_mst_for_edit():
             box_width_cm,
             box_depth_cm,
             box_height_cm,
+            label_group_code,
             created_at,
             updated_at
         FROM product_mst
@@ -747,7 +779,9 @@ def update_product_mst_by_id(
     box_width_cm,
     box_depth_cm,
     box_height_cm,
+    label_group_code=None,
 ):
+    ensure_product_mst_label_group_column()
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -765,6 +799,7 @@ def update_product_mst_by_id(
             box_width_cm = ?,
             box_depth_cm = ?,
             box_height_cm = ?,
+            label_group_code = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
         """,
@@ -780,6 +815,7 @@ def update_product_mst_by_id(
             box_width_cm,
             box_depth_cm,
             box_height_cm,
+            label_group_code,
             row_id,
         ),
     )
@@ -799,7 +835,9 @@ def insert_product_mst(
     box_width_cm,
     box_depth_cm,
     box_height_cm,
+    label_group_code=None,
 ):
+    ensure_product_mst_label_group_column()
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -815,8 +853,9 @@ def insert_product_mst(
             unit_weight_g,
             box_width_cm,
             box_depth_cm,
-            box_height_cm
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            box_height_cm,
+            label_group_code
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             product_name,
@@ -830,6 +869,7 @@ def insert_product_mst(
             box_width_cm,
             box_depth_cm,
             box_height_cm,
+            label_group_code,
         ),
     )
     conn.commit()
