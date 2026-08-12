@@ -6,6 +6,9 @@ from db import (
     update_product_mst_by_id,
     insert_product_mst,
     delete_product_mst_by_id,
+    get_all_label_groups_for_select,
+    preview_label_group_auto_matches,
+    apply_label_group_auto_matches,
 )
 
 
@@ -22,6 +25,7 @@ DISPLAY_COLUMNS = [
     "box_width_cm",
     "box_depth_cm",
     "box_height_cm",
+    "label_group_code",
 ]
 
 COLUMN_RENAME = {
@@ -37,7 +41,27 @@ COLUMN_RENAME = {
     "box_width_cm": "박스가로(cm)",
     "box_depth_cm": "박스세로(cm)",
     "box_height_cm": "박스높이(cm)",
+    "label_group_code": "라벨그룹",
 }
+
+NO_GROUP_LABEL = "(미지정)"
+
+
+def _label_group_options():
+    """[(표시 라벨, group_code), ...] 목록. 맨 앞은 항상 미지정(None) 옵션."""
+    groups = get_all_label_groups_for_select()
+    options = [(NO_GROUP_LABEL, None)]
+    for g in groups:
+        name = g.get("group_name") or ""
+        options.append((f"{g['group_code']} - {name}" if name else g["group_code"], g["group_code"]))
+    return options
+
+
+def _label_group_index(options, current_code):
+    for idx, (_, code) in enumerate(options):
+        if code == current_code:
+            return idx
+    return 0
 
 
 def _null(v):
@@ -194,6 +218,18 @@ def _render_edit_form(df: pd.DataFrame):
                 format="%.2f",
             )
 
+        label_group_options = _label_group_options()
+        current_group_code = selected_row.get("label_group_code")
+        current_group_code = current_group_code if pd.notna(current_group_code) else None
+        label_group_choice = st.selectbox(
+            "라벨 그룹 (흡연경고 라벨 사이즈)",
+            options=label_group_options,
+            index=_label_group_index(label_group_options, current_group_code),
+            format_func=lambda opt: opt[0],
+            help="기준정보 > 라벨 사이즈 그룹관리에서 등록한 그룹 중 이 제품에 적용할 그룹을 선택하세요.",
+        )
+        label_group_code = label_group_choice[1]
+
         delete_yn = st.checkbox("이 상품 삭제", value=False)
 
         btn_col1, btn_col2 = st.columns(2)
@@ -220,6 +256,7 @@ def _render_edit_form(df: pd.DataFrame):
             box_width_cm=_safe_float(box_width_cm),
             box_depth_cm=_safe_float(box_depth_cm),
             box_height_cm=_safe_float(box_height_cm),
+            label_group_code=label_group_code,
         )
         st.success("수정되었습니다.")
         st.rerun()
@@ -268,6 +305,16 @@ def _render_insert_form():
         with col11:
             box_height_cm = st.number_input("박스높이(cm)", value=0.0, step=0.01, format="%.2f")
 
+        label_group_options = _label_group_options()
+        label_group_choice = st.selectbox(
+            "라벨 그룹 (흡연경고 라벨 사이즈)",
+            options=label_group_options,
+            index=0,
+            format_func=lambda opt: opt[0],
+            help="기준정보 > 라벨 사이즈 그룹관리에서 등록한 그룹 중 이 제품에 적용할 그룹을 선택하세요.",
+        )
+        label_group_code = label_group_choice[1]
+
         submitted_insert = st.form_submit_button("신규 등록", use_container_width=True, type="primary")
 
     if submitted_insert:
@@ -287,9 +334,71 @@ def _render_insert_form():
             box_width_cm=_safe_float(box_width_cm),
             box_depth_cm=_safe_float(box_depth_cm),
             box_height_cm=_safe_float(box_height_cm),
+            label_group_code=label_group_code,
         )
         st.success("신규 등록되었습니다.")
         st.rerun()
+
+
+def _render_label_group_auto_match():
+    preview = preview_label_group_auto_matches()
+    matches = preview["matches"]
+    conflicts = preview["conflicts"]
+
+    with st.expander(
+        f"라벨 그룹 자동 매칭 (박스 사이즈 일치 항목만) — 신규 매칭 가능 {len(matches)}건",
+        expanded=False,
+    ):
+        st.caption(
+            "박스가로/세로/높이가 라벨 사이즈 산정 시 확인된 규격과 정확히 일치하는 제품에만 "
+            "그룹을 자동으로 채웁니다. 박스 사이즈가 조금이라도 다르면 매칭하지 않으며, "
+            "이미 라벨 그룹이 지정된 제품은 건드리지 않습니다."
+        )
+
+        if not matches and not conflicts:
+            st.info("자동 매칭 대상이 없습니다.")
+            return
+
+        if matches:
+            preview_df = pd.DataFrame(
+                [
+                    {
+                        "ID": m["id"],
+                        "상품명": m["product_name"],
+                        "사이즈": m["size_name"],
+                        "박스(cm)": f"{m['box_width_cm']}×{m['box_depth_cm']}×{m['box_height_cm']}",
+                        "매칭 그룹": m["matched_group"],
+                    }
+                    for m in matches
+                ]
+            )
+            st.dataframe(preview_df, use_container_width=True, hide_index=True)
+
+            if st.button(f"위 {len(matches)}건 라벨 그룹 자동 저장", type="primary"):
+                applied = apply_label_group_auto_matches([m["id"] for m in matches])
+                st.success(f"{len(applied)}건 저장되었습니다.")
+                st.rerun()
+        else:
+            st.info("새로 매칭할 항목이 없습니다 (이미 대상 제품은 모두 그룹이 지정되어 있습니다).")
+
+        if conflicts:
+            st.warning(
+                f"박스 사이즈는 일치하지만 이미 다른 그룹이 지정되어 있어 건너뛴 항목 {len(conflicts)}건 "
+                "(필요하면 수정 화면에서 직접 변경하세요)"
+            )
+            conflict_df = pd.DataFrame(
+                [
+                    {
+                        "ID": c["id"],
+                        "상품명": c["product_name"],
+                        "사이즈": c["size_name"],
+                        "현재 그룹": c["current_group"],
+                        "박스 사이즈상 매칭 그룹": c["matched_group"],
+                    }
+                    for c in conflicts
+                ]
+            )
+            st.dataframe(conflict_df, use_container_width=True, hide_index=True)
 
 
 def render():
@@ -298,6 +407,8 @@ def render():
     df = _load_df()
 
     filtered_df = _render_view_table(df)
+
+    _render_label_group_auto_match()
     st.divider()
 
     tab1, tab2 = st.tabs(["기존 데이터 수정/삭제", "신규 데이터 추가"])
