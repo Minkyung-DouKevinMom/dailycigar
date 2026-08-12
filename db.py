@@ -1935,6 +1935,39 @@ def init_gift_package_component_table():
     """)
 
 
+def init_label_size_mst_table():
+    """흡연경고 라벨 그룹별 규격(label_size_mst) 테이블이 없으면 생성.
+
+    Front & Back(전후면)/Side(측면) 라벨 사이즈를 그룹(A, B, C ...) 단위로 관리한다.
+    - fb_*  : 전후면 라벨 규격 (이미지 전체 / 그림 영역 / 문구 영역)
+    - side_*: 측면 라벨 규격 (이미지 전체 / 문구 영역)
+    - border_mm / margin_mm : 사이즈 산정 시 반영한 인쇄 테두리, 박스 가장자리 여유값
+    - rule1_pct / rule1_1_pct / rule2_pct : 그룹 내 최대(worst-case) 박스 기준 규정 충족률(참고용)
+    """
+    execute("""
+        CREATE TABLE IF NOT EXISTS label_size_mst (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_code         TEXT    NOT NULL UNIQUE,
+            group_name         TEXT,
+            fb_image_l_cm      REAL    NOT NULL DEFAULT 0,
+            fb_image_w_cm      REAL    NOT NULL DEFAULT 0,
+            fb_picture_l_cm    REAL    DEFAULT 0,
+            fb_message_l_cm    REAL    DEFAULT 0,
+            side_image_l_cm    REAL    NOT NULL DEFAULT 0,
+            side_message_l_cm  REAL    DEFAULT 0,
+            border_mm          REAL    DEFAULT 2,
+            margin_mm          REAL    DEFAULT 2,
+            rule1_pct          REAL,
+            rule1_1_pct        REAL,
+            rule2_pct          REAL,
+            is_active          INTEGER NOT NULL DEFAULT 1,
+            notes              TEXT,
+            created_at         TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at         TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
 # ──────────────────────────────────────────────
 # 2. 재고 현황 조회
 # ──────────────────────────────────────────────
