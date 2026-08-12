@@ -113,7 +113,9 @@
       "Bash(python -m pyflakes modules/management/inventory_management.py modules/inventory/import_detail.py modules/management/partner_grade_history_management.py modules/management/retail_upload.py modules/master/non_cigar_product_mst.py modules/master/product_price_mst.py)",
       "Bash(git checkout *)",
       "Bash(git commit *)",
-      "Bash(python -m py_compile db.py modules/master/label_size_mst.py modules/master/product_mst.py \"pages/2_기준정보.py\")"
+      "Bash(python -m py_compile db.py modules/master/label_size_mst.py modules/master/product_mst.py \"pages/2_기준정보.py\")",
+      "Bash(git fetch *)",
+      "Bash(git merge *)"
     ]
   }
 }
