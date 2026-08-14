@@ -259,6 +259,7 @@ def load_partners(conn) -> pd.DataFrame:
         "join_date",
         "grade_acquired_date",
         "notes",
+        "program_exempt_yn",
     ]
     final_select = []
     for col in select_cols:
@@ -510,6 +511,23 @@ def compute_tiered_order_pricing(
       적용한 뒤 합산한다 (기존 정밀 배분 기능은 그대로 유지).
     """
     ensure_partner_grade_tables(conn)
+
+    # 파트너 프로그램 제외 대상(이미 별도 협의로 할인 중이라 등급 할인을 중복 적용하면
+    # 안 되는 업체): 매출 누적액과 무관하게 항상 기본 단가/공급가를 그대로 사용한다.
+    exempt_df = pd.read_sql(
+        "SELECT program_exempt_yn FROM partner_mst WHERE id = ?", conn, params=[partner_id]
+    )
+    if not exempt_df.empty and int(exempt_df.iloc[0]["program_exempt_yn"] or 0) == 1:
+        return {
+            "blended_unit_price": base_unit_price,
+            "blended_supply_price": base_supply_price,
+            "segments": [],
+            "cumulative_before": 0.0,
+            "cumulative_after": 0.0,
+            "discount_ratio": 0.0,
+            "final_grade_code": None,
+        }
+
     thresholds = load_partner_grade_thresholds(conn)
 
     if thresholds.empty or qty is None or float(qty) <= 0:
@@ -1225,6 +1243,7 @@ def insert_partner(
     join_date: str,
     current_grade_code: str,
     notes: str,
+    program_exempt_yn: int = 0,
 ):
     cur = conn.cursor()
     cur.execute(
@@ -1242,8 +1261,9 @@ def insert_partner(
             status,
             current_grade_code,
             grade_acquired_date,
-            notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            notes,
+            program_exempt_yn
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             partner_name,
@@ -1259,6 +1279,7 @@ def insert_partner(
             current_grade_code if current_grade_code else None,
             join_date if current_grade_code else None,
             notes,
+            int(program_exempt_yn or 0),
         ),
     )
     conn.commit()
@@ -1279,6 +1300,7 @@ def update_partner(
     current_grade_code: str,
     notes: str,
     status: str,
+    program_exempt_yn: int = 0,
 ):
     cur = conn.cursor()
     cur.execute(
@@ -1297,6 +1319,7 @@ def update_partner(
             current_grade_code = ?,
             notes = ?,
             status = ?,
+            program_exempt_yn = ?,
             grade_acquired_date = CASE
                 WHEN COALESCE(?, '') <> '' AND COALESCE(current_grade_code, '') <> COALESCE(?, '') THEN ?
                 ELSE grade_acquired_date
@@ -1316,6 +1339,7 @@ def update_partner(
             current_grade_code if current_grade_code else None,
             notes,
             status,
+            int(program_exempt_yn or 0),
             current_grade_code if current_grade_code else None,
             current_grade_code if current_grade_code else None,
             join_date,
@@ -1613,6 +1637,11 @@ def render_partner_registration(conn):
                 index=status_list.index(default_status) if default_status in status_list else 0,
             )
             notes = st.text_area("비고", value="" if selected_row is None else str(selected_row.get("notes", "") or ""))
+            program_exempt_yn = st.checkbox(
+                "파트너 프로그램 제외 (등급별 자동 할인 적용 안 함)",
+                value=False if selected_row is None else bool(int(selected_row.get("program_exempt_yn") or 0)),
+                help="이미 별도 협의로 할인 중인 업체 등, 매출 누적액과 무관하게 등급 할인을 적용하면 안 되는 거래처에 체크하세요.",
+            )
 
         submitted = st.form_submit_button(
             "거래처 등록" if mode == "신규 등록" else "거래처 수정 저장",
@@ -1647,6 +1676,7 @@ def render_partner_registration(conn):
                     join_date=join_date,
                     current_grade_code=current_grade_code.strip() if current_grade_code else "",
                     notes=notes.strip(),
+                    program_exempt_yn=int(program_exempt_yn),
                 )
                 st.success(f"거래처가 등록되었습니다: {partner_name}")
             else:
@@ -1674,6 +1704,7 @@ def render_partner_registration(conn):
                     current_grade_code=current_grade_code.strip() if current_grade_code else "",
                     notes=notes.strip(),
                     status=status,
+                    program_exempt_yn=int(program_exempt_yn),
                 )
                 st.success(f"거래처 정보가 수정되었습니다: {partner_name}")
 
@@ -1700,6 +1731,7 @@ def render_partner_registration(conn):
             "contact_name": "담당자명",
             "email": "이메일",
             "address": "주소",
+            "program_exempt_yn": "프로그램제외",
         })
 
         if "등급업 이후 공급가합계" in view_df.columns:
@@ -1709,6 +1741,13 @@ def render_partner_registration(conn):
                 .map(lambda x: f"{x:,.0f}")
             )
 
+        if "프로그램제외" in view_df.columns:
+            view_df["프로그램제외"] = (
+                pd.to_numeric(view_df["프로그램제외"], errors="coerce")
+                .fillna(0)
+                .map(lambda x: "Y" if int(x) == 1 else "")
+            )
+
         preferred_order = [
             "거래처명",
             "유형",
@@ -1716,6 +1755,7 @@ def render_partner_registration(conn):
             "등급(자동계산)",
             "등급만료일",
             "등급(수동값)",
+            "프로그램제외",
             "상태",
             "가입일",
             "등급업일",
