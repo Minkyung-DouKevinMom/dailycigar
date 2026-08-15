@@ -362,7 +362,7 @@ def ensure_partner_grade_tables(conn):
                 grade_code TEXT PRIMARY KEY,
                 grade_name TEXT,
                 min_purchase_amount REAL DEFAULT 0,
-                estimate_discount_rate REAL DEFAULT 0,
+                discount_rate REAL DEFAULT 0,
                 sort_order INTEGER
             )
             """
@@ -371,17 +371,18 @@ def ensure_partner_grade_tables(conn):
 
     cnt = pd.read_sql("SELECT COUNT(*) AS cnt FROM partner_grade_mst", conn)["cnt"].iloc[0]
     if int(cnt) == 0:
+        # discount_rate는 퍼센트 표기(정수)로 시드 - 실제 운영 테이블과 동일한 관례
         default_grades = [
-            ("bronze", "Bronze", 0, 0.0, 1),
-            ("silver", "Silver", 6_000_000, 0.05, 2),
-            ("gold", "Gold", 12_000_000, 0.10, 3),
-            ("platinum", "Platinum", 36_000_000, 0.15, 4),
-            ("diamond", "Diamond", 60_000_000, 0.20, 5),
+            ("bronze", "Bronze", 0, 0, 1),
+            ("silver", "Silver", 6_000_000, 5, 2),
+            ("gold", "Gold", 12_000_000, 10, 3),
+            ("platinum", "Platinum", 36_000_000, 15, 4),
+            ("diamond", "Diamond", 60_000_000, 20, 5),
         ]
         cur.executemany(
             """
             INSERT INTO partner_grade_mst
-                (grade_code, grade_name, min_purchase_amount, estimate_discount_rate, sort_order)
+                (grade_code, grade_name, min_purchase_amount, discount_rate, sort_order)
             VALUES (?, ?, ?, ?, ?)
             """,
             default_grades,
@@ -393,8 +394,6 @@ def load_partner_grade_thresholds(conn) -> pd.DataFrame:
     """
     등급코드 -> 최소 누적 구매액(min_purchase_amount) / 할인율, 임계값 오름차순 정렬.
 
-    할인율 컬럼은 실제 값이 채워진 'discount_rate'를 우선 사용한다
-    ('estimate_discount_rate'는 값이 비어(0) 있는 미사용 placeholder 컬럼인 경우가 있어 후순위).
     저장된 값이 1보다 크면(예: 5, 10, 20 = 퍼센트 표기) 자동으로 100으로 나눠 소수(0.05 등)로 정규화한다.
     """
     if not table_exists(conn, "partner_grade_mst"):
@@ -403,7 +402,7 @@ def load_partner_grade_thresholds(conn) -> pd.DataFrame:
     cols = get_table_columns(conn, "partner_grade_mst")
     code_col = find_existing_column(cols, ["grade_code", "partner_grade_code", "code"])
     min_col = find_existing_column(cols, ["min_purchase_amount", "min_amount", "threshold_amount"])
-    rate_col = find_existing_column(cols, ["discount_rate", "estimate_discount_rate"])
+    rate_col = find_existing_column(cols, ["discount_rate"])
     if not code_col or not min_col or not rate_col:
         return pd.DataFrame(columns=["grade_code", "min_purchase_amount", "discount_rate"])
 

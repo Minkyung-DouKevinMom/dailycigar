@@ -124,6 +124,10 @@ def get_remark_col():
     return find_first_existing(["remark", "remarks", "memo", "note", "benefit_desc"])
 
 
+def get_min_purchase_col():
+    return find_first_existing(["min_purchase_amount", "min_amount", "threshold_amount"])
+
+
 def get_created_col():
     return find_first_existing(["created_at", "created_dt", "reg_date", "created_date"])
 
@@ -150,6 +154,9 @@ def map_display_headers(df: pd.DataFrame):
         "margin_rate": "마진율(%)",
         "wholesale_rate": "도매율(%)",
         "rate": "비율(%)",
+        "min_purchase_amount": "등급달성금액",
+        "min_amount": "등급달성금액",
+        "threshold_amount": "등급달성금액",
         "sort_order": "정렬순서",
         "display_order": "정렬순서",
         "order_no": "정렬순서",
@@ -221,6 +228,7 @@ def build_form_values(selected_row: dict | None = None):
     code_col = get_code_col()
     name_col = get_name_col()
     rate_col = get_rate_col()
+    min_purchase_col = get_min_purchase_col()
     sort_col = get_sort_col()
     use_col = get_use_col()
     remark_col = get_remark_col()
@@ -241,17 +249,32 @@ def build_form_values(selected_row: dict | None = None):
         if rate_col:
             default_val = selected_row.get(rate_col, 0)
             try:
-                num_default = float(default_val) if default_val not in [None, ""] else 0.0
+                num_default = int(round(float(default_val))) if default_val not in [None, ""] else 0
             except Exception:
-                num_default = 0.0
+                num_default = 0
 
             values[rate_col] = st.number_input(
                 "할인율(%)",
-                value=float(num_default),
-                step=0.1,
-                format="%.2f",
+                value=int(num_default),
+                step=1,
+                format="%d",
             )
             rendered_cols.add(rate_col)
+
+        if min_purchase_col:
+            default_val = selected_row.get(min_purchase_col, 0)
+            try:
+                num_default = int(round(float(default_val))) if default_val not in [None, ""] else 0
+            except Exception:
+                num_default = 0
+
+            values[min_purchase_col] = st.number_input(
+                "등급달성금액",
+                value=int(num_default),
+                step=1000,
+                format="%d",
+            )
+            rendered_cols.add(min_purchase_col)
 
         if use_col:
             current = str(selected_row.get(use_col, "Y")).upper()
@@ -499,6 +522,9 @@ def render():
             st.markdown("---")
             st.markdown("#### 전체 등급 목록")
             view_df = map_display_headers(df.copy())
+            for int_col in ["할인율(%)", "등급달성금액"]:
+                if int_col in view_df.columns:
+                    view_df[int_col] = pd.to_numeric(view_df[int_col], errors="coerce").fillna(0).astype(int)
             st.dataframe(view_df, use_container_width=True, hide_index=True)
 
     # -------------------------

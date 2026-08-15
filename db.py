@@ -1654,8 +1654,7 @@ def _get_realtime_partner_grade_discount(partner_id):
     - '오늘 기준 유효한' partner_grade_history 행을 그대로 신뢰해서 등급을 가져온다
       (별도로 누적액을 재계산하지 않는다 — 등급 갱신은 별도 프로세스가 담당).
     - 이력이 없으면 partner_mst.current_grade_code로 폴백한다.
-    - 할인율은 실값이 채워진 'discount_rate' 컬럼을 비어있는(0) placeholder일 수 있는
-      'estimate_discount_rate'보다 우선 사용하고, 값이 1보다 크면(5, 10처럼 퍼센트
+    - 할인율은 'discount_rate' 컬럼값을 사용하고, 값이 1보다 크면(5, 10처럼 퍼센트
       표기) 100으로 나눠 소수(0.05, 0.10)로 정규화한다.
     """
     conn = get_conn()
@@ -1692,9 +1691,7 @@ def _get_realtime_partner_grade_discount(partner_id):
             return grade_code, 0.0
 
         cols = _get_table_columns(conn, "partner_grade_mst")
-        rate_col = "discount_rate" if "discount_rate" in cols else (
-            "estimate_discount_rate" if "estimate_discount_rate" in cols else None
-        )
+        rate_col = "discount_rate" if "discount_rate" in cols else None
         if not rate_col:
             return grade_code, 0.0
 
