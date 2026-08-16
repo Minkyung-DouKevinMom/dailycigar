@@ -1171,7 +1171,28 @@ def render():
                 with st.expander("상품코드 미매핑 목록", expanded=False):
                     st.dataframe(unmapped_df, use_container_width=True)
 
-            if st.button("업로드 실행", type="primary"):
+            required_fail_count = (
+                validation["주문번호 누락"]
+                + validation["판매일시 누락"]
+                + validation["상품코드 누락"]
+                + validation["수량 오류"]
+                + validation["판매금액 오류"]
+            )
+            unmapped_count = validation["상품코드 미매핑"]
+            can_upload = required_fail_count == 0 and unmapped_count == 0
+
+            if not can_upload:
+                reasons = []
+                if required_fail_count > 0:
+                    reasons.append(f"필수값 오류 {required_fail_count:,}건")
+                if unmapped_count > 0:
+                    reasons.append(f"상품코드 미매핑 {unmapped_count:,}건")
+                st.error(
+                    "업로드를 진행할 수 없습니다: " + ", ".join(reasons)
+                    + ". 데이터를 수정한 후 다시 업로드해주세요."
+                )
+
+            if st.button("업로드 실행", type="primary", disabled=not can_upload):
                 cur = conn.cursor()
                 inserted = 0
                 skipped = 0
