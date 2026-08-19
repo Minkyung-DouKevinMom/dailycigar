@@ -521,6 +521,137 @@ def calc_insights(df: pd.DataFrame) -> list[str]:
     return messages[:3]
 
 
+def calc_product_sales_highlights(
+    df: pd.DataFrame, today: pd.Timestamp, top_n: int = 2
+) -> tuple[list[dict], list[dict]]:
+    """
+    최근 30일 vs 이전 30일, 상품별(소매+도매 합산) 매출 증감 Top N.
+    반환: (증가 Top N, 감소 Top N) - 각 원소는
+    {"product_name", "recent", "prior", "diff"}
+    """
+    if df.empty:
+        return [], []
+
+    recent_start = today - pd.Timedelta(days=29)
+    prior_end = today - pd.Timedelta(days=30)
+    prior_start = today - pd.Timedelta(days=59)
+
+    recent = df[(df["dt"] >= recent_start) & (df["dt"] <= today)]
+    prior = df[(df["dt"] >= prior_start) & (df["dt"] <= prior_end)]
+
+    def agg(d: pd.DataFrame) -> pd.Series:
+        d = d[d["product_name"].astype(str).str.strip() != ""]
+        if d.empty:
+            return pd.Series(dtype=float)
+        return d.groupby("product_name")["sales_amount"].sum()
+
+    recent_g = agg(recent)
+    prior_g = agg(prior)
+    names = set(recent_g.index) | set(prior_g.index)
+
+    rows = []
+    for name in names:
+        r = float(recent_g.get(name, 0))
+        p = float(prior_g.get(name, 0))
+        rows.append({"product_name": name, "recent": r, "prior": p, "diff": r - p})
+
+    gainers = sorted([r for r in rows if r["diff"] > 0], key=lambda x: x["diff"], reverse=True)[:top_n]
+    decliners = sorted([r for r in rows if r["diff"] < 0], key=lambda x: x["diff"])[:top_n]
+    return gainers, decliners
+
+
+# =========================
+# 장기 미판매 재고
+# =========================
+def get_current_stock_df(conn) -> pd.DataFrame:
+    if not has_table(conn, "product_mst"):
+        return pd.DataFrame(columns=["product_code", "product_name", "size_name", "current_stock"])
+
+    sql = """
+        SELECT
+            p.product_code,
+            p.product_name,
+            p.size_name,
+            COALESCE(si.total_in, 0)
+            - COALESCE(rs.retail_out, 0)
+            - COALESCE(ws.wholesale_out, 0)
+            - COALESCE(so.other_out, 0) AS current_stock
+        FROM product_mst p
+        LEFT JOIN (
+            SELECT i.product_code, SUM(i.import_unit_qty) AS total_in
+            FROM import_item i JOIN import_batch b ON i.batch_id = b.id
+            WHERE b.import_date <= date('now')
+            GROUP BY i.product_code
+        ) si ON p.product_code = si.product_code
+        LEFT JOIN (
+            SELECT product_code, SUM(qty) AS retail_out
+            FROM retail_sales WHERE category = 'CIGAR'
+            GROUP BY product_code
+        ) rs ON p.product_code = rs.product_code
+        LEFT JOIN (
+            SELECT pm.product_code, SUM(ws.qty) AS wholesale_out
+            FROM wholesale_sales ws JOIN product_mst pm ON ws.cigar_product_id = pm.id
+            WHERE ws.item_type = 'cigar'
+            GROUP BY pm.product_code
+        ) ws ON p.product_code = ws.product_code
+        LEFT JOIN (
+            SELECT product_code, SUM(qty) AS other_out
+            FROM stock_out GROUP BY product_code
+        ) so ON p.product_code = so.product_code
+        WHERE p.use_yn = 'Y'
+    """
+    try:
+        df = pd.read_sql_query(sql, conn)
+    except Exception:
+        return pd.DataFrame(columns=["product_code", "product_name", "size_name", "current_stock"])
+
+    df["current_stock"] = pd.to_numeric(df["current_stock"], errors="coerce").fillna(0)
+    return df
+
+
+def get_last_sale_date_map(conn) -> pd.DataFrame:
+    if not has_table(conn, "retail_sales") and not has_table(conn, "wholesale_sales"):
+        return pd.DataFrame(columns=["product_code", "last_sale_date"])
+
+    sql = """
+        SELECT product_code, MAX(sale_date) AS last_sale_date FROM (
+            SELECT product_code, sale_date FROM retail_sales WHERE category = 'CIGAR'
+            UNION ALL
+            SELECT pm.product_code, w.sale_date
+            FROM wholesale_sales w JOIN product_mst pm ON w.cigar_product_id = pm.id
+            WHERE w.item_type = 'cigar'
+        )
+        GROUP BY product_code
+    """
+    try:
+        return pd.read_sql_query(sql, conn)
+    except Exception:
+        return pd.DataFrame(columns=["product_code", "last_sale_date"])
+
+
+def calc_long_unsold_stock(conn, today: pd.Timestamp, threshold_days: int = 60) -> pd.DataFrame:
+    """현재고 > 0 인데 threshold_days일 이상(또는 판매 이력 자체가 없는) 상품 목록."""
+    stock_df = get_current_stock_df(conn)
+    if stock_df.empty:
+        return pd.DataFrame()
+
+    in_stock = stock_df[stock_df["current_stock"] > 0].copy()
+    if in_stock.empty:
+        return pd.DataFrame()
+
+    last_sale_df = get_last_sale_date_map(conn)
+    merged = in_stock.merge(last_sale_df, on="product_code", how="left")
+    merged["last_sale_date"] = pd.to_datetime(merged["last_sale_date"], errors="coerce")
+    merged["days_since_sale"] = (today - merged["last_sale_date"]).dt.days
+    merged["days_since_sale"] = merged["days_since_sale"].fillna(999999).astype(int)
+
+    flagged = merged[merged["days_since_sale"] >= threshold_days].copy()
+    flagged = flagged.sort_values("days_since_sale", ascending=False)
+    return flagged[
+        ["product_code", "product_name", "size_name", "current_stock", "last_sale_date", "days_since_sale"]
+    ]
+
+
 # =========================
 # 화면
 # =========================
@@ -713,6 +844,66 @@ try:
     for msg in calc_insights(sales_df):
         st.text(f"• {msg}")
     st.caption(f"비교기간: 최근 30일 vs 이전 30일  |  {insight_period_start.strftime('%Y-%m-%d')} ~ {today.strftime('%Y-%m-%d')}")
+
+    st.markdown("**📈 상품별 매출 증감 하이라이트**")
+    st.caption("최근 30일 vs 이전 30일, 소매+도매 합산 상품별 매출")
+    gainers, decliners = calc_product_sales_highlights(sales_df, today)
+    if not gainers and not decliners:
+        st.info("비교할 데이터가 아직 충분하지 않습니다.")
+    else:
+        hc1, hc2 = st.columns(2)
+        with hc1:
+            st.markdown("🔼 매출 증가 Top")
+            if gainers:
+                for g in gainers:
+                    pct_str = f"{g['diff'] / g['prior'] * 100:+.0f}%" if g["prior"] > 0 else "신규 판매"
+                    st.text(
+                        f"• {g['product_name']}: {fmt_krw(g['prior'])} → {fmt_krw(g['recent'])} "
+                        f"({pct_str}, +{fmt_krw(g['diff'])})"
+                    )
+            else:
+                st.caption("증가한 상품이 없습니다.")
+        with hc2:
+            st.markdown("🔽 매출 감소 Top")
+            if decliners:
+                for d in decliners:
+                    pct_str = f"{d['diff'] / d['prior'] * 100:+.0f}%" if d["prior"] > 0 else "-"
+                    st.text(
+                        f"• {d['product_name']}: {fmt_krw(d['prior'])} → {fmt_krw(d['recent'])} "
+                        f"({pct_str}, {fmt_krw(d['diff'])})"
+                    )
+            else:
+                st.caption("감소한 상품이 없습니다.")
+
+    st.divider()
+
+    st.markdown("**📦 장기 미판매 재고**")
+    st.caption("현재고가 있으나 60일 이상 판매 이력이 없는 상품 (판매 이력이 아예 없는 상품 포함)")
+    unsold_df = calc_long_unsold_stock(conn, today, threshold_days=60)
+    if unsold_df.empty:
+        st.success("60일 이상 미판매 재고가 없습니다.")
+    else:
+        view = unsold_df.head(10).copy()
+        view["last_sale_date"] = view["last_sale_date"].apply(
+            lambda x: x.strftime("%Y-%m-%d") if pd.notna(x) else "판매이력없음"
+        )
+        view["days_since_sale"] = view["days_since_sale"].apply(
+            lambda x: "판매이력없음" if x >= 999999 else f"{x}일"
+        )
+        st.dataframe(
+            view.rename(columns={
+                "product_code": "상품코드",
+                "product_name": "상품명",
+                "size_name": "사이즈",
+                "current_stock": "현재고",
+                "last_sale_date": "마지막 판매일",
+                "days_since_sale": "경과일수",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+        if len(unsold_df) > 10:
+            st.caption(f"총 {len(unsold_df):,}건 중 상위 10건 표시")
 
     st.divider()
 
