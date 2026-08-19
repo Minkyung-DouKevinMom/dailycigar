@@ -19,10 +19,13 @@ def render():
         st.info("blend_profile_mst 데이터가 없습니다.")
         df = pd.DataFrame(columns=[
             "id", "product_name", "flavor", "strength", "guide",
-            "description", "detail_description", "created_at", "updated_at",
+            "description", "detail_description",
+            "wrapper_origin", "binder_origin", "filler_origin",
+            "created_at", "updated_at",
         ])
 
-    for col in ("description", "detail_description"):
+    for col in ("description", "detail_description",
+                "wrapper_origin", "binder_origin", "filler_origin"):
         if col not in df.columns:
             df[col] = None
 
@@ -45,7 +48,10 @@ def render():
     if "delete_yn" not in work_df.columns:
         work_df.insert(0, "delete_yn", False)
 
-    display_columns = ["delete_yn", "id", "product_name", "flavor", "strength", "guide"]
+    display_columns = [
+        "delete_yn", "id", "product_name", "flavor", "strength", "guide",
+        "wrapper_origin", "binder_origin", "filler_origin",
+    ]
 
     edited_df = st.data_editor(
         work_df[display_columns].copy(),
@@ -59,6 +65,9 @@ def render():
             "flavor": st.column_config.TextColumn("향/노트", width="medium"),
             "strength": st.column_config.TextColumn("강도", width="small"),
             "guide": st.column_config.TextColumn("가이드", width="large"),
+            "wrapper_origin": st.column_config.TextColumn("래퍼 원산지", width="small"),
+            "binder_origin": st.column_config.TextColumn("바인더 원산지", width="small"),
+            "filler_origin": st.column_config.TextColumn("필러 원산지", width="small"),
         },
         disabled=["id"],
         key="blend_profile_editor",
@@ -178,12 +187,16 @@ def render():
                 guide            = null_if_blank(row.get("guide"))
                 description      = null_if_blank(row.get("description"))
                 detail_desc      = null_if_blank(row.get("detail_description"))
+                wrapper_origin   = null_if_blank(row.get("wrapper_origin"))
+                binder_origin    = null_if_blank(row.get("binder_origin"))
+                filler_origin    = null_if_blank(row.get("filler_origin"))
 
                 is_blank_new_row = (
                     pd.isna(row_id)
                     and not product_name and not flavor
                     and not strength and not guide
                     and not description and not detail_desc
+                    and not wrapper_origin and not binder_origin and not filler_origin
                 )
                 if is_blank_new_row:
                     continue
@@ -206,6 +219,9 @@ def render():
                         guide=guide,
                         description=description,
                         detail_description=detail_desc,
+                        wrapper_origin=wrapper_origin,
+                        binder_origin=binder_origin,
+                        filler_origin=filler_origin,
                     )
                     update_count += 1
                 else:
@@ -216,6 +232,9 @@ def render():
                         guide=guide,
                         description=description,
                         detail_description=detail_desc,
+                        wrapper_origin=wrapper_origin,
+                        binder_origin=binder_origin,
+                        filler_origin=filler_origin,
                     )
                     insert_count += 1
 

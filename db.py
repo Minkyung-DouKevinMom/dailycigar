@@ -650,6 +650,9 @@ def get_all_blend_profile():
         guide,
         description,
         detail_description,
+        wrapper_origin,
+        binder_origin,
+        filler_origin,
         created_at,
         updated_at
     FROM blend_profile_mst
@@ -667,6 +670,9 @@ def get_blend_profile_detail(row_id):
         strength,
         guide,
         description,
+        wrapper_origin,
+        binder_origin,
+        filler_origin,
         created_at,
         updated_at
     FROM blend_profile_mst
@@ -675,36 +681,50 @@ def get_blend_profile_detail(row_id):
     return run_query(sql, [row_id])
 
 
-def upsert_blend_profile(product_name, flavor, strength, guide, description=None):
+def upsert_blend_profile(product_name, flavor, strength, guide, description=None,
+                          detail_description=None, wrapper_origin=None,
+                          binder_origin=None, filler_origin=None):
     sql = """
     INSERT INTO blend_profile_mst (
         product_name,
         flavor,
         strength,
         guide,
-        description
-    ) VALUES (?, ?, ?, ?, ?)
+        description,
+        detail_description,
+        wrapper_origin,
+        binder_origin,
+        filler_origin
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(product_name) DO UPDATE SET
         flavor = excluded.flavor,
         strength = excluded.strength,
         guide = excluded.guide,
         description = excluded.description,
+        detail_description = excluded.detail_description,
+        wrapper_origin = excluded.wrapper_origin,
+        binder_origin = excluded.binder_origin,
+        filler_origin = excluded.filler_origin,
         updated_at = CURRENT_TIMESTAMP
     """
-    execute(sql, [product_name, flavor, strength, guide, description])
+    execute(sql, [product_name, flavor, strength, guide, description,
+                  detail_description, wrapper_origin, binder_origin, filler_origin])
 
 
 def update_blend_profile(row_id, product_name, flavor, strength, guide,
-                          description=None, detail_description=None):
+                          description=None, detail_description=None,
+                          wrapper_origin=None, binder_origin=None, filler_origin=None):
     sql = """
     UPDATE blend_profile_mst
     SET product_name=?, flavor=?, strength=?, guide=?,
         description=?, detail_description=?,
+        wrapper_origin=?, binder_origin=?, filler_origin=?,
         updated_at=CURRENT_TIMESTAMP
     WHERE id=?
     """
     execute(sql, [product_name, flavor, strength, guide,
-                  description, detail_description, row_id])
+                  description, detail_description,
+                  wrapper_origin, binder_origin, filler_origin, row_id])
 
 
 def delete_blend_profile(row_id):
