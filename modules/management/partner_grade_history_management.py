@@ -57,8 +57,10 @@ def get_partners(conn, keyword: str = "") -> pd.DataFrame:
 def get_grade_mst(conn) -> pd.DataFrame:
     if not table_exists(conn, "partner_grade_mst"):
         return pd.DataFrame(columns=["grade_code", "grade_name"])
+    cols = pd.read_sql_query("PRAGMA table_info(partner_grade_mst)", conn)["name"].tolist()
+    order_by = "sort_order, grade_code" if "sort_order" in cols else "grade_code"
     df = pd.read_sql_query(
-        "SELECT * FROM partner_grade_mst ORDER BY grade_code",
+        f"SELECT * FROM partner_grade_mst ORDER BY {order_by}",
         conn,
     )
     return df
