@@ -1876,6 +1876,9 @@ def get_store_menu_view(batch_id=None, keyword=""):
         COALESCE(bp.flavor, '') AS flavor,
         COALESCE(bp.strength, '') AS strength,
         COALESCE(bp.guide, '') AS guide,
+        COALESCE(bp.wrapper_origin, '') AS wrapper_origin,
+        COALESCE(bp.binder_origin, '') AS binder_origin,
+        COALESCE(bp.filler_origin, '') AS filler_origin,
         COALESCE(bp.id, 999999) AS profile_id,
         COALESCE(ii.source_row_no, 999999) AS source_row_no,
         ib.import_date

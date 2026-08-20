@@ -215,12 +215,21 @@ def draw_grouped_menu_card(group_df: pd.DataFrame, card_no: int):
 
     product_name = safe_text(first_row.get("product_name"))
     flavor = safe_text(first_row.get("flavor"), "")
-    guide  = safe_text(first_row.get("guide"), "")
+    wrapper_origin = safe_text(first_row.get("wrapper_origin"), "")
+    binder_origin = safe_text(first_row.get("binder_origin"), "")
+    filler_origin = safe_text(first_row.get("filler_origin"), "")
 
     if not flavor:
         flavor = "등록된 특징 정보가 없습니다."
-    if not guide:
-        guide = "등록된 가이드 정보가 없습니다."
+
+    origin_parts = []
+    if wrapper_origin:
+        origin_parts.append(f"래퍼: {wrapper_origin}")
+    if binder_origin:
+        origin_parts.append(f"바인더: {binder_origin}")
+    if filler_origin:
+        origin_parts.append(f"필러: {filler_origin}")
+    origin_text = " / ".join(origin_parts) if origin_parts else "등록된 원산지 정보가 없습니다."
 
     size_df = build_size_table_df(group_df)
 
@@ -230,8 +239,8 @@ def draw_grouped_menu_card(group_df: pd.DataFrame, card_no: int):
         st.caption("특징")
         st.write(flavor)
 
-        st.caption("가이드")
-        st.write(guide)
+        st.caption("원산지")
+        st.write(origin_text)
 
         st.caption("사이즈별 정보")
 
@@ -333,7 +342,8 @@ def render():
         list_cols = [
             "product_name", "size_name", "strength", "length_mm", "ring_gauge",
             "store_retail_price_krw", "proposal_retail_price_krw",
-            "flavor", "guide", "profile_id", "source_row_no",
+            "flavor", "wrapper_origin", "binder_origin", "filler_origin",
+            "profile_id", "source_row_no",
         ]
         list_df = df[[c for c in list_cols if c in df.columns]].copy()
         list_df = list_df.rename(columns={
@@ -345,7 +355,9 @@ def render():
             "store_retail_price_krw":   "매장운영가",
             "proposal_retail_price_krw":"소비자제안가",
             "flavor":                   "특징",
-            "guide":                    "가이드",
+            "wrapper_origin":           "래퍼 원산지",
+            "binder_origin":            "바인더 원산지",
+            "filler_origin":            "필러 원산지",
             "profile_id":               "프로파일ID",
             "source_row_no":            "원본행순서",
         })
