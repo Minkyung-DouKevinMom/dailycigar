@@ -303,7 +303,12 @@ def render():
             )
 
             auto_end_preview = add_12_months_minus_1day(achieved_date_preview)
-            st.text_input("자동 종료일", value=str(auto_end_preview), disabled=True)
+            st.text_input(
+                "자동 종료일",
+                value=str(auto_end_preview),
+                disabled=True,
+                key=f"pgh_auto_end_preview_upgrade_{partner_id}",
+            )
 
             with st.form("grade_upgrade_form"):
                 selected_grade_label = st.selectbox("새 등급", grade_labels, index=default_grade_idx)
@@ -386,7 +391,12 @@ def render():
                     key=f"pgh_start_date_{st.session_state.pgh_selected_history_id or 'new'}",
                 )
                 auto_end_date = add_12_months_minus_1day(start_date)
-                st.text_input("자동 종료일", value=str(auto_end_date), disabled=True)
+                st.text_input(
+                    "자동 종료일",
+                    value=str(auto_end_date),
+                    disabled=True,
+                    key=f"pgh_auto_end_date_history_{st.session_state.pgh_selected_history_id or 'new'}",
+                )
 
                 with st.form(form_key):
                     grade_label = st.selectbox(
