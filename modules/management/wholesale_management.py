@@ -2788,6 +2788,255 @@ def render_daily_sales_summary(conn):
         )
 
 
+def render_partner_sales_summary(conn):
+    st.markdown("### 거래처별 매출 현황")
+    st.caption("기간을 설정하면 해당 기간 동안 거래처별 매출/이익을 한눈에 비교할 수 있습니다.")
+
+    df = load_wholesale_sales_for_grid(conn)
+    if df.empty:
+        st.info("등록된 도매 판매 이력이 없습니다.")
+        return
+
+    work_df = df.copy()
+    work_df["sale_date"] = pd.to_datetime(work_df["sale_date"], errors="coerce")
+    work_df = work_df.dropna(subset=["sale_date"])
+
+    if work_df.empty:
+        st.info("유효한 판매일자 데이터가 없습니다.")
+        return
+
+    for col in ["qty", "supply_amount", "vat_amount", "total_amount_vat", "profit_amount"]:
+        if col in work_df.columns:
+            work_df[col] = pd.to_numeric(work_df[col], errors="coerce").fillna(0)
+        else:
+            work_df[col] = 0
+
+    work_df["_row_count"] = 1
+    work_df["partner_name"] = work_df.get("partner_name", "").fillna("(거래처 미상)")
+
+    today = pd.Timestamp.today().date()
+    min_date = work_df["sale_date"].min().date()
+    max_date = work_df["sale_date"].max().date()
+    default_from = max(min_date, (pd.Timestamp.today() - pd.Timedelta(days=30)).date())
+    default_to = max(max_date, today)
+
+    with st.expander("검색 / 필터", expanded=True):
+        f1, f2 = st.columns(2)
+        with f1:
+            d1, d2 = st.columns(2)
+            with d1:
+                date_from = st.date_input(
+                    "조회 시작일",
+                    value=default_from,
+                    key="partner_summary_date_from",
+                )
+            with d2:
+                date_to = st.date_input(
+                    "조회 종료일",
+                    value=default_to,
+                    key="partner_summary_date_to",
+                )
+        with f2:
+            item_type_filter = st.selectbox(
+                "상품구분",
+                ["전체", "시가", "시가 외"],
+                key="partner_summary_item_type",
+            )
+            sort_metric_label = st.selectbox(
+                "정렬 기준",
+                ["공급가액", "부가세포함 금액", "이익"],
+                key="partner_summary_sort_metric",
+            )
+
+    metric_col_map = {
+        "공급가액": "supply_amount",
+        "부가세포함 금액": "total_amount_vat",
+        "이익": "profit_amount",
+    }
+    sort_col = metric_col_map[sort_metric_label]
+
+    if date_from > date_to:
+        st.error("조회 시작일은 종료일보다 빠르거나 같아야 합니다.")
+        return
+
+    filtered = work_df[
+        (work_df["sale_date"].dt.date >= date_from)
+        & (work_df["sale_date"].dt.date <= date_to)
+    ].copy()
+
+    if item_type_filter != "전체" and "item_type_label" in filtered.columns:
+        filtered = filtered[filtered["item_type_label"] == item_type_filter]
+
+    if filtered.empty:
+        st.warning("검색 결과가 없습니다.")
+        return
+
+    total_supply = float(filtered["supply_amount"].sum())
+    total_with_vat = float(filtered["total_amount_vat"].sum())
+    total_profit = float(filtered["profit_amount"].sum())
+    total_qty = int(filtered["qty"].sum())
+    partner_count = filtered["partner_name"].nunique()
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("거래처 수", f"{partner_count:,}곳")
+    m2.metric("총 수량", f"{total_qty:,}")
+    m3.metric("공급가액 합계", f"₩{total_supply:,.0f}")
+    m4.metric("이익 합계", f"₩{total_profit:,.0f}")
+
+    st.divider()
+
+    # 거래처별 집계
+    partner_df = (
+        filtered.groupby("partner_name", as_index=False)
+        .agg(
+            transaction_count=("_row_count", "sum"),
+            qty=("qty", "sum"),
+            supply_amount=("supply_amount", "sum"),
+            vat_amount=("vat_amount", "sum"),
+            total_amount_vat=("total_amount_vat", "sum"),
+            profit_amount=("profit_amount", "sum"),
+        )
+        .sort_values(sort_col, ascending=False)
+        .reset_index(drop=True)
+    )
+    partner_df["profit_margin_pct"] = partner_df.apply(
+        lambda r: (r["profit_amount"] / r["supply_amount"] * 100) if r["supply_amount"] else 0,
+        axis=1,
+    )
+
+    # 그래프 (상위 거래처 랭킹)
+    st.markdown(f"#### 거래처별 {sort_metric_label} 순위")
+
+    top_n = min(20, len(partner_df))
+    chart_df = partner_df.head(top_n).sort_values(sort_col, ascending=True)
+
+    import plotly.graph_objects as go
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            x=chart_df[sort_col],
+            y=chart_df["partner_name"],
+            orientation="h",
+            marker_color="#4C78A8",
+            hovertemplate="%{y}<br>₩%{x:,.0f}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        height=max(320, 28 * top_n),
+        margin=dict(l=10, r=10, t=10, b=10),
+        xaxis=dict(title=sort_metric_label, fixedrange=True, tickformat=",.0f"),
+        yaxis=dict(title=None, fixedrange=True),
+        showlegend=False,
+        dragmode=False,
+    )
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={
+            "displayModeBar": False,
+            "scrollZoom": False,
+            "doubleClick": False,
+            "staticPlot": False,
+        },
+    )
+
+    st.divider()
+
+    # 거래처별 표
+    st.markdown("#### 거래처별 매출 집계")
+
+    display_df = partner_df.rename(
+        columns={
+            "partner_name": "거래처명",
+            "transaction_count": "거래건수",
+            "qty": "수량",
+            "supply_amount": "공급가액(₩)",
+            "vat_amount": "부가세(₩)",
+            "total_amount_vat": "부가세포함(₩)",
+            "profit_amount": "이익(₩)",
+            "profit_margin_pct": "이익률(%)",
+        }
+    )[["거래처명", "거래건수", "수량", "공급가액(₩)", "부가세(₩)", "부가세포함(₩)", "이익(₩)", "이익률(%)"]]
+
+    total_row = pd.DataFrame(
+        [
+            {
+                "거래처명": "합계",
+                "거래건수": int(display_df["거래건수"].sum()),
+                "수량": int(display_df["수량"].sum()),
+                "공급가액(₩)": float(display_df["공급가액(₩)"].sum()),
+                "부가세(₩)": float(display_df["부가세(₩)"].sum()),
+                "부가세포함(₩)": float(display_df["부가세포함(₩)"].sum()),
+                "이익(₩)": float(display_df["이익(₩)"].sum()),
+                "이익률(%)": (
+                    float(display_df["이익(₩)"].sum()) / float(display_df["공급가액(₩)"].sum()) * 100
+                    if display_df["공급가액(₩)"].sum()
+                    else 0
+                ),
+            }
+        ]
+    )
+    display_df_with_total = pd.concat([display_df, total_row], ignore_index=True)
+
+    st.dataframe(
+        display_df_with_total.style.format(
+            {
+                "거래건수": "{:,.0f}",
+                "수량": "{:,.0f}",
+                "공급가액(₩)": "₩{:,.0f}",
+                "부가세(₩)": "₩{:,.0f}",
+                "부가세포함(₩)": "₩{:,.0f}",
+                "이익(₩)": "₩{:,.0f}",
+                "이익률(%)": "{:,.1f}%",
+            }
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    csv_bytes = display_df.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "거래처별 매출 집계 CSV 다운로드",
+        data=csv_bytes,
+        file_name=f"partner_sales_{date_from}_{date_to}.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key="partner_summary_csv_download",
+    )
+
+    # 거래처 선택 시 품목별 상세
+    st.divider()
+    st.markdown("#### 거래처별 품목 상세")
+    partner_pick = st.selectbox(
+        "품목 상세를 볼 거래처 선택",
+        options=partner_df["partner_name"].tolist(),
+        key="partner_summary_detail_partner",
+    )
+    if partner_pick:
+        item_detail = (
+            filtered[filtered["partner_name"] == partner_pick]
+            .groupby("product_name", as_index=False)
+            .agg(
+                qty=("qty", "sum"),
+                supply_amount=("supply_amount", "sum"),
+                profit_amount=("profit_amount", "sum"),
+            )
+            .sort_values("supply_amount", ascending=False)
+            .rename(columns={
+                "product_name": "상품명",
+                "qty": "수량",
+                "supply_amount": "공급가액(₩)",
+                "profit_amount": "이익(₩)",
+            })
+        )
+        st.dataframe(
+            item_detail.style.format({"수량": "{:,.0f}", "공급가액(₩)": "₩{:,.0f}", "이익(₩)": "₩{:,.0f}"}),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def render():
     st.subheader("도매 관리")
 
@@ -2801,10 +3050,11 @@ def render():
 
         ensure_wholesale_sales_columns(conn)
 
-        tab1, tab2, tab3 = st.tabs([
+        tab1, tab2, tab3, tab4 = st.tabs([
             "거래처 관리",
             "도매 판매 관리",
             "일자별 판매 현황",
+            "거래처별 매출 현황",
         ])
 
         with tab1:
@@ -2815,6 +3065,9 @@ def render():
 
         with tab3:
             render_daily_sales_summary(conn)
+
+        with tab4:
+            render_partner_sales_summary(conn)
 
     finally:
         conn.close()
