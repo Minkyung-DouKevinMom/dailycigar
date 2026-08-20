@@ -141,59 +141,92 @@ def ensure_statement_tables(conn):
     conn.commit()
 
 def load_partner_purchase_summary_from_grade(conn) -> pd.DataFrame:
+    """
+    거래처별 "현재 등급을 달성한 시점 이후" 누적 구매 요약.
+
+    과거에는 partner_mst.grade_acquired_date(수동 편집 폼에서만 갱신되는 필드,
+    실제 등급업 처리 화면인 '거래처등급관리'에서는 갱신되지 않아 사실상 가입일에
+    고정되어 있었음)를 기준으로 계산해서 부정확했다. 지금은 도매 가격 계산에
+    실제로 쓰이는 것과 동일한 compute_grade_reset_cumulative() 엔진을 재사용해,
+    각 거래처의 "현재 등급 시작일"과 그 이후 누적 공급가를 정확히 구한다.
+    """
     ensure_wholesale_sales_columns(conn)
 
-    if not table_exists(conn, "partner_mst") or not table_exists(conn, "wholesale_sales"):
-        return pd.DataFrame(columns=["partner_id", "purchase_item_names", "purchase_supply_amount_sum"])
+    result_cols = [
+        "partner_id",
+        "purchase_item_names",
+        "purchase_supply_amount_sum",
+        "grade_start_date",
+        "next_grade_code",
+        "next_grade_remaining",
+    ]
 
-    partner_cols = get_table_columns(conn, "partner_mst")
-    has_grade_date = "grade_acquired_date" in partner_cols
+    if not table_exists(conn, "partner_mst") or not table_exists(conn, "wholesale_sales"):
+        return pd.DataFrame(columns=result_cols)
+
+    partners_df = load_partners(conn)
+    if partners_df.empty:
+        return pd.DataFrame(columns=result_cols)
+
+    thresholds = load_partner_grade_thresholds(conn)
+    today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
 
     sales_df = load_wholesale_sales_for_grid(conn)
     if sales_df.empty:
-        return pd.DataFrame(columns=["partner_id", "purchase_item_names", "purchase_supply_amount_sum"])
+        sales_df = pd.DataFrame(columns=["partner_id", "sale_date", "supply_amount", "product_name"])
+    sales_df["supply_amount"] = pd.to_numeric(sales_df.get("supply_amount", 0), errors="coerce").fillna(0)
+    sales_df["product_name"] = sales_df.get("product_name", "").fillna("").astype(str).str.strip()
+    sales_df["sale_date"] = sales_df.get("sale_date", "").astype(str)
 
-    base_partners = load_partners(conn)[["id", "grade_acquired_date"]].copy()
-    base_partners = base_partners.rename(columns={"id": "partner_id"})
-
-    df = sales_df.merge(base_partners, how="left", on="partner_id")
-
-    df["sale_date"] = pd.to_datetime(df["sale_date"], errors="coerce")
-    df["grade_acquired_date"] = pd.to_datetime(df["grade_acquired_date"], errors="coerce")
-    df["supply_amount"] = pd.to_numeric(df.get("supply_amount", 0), errors="coerce").fillna(0)
-    df["product_name"] = df.get("product_name", "").fillna("").astype(str).str.strip()
-
-    if has_grade_date:
-        df = df[
-            df["grade_acquired_date"].isna() |
-            (
-                df["sale_date"].notna() &
-                (df["sale_date"] >= df["grade_acquired_date"])
-            )
-        ].copy()
-
-    if df.empty:
-        return pd.DataFrame(columns=["partner_id", "purchase_item_names", "purchase_supply_amount_sum"])
+    tier_rows = thresholds.sort_values("min_purchase_amount").reset_index(drop=True) if not thresholds.empty else thresholds
+    grade_codes_list = tier_rows["grade_code"].tolist() if not tier_rows.empty else []
+    grade_thresholds_list = tier_rows["min_purchase_amount"].tolist() if not tier_rows.empty else []
 
     def _join_unique_names(series):
         vals = []
         seen = set()
-        for x in series.fillna("").astype(str):
-            x = x.strip()
+        for x in series:
+            x = str(x or "").strip()
             if x and x not in seen:
                 vals.append(x)
                 seen.add(x)
         return ", ".join(vals)
 
-    summary_df = (
-        df.groupby("partner_id", as_index=False)
-        .agg(
-            purchase_item_names=("product_name", _join_unique_names),
-            purchase_supply_amount_sum=("supply_amount", "sum"),
-        )
-    )
+    rows = []
+    for _, prow in partners_df.iterrows():
+        partner_id = int(prow["id"])
+        join_date = str(prow.get("join_date") or today_str)
 
-    return summary_df
+        if thresholds.empty:
+            grade_start_date = join_date
+            cumulative = 0.0
+            next_grade_code = None
+            next_remaining = None
+        else:
+            progress = compute_grade_reset_cumulative(conn, partner_id, today_str, join_date, thresholds)
+            grade_start_date = progress["grade_start_date"]
+            cumulative = progress["cumulative_since_start"]
+            cur_idx = grade_codes_list.index(progress["grade_code"]) if progress["grade_code"] in grade_codes_list else -1
+            if cur_idx >= 0 and cur_idx + 1 < len(grade_codes_list):
+                next_grade_code = grade_codes_list[cur_idx + 1]
+                next_remaining = max(grade_thresholds_list[cur_idx + 1] - cumulative, 0)
+            else:
+                next_grade_code = None
+                next_remaining = None
+
+        p_sales = sales_df[(sales_df["partner_id"] == partner_id) & (sales_df["sale_date"] >= grade_start_date)]
+        item_names = _join_unique_names(p_sales["product_name"])
+
+        rows.append({
+            "partner_id": partner_id,
+            "purchase_item_names": item_names,
+            "purchase_supply_amount_sum": cumulative,
+            "grade_start_date": grade_start_date,
+            "next_grade_code": next_grade_code,
+            "next_grade_remaining": next_remaining,
+        })
+
+    return pd.DataFrame(rows, columns=result_cols)
 
 def issue_statement_document_no(conn, sale_date_str: str) -> str:
     return issue_document_no(conn, "STATEMENT", STATEMENT_DOC_PREFIX, sale_date_str)
@@ -1589,6 +1622,9 @@ def render_partner_registration(conn):
     else:
         partners["purchase_item_names"] = ""
         partners["purchase_supply_amount_sum"] = 0
+        partners["grade_start_date"] = None
+        partners["next_grade_code"] = None
+        partners["next_grade_remaining"] = None
 
     if not grade_active_map.empty:
         partners = partners.merge(
@@ -1800,9 +1836,12 @@ def render_partner_registration(conn):
             "active_end_date": "등급만료일",
             "status": "상태",
             "join_date": "가입일",
-            "grade_acquired_date": "등급업일",
+            "grade_acquired_date": "등급업일(수동값·미사용)",
+            "grade_start_date": "등급업(현재등급) 시작일",
             "purchase_item_names": "등급업 이후 구매물품",
             "purchase_supply_amount_sum": "등급업 이후 공급가합계",
+            "next_grade_code": "다음 등급",
+            "next_grade_remaining": "다음 등급까지 남은 금액",
             "notes": "비고",
             "business_no": "사업자번호",
             "owner_name": "대표자명",
@@ -1818,6 +1857,15 @@ def render_partner_registration(conn):
                 .fillna(0)
                 .map(lambda x: f"{x:,.0f}")
             )
+
+        if "다음 등급까지 남은 금액" in view_df.columns:
+            view_df["다음 등급까지 남은 금액"] = (
+                pd.to_numeric(view_df["다음 등급까지 남은 금액"], errors="coerce")
+                .map(lambda x: "-" if pd.isna(x) else f"{x:,.0f}")
+            )
+
+        if "다음 등급" in view_df.columns:
+            view_df["다음 등급"] = view_df["다음 등급"].fillna("최고 등급")
 
         if "프로그램제외" in view_df.columns:
             view_df["프로그램제외"] = (
@@ -1836,9 +1884,12 @@ def render_partner_registration(conn):
             "프로그램제외",
             "상태",
             "가입일",
-            "등급업일",
+            "등급업(현재등급) 시작일",
             "등급업 이후 공급가합계",
+            "다음 등급",
+            "다음 등급까지 남은 금액",
             "등급업 이후 구매물품",
+            "등급업일(수동값·미사용)",
             "사업자번호",
             "비고",
             "이메일",

@@ -5,6 +5,8 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
+import modules.management.wholesale_management as wm
+
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
 
@@ -280,6 +282,60 @@ def render():
             top1.metric("현재 등급", str(current_grade_name))
             top2.metric("시작일", str(cur_row["start_date"]))
             top3.metric("종료일", str(cur_row["end_date"]))
+
+        st.divider()
+        st.markdown("#### 등급업 이후 누적 구매액 (실시간 계산)")
+        st.caption(
+            "실제 도매 가격 계산(등급 할인)에 쓰이는 것과 동일한 로직으로, "
+            "현재 등급을 달성한 시점부터 오늘까지의 누적 공급가 합계를 계산합니다. "
+            "위의 '시작일'(수동 등록 이력)과 하루 이틀 정도 차이가 날 수 있습니다."
+        )
+
+        partner_row_df = pd.read_sql_query(
+            "SELECT join_date FROM partner_mst WHERE id = ?", conn, params=[partner_id]
+        )
+        today_str = pd.Timestamp.today().strftime("%Y-%m-%d")
+        join_date = (
+            str(partner_row_df.iloc[0]["join_date"])
+            if not partner_row_df.empty and pd.notna(partner_row_df.iloc[0]["join_date"])
+            else today_str
+        )
+
+        thresholds = wm.load_partner_grade_thresholds(conn)
+        if thresholds.empty:
+            st.info("등급 기준 정보(partner_grade_mst)가 없어 계산할 수 없습니다.")
+        else:
+            progress = wm.compute_grade_reset_cumulative(conn, partner_id, today_str, join_date, thresholds)
+
+            tier_rows = thresholds.sort_values("min_purchase_amount").reset_index(drop=True)
+            grade_codes_list = tier_rows["grade_code"].tolist()
+            grade_thresholds_list = tier_rows["min_purchase_amount"].tolist()
+            cur_idx = (
+                grade_codes_list.index(progress["grade_code"])
+                if progress["grade_code"] in grade_codes_list
+                else -1
+            )
+
+            g1, g2, g3 = st.columns(3)
+            g1.metric("등급 시작일(실시간 계산)", str(progress["grade_start_date"]))
+            g2.metric("시작일 이후 누적 구매액(공급가)", f"{progress['cumulative_since_start']:,.0f}원")
+
+            if cur_idx >= 0 and cur_idx + 1 < len(grade_codes_list):
+                next_grade = grade_codes_list[cur_idx + 1]
+                next_threshold = grade_thresholds_list[cur_idx + 1]
+                remaining = max(next_threshold - progress["cumulative_since_start"], 0)
+                g3.metric(f"{next_grade} 등급까지 남은 금액", f"{remaining:,.0f}원")
+                ratio = (
+                    min(progress["cumulative_since_start"] / next_threshold, 1.0)
+                    if next_threshold
+                    else 0.0
+                )
+                st.progress(
+                    ratio,
+                    text=f"{progress['cumulative_since_start']:,.0f}원 / {next_threshold:,.0f}원 ({ratio * 100:.1f}%)",
+                )
+            else:
+                g3.metric("다음 등급", "최고 등급 달성" if cur_idx >= 0 else "-")
 
         tab1, tab2 = st.tabs(["승급 처리", "이력 관리"])
 
