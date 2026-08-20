@@ -1352,6 +1352,38 @@ def update_partner(
     conn.commit()
 
 
+def delete_partner(conn, partner_id: int):
+    """
+    거래처를 영구 삭제한다.
+
+    도매판매(wholesale_sales) / 명세서(statement_history) / 출고이력(stock_out)에
+    해당 거래처를 참조하는 데이터가 하나라도 있으면 삭제를 막는다 — 삭제 시
+    기존 판매/재무/재고 이력의 거래처 정보가 깨지기 때문. 이 경우 '상태'를
+    '비활성(inactive)'으로 바꾸는 것으로 대체해야 한다.
+
+    등급이력(partner_grade_history)은 거래처에만 종속된 메타데이터라 함께 삭제한다.
+    """
+    cur = conn.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM wholesale_sales WHERE partner_id = ?", (partner_id,))
+    sales_cnt = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM statement_history WHERE partner_id = ?", (partner_id,))
+    stmt_cnt = cur.fetchone()[0]
+    cur.execute("SELECT COUNT(*) FROM stock_out WHERE partner_id = ?", (partner_id,))
+    stockout_cnt = cur.fetchone()[0]
+
+    if sales_cnt > 0 or stmt_cnt > 0 or stockout_cnt > 0:
+        raise ValueError(
+            f"이 거래처는 연관된 데이터가 있어 삭제할 수 없습니다 "
+            f"(도매판매 {sales_cnt}건 / 명세서 {stmt_cnt}건 / 출고이력 {stockout_cnt}건). "
+            "삭제 대신 '상태'를 '비활성(inactive)'으로 변경해 주세요."
+        )
+
+    cur.execute("DELETE FROM partner_grade_history WHERE partner_id = ?", (partner_id,))
+    cur.execute("DELETE FROM partner_mst WHERE id = ?", (partner_id,))
+    conn.commit()
+
+
 # -----------------------------
 # Wholesale CRUD
 # -----------------------------
@@ -1594,6 +1626,49 @@ def render_partner_registration(conn):
             f"현재 등급: **{active_grade_display}** / 만료일: {active_end_display} "
             "(등급 변경은 '판매관리 > 거래처등급관리' 화면에서 처리해 주세요)"
         )
+
+        with st.expander("⚠️ 거래처 삭제"):
+            del_partner_id = int(selected_row["id"])
+            del_cur = conn.cursor()
+            del_cur.execute("SELECT COUNT(*) FROM wholesale_sales WHERE partner_id = ?", (del_partner_id,))
+            del_sales_cnt = del_cur.fetchone()[0]
+            del_cur.execute("SELECT COUNT(*) FROM statement_history WHERE partner_id = ?", (del_partner_id,))
+            del_stmt_cnt = del_cur.fetchone()[0]
+            del_cur.execute("SELECT COUNT(*) FROM stock_out WHERE partner_id = ?", (del_partner_id,))
+            del_stockout_cnt = del_cur.fetchone()[0]
+            del_cur.execute("SELECT COUNT(*) FROM partner_grade_history WHERE partner_id = ?", (del_partner_id,))
+            del_grade_cnt = del_cur.fetchone()[0]
+
+            st.caption(
+                f"연관 데이터 — 도매판매 {del_sales_cnt}건 / 명세서 {del_stmt_cnt}건 / "
+                f"출고이력 {del_stockout_cnt}건 / 등급이력 {del_grade_cnt}건"
+            )
+
+            can_delete = del_sales_cnt == 0 and del_stmt_cnt == 0 and del_stockout_cnt == 0
+
+            if not can_delete:
+                st.warning(
+                    "도매판매/명세서/출고 이력이 있는 거래처는 데이터 무결성 보호를 위해 삭제할 수 없습니다. "
+                    "위 '거래처 수정' 폼에서 상태를 '비활성(inactive)'으로 변경해 주세요."
+                )
+            else:
+                confirm_label = f"'{selected_row['partner_name']}' 거래처를 영구 삭제하는 것에 동의합니다"
+                if del_grade_cnt:
+                    confirm_label += f" (등급이력 {del_grade_cnt}건도 함께 삭제됩니다)"
+                confirm_delete = st.checkbox(confirm_label, key=f"confirm_delete_partner_{del_partner_id}")
+                if st.button(
+                    "거래처 영구 삭제",
+                    type="primary",
+                    disabled=not confirm_delete,
+                    key=f"delete_partner_btn_{del_partner_id}",
+                ):
+                    try:
+                        deleted_name = str(selected_row["partner_name"])
+                        delete_partner(conn, del_partner_id)
+                        st.success(f"'{deleted_name}' 거래처가 삭제되었습니다.")
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
 
     with st.form("partner_registration_form", clear_on_submit=(mode == "신규 등록")):
         c1, c2 = st.columns(2)
