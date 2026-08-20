@@ -220,7 +220,15 @@ def summarize_period(df: pd.DataFrame) -> dict:
 
     sales = float(df["sales_amount"].sum())
     profit = float(df["profit_amount"].sum())
-    orders = int(df["order_no"].nunique()) if "order_no" in df.columns else len(df)
+    # 거래건수 = (판매일자, 주문번호) 조합 기준 유니크 카운트.
+    # 소매 주문번호는 일자별로 재사용되는 짧은 순번(예: '001')이라 order_no만으로
+    # nunique()를 구하면 서로 다른 날짜의 주문이 같은 거래로 합쳐져 크게 과소집계된다.
+    if {"sale_date", "order_no"}.issubset(df.columns):
+        orders = int(df.drop_duplicates(subset=["sale_date", "order_no"]).shape[0])
+    elif "order_no" in df.columns:
+        orders = int(df["order_no"].nunique())
+    else:
+        orders = len(df)
     avg_ticket = (sales / orders) if orders else 0.0
 
     retail_df = df[df["sales_type"] == "소매"]

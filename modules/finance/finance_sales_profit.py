@@ -407,9 +407,17 @@ def render_sales_combined():
             if not retail_df.empty and "sale_date" in retail_df.columns:
                 x = retail_df.copy()
                 x["월"] = monthify(x["sale_date"])
+                # 주문번호는 일자별로 재사용되는 짧은 순번이라, order_no만으로 nunique()를
+                # 구하면 같은 달 안의 다른 날짜 주문이 같은 거래로 합쳐져 과소집계된다.
+                # (판매일자, 주문번호) 조합으로 유니크 키를 만들어 집계한다.
+                if "order_no" in x.columns:
+                    x["_order_key"] = x["sale_date"].astype(str) + "_" + x["order_no"].astype(str)
+                    count_agg = ("_order_key", "nunique")
+                else:
+                    count_agg = ("sale_date", "count")
                 g = x.groupby("월", dropna=False).agg(
                     소매매출=("net_sales_amount", "sum"),
-                    소매건수=("order_no", "nunique") if "order_no" in x.columns else ("sale_date", "count"),
+                    소매건수=count_agg,
                     소매이익=("retail_gross_profit_krw", "sum"),
                 ).reset_index()
                 month_frames.append(g)

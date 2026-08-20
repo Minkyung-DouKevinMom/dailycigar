@@ -152,9 +152,19 @@ def build_query(use_view: bool, filters: dict):
 
 
 def calc_kpis(df: pd.DataFrame):
+    # 주문수 = (판매일자, 주문번호) 조합 기준 유니크 카운트.
+    # 주문번호는 일자별로 재사용되는 짧은 순번(예: '001')이라 order_no만으로
+    # nunique()를 구하면 서로 다른 날짜의 주문이 같은 거래로 합쳐져 과소집계된다.
+    if {"sale_date", "order_no"}.issubset(df.columns):
+        order_count = int(df.drop_duplicates(subset=["sale_date", "order_no"]).shape[0])
+    elif "order_no" in df.columns:
+        order_count = df["order_no"].nunique()
+    else:
+        order_count = 0
+
     result = {
         "건수": len(df),
-        "주문수": df["order_no"].nunique() if "order_no" in df.columns else 0,
+        "주문수": order_count,
         "판매수량": float(df["qty"].fillna(0).sum()) if "qty" in df.columns else 0,
         "실매출": float(df["net_sales_amount"].fillna(0).sum()) if "net_sales_amount" in df.columns else 0,
         "부가세": float(df["vat_amount"].fillna(0).sum()) if "vat_amount" in df.columns else 0,
