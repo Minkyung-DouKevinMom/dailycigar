@@ -291,18 +291,27 @@ def load_gift_package_names(conn: sqlite3.Connection) -> Dict[str, str]:
     }
 
 
-def is_gift_auto_deducted(conn: sqlite3.Connection, order_no: str, component_product_code: str) -> bool:
-    """같은 주문번호로 해당 구성품이 이미 자동 차감되었는지 확인 (재업로드 시 중복 방지)"""
+def is_gift_auto_deducted(conn: sqlite3.Connection, order_no: str, out_date: str, component_product_code: str) -> bool:
+    """
+    같은 판매일자 + 주문번호로 해당 구성품이 이미 자동 차감되었는지 확인 (재업로드 시 중복 방지).
+
+    주의: 소매 주문번호(order_no)는 일자별로 재사용되는 짧은 순번(예: '001')이라
+    order_no만으로 비교하면 서로 다른 날짜에 우연히 같은 주문번호를 쓴 주문의 차감
+    이력과 혼동되어, 오늘 신규 판매분이 "이미 차감됨"으로 잘못 판정되고 실제로는
+    재고가 차감되지 않는 문제가 있었다. out_date를 함께 비교해 정확히 같은 날짜의
+    같은 주문만 매칭하도록 수정.
+    """
     cur = conn.cursor()
     cur.execute(
         """
         SELECT 1 FROM stock_out
          WHERE source_type = 'retail_auto'
            AND source_order_no = ?
+           AND out_date = ?
            AND product_code = ?
          LIMIT 1
         """,
-        (order_no, component_product_code),
+        (order_no, out_date, component_product_code),
     )
     return cur.fetchone() is not None
 
@@ -329,7 +338,7 @@ def deduct_gift_package_stock(
     deducted = 0
     for comp in components:
         comp_code = comp["component_product_code"]
-        if is_gift_auto_deducted(conn, order_no, comp_code):
+        if is_gift_auto_deducted(conn, order_no, out_date, comp_code):
             continue
 
         qty_to_deduct = int(comp["qty_per_set"]) * int(round(sold_qty))
