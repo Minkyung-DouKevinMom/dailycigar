@@ -443,6 +443,45 @@ def get_monthly_trend(conn, months: int = 12, up_to_year: int = None, up_to_mont
     return df
 
 
+def get_daily_trend(conn, year: int, month: int) -> pd.DataFrame:
+    """선택한 연/월의 일자별 매출 추이(소매+도매)를 반환. 판매가 없는 날도 0으로 채워서 반환한다."""
+    date_from, date_to = month_range(year, month)
+
+    retail_df = get_retail_month_data(conn, date_from, date_to)
+    wholesale_df = get_wholesale_month_data(conn, date_from, date_to)
+
+    all_days = pd.date_range(date_from, date_to, freq="D")
+    daily = pd.DataFrame({"일자": all_days.strftime("%Y-%m-%d")})
+
+    if not retail_df.empty:
+        retail_daily = (
+            retail_df.assign(sale_date=pd.to_datetime(retail_df["sale_date"]).dt.strftime("%Y-%m-%d"))
+            .groupby("sale_date", as_index=False)["net_sales_amount"]
+            .sum()
+            .rename(columns={"sale_date": "일자", "net_sales_amount": "소매매출"})
+        )
+    else:
+        retail_daily = pd.DataFrame(columns=["일자", "소매매출"])
+
+    if not wholesale_df.empty:
+        wholesale_daily = (
+            wholesale_df.assign(sale_date=pd.to_datetime(wholesale_df["sale_date"]).dt.strftime("%Y-%m-%d"))
+            .groupby("sale_date", as_index=False)["net_sales_amount"]
+            .sum()
+            .rename(columns={"sale_date": "일자", "net_sales_amount": "도매매출"})
+        )
+    else:
+        wholesale_daily = pd.DataFrame(columns=["일자", "도매매출"])
+
+    daily = daily.merge(retail_daily, on="일자", how="left").merge(wholesale_daily, on="일자", how="left")
+    daily["소매매출"] = daily["소매매출"].fillna(0)
+    daily["도매매출"] = daily["도매매출"].fillna(0)
+    daily["총매출"] = daily["소매매출"] + daily["도매매출"]
+    daily["일"] = pd.to_datetime(daily["일자"]).dt.day
+
+    return daily
+
+
 def get_recent_expenses(conn, limit: int = 10) -> pd.DataFrame:
     if not table_exists(conn, "expense_txn"):
         return pd.DataFrame()
@@ -787,7 +826,9 @@ def render():
             "전체 지출(투자비·일회성비용·물류비 포함)은 재무관리 화면에서 확인해 주세요."
         )
 
-        tab1, tab2, tab3, tab4 = st.tabs(["월별 추이", "최근 판매 내역", "최근 지출", "상위 제품"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(
+            ["월별 추이", "일별 매출 추이", "최근 판매 내역", "최근 지출", "상위 제품"]
+        )
 
         with tab1:
             trend_df = get_monthly_trend(conn, months=12, up_to_year=year, up_to_month=month)
@@ -851,6 +892,45 @@ def render():
                 st.info("월별 추이 데이터가 없습니다.")
 
         with tab2:
+            daily_df = get_daily_trend(conn, year, month)
+
+            if daily_df.empty or daily_df["총매출"].sum() == 0:
+                st.info(f"{year}년 {month}월에는 매출 데이터가 없습니다.")
+            else:
+                st.markdown(f"###### {year}년 {month}월 일별 매출 추이")
+
+                daily_melt = daily_df[["일", "소매매출", "도매매출", "총매출"]].melt(
+                    id_vars="일", var_name="구분", value_name="금액"
+                )
+                daily_chart = (
+                    alt.Chart(daily_melt)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X("일:O", title="일", sort=list(daily_df["일"])),
+                        y=alt.Y("금액:Q", title="금액(원)", axis=alt.Axis(format=",.0f")),
+                        color=alt.Color("구분:N", title=None),
+                        tooltip=[
+                            alt.Tooltip("일:O", title="일"),
+                            alt.Tooltip("구분:N", title="구분"),
+                            alt.Tooltip("금액:Q", title="금액", format=",.0f"),
+                        ],
+                    )
+                    .properties(height=340)
+                )
+                st.altair_chart(daily_chart, use_container_width=True)
+
+                show_daily_df = daily_df[["일자", "소매매출", "도매매출", "총매출"]].copy()
+                for col in ["소매매출", "도매매출", "총매출"]:
+                    show_daily_df[col] = show_daily_df[col].apply(fmt_krw)
+
+                st.dataframe(
+                    show_daily_df,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=360,
+                )
+
+        with tab3:
             recent_sales_df = get_recent_sales_with_margin(conn, limit=20)
 
             if recent_sales_df.empty:
@@ -881,7 +961,7 @@ def render():
 
                 st.caption("※ 시가는 기존 마진 로직을 유지하고, 시가 외 상품만 판매금액 - (매입가 × 수량) 기준으로 계산합니다.")
 
-        with tab3:
+        with tab4:
             recent_exp_df = get_recent_expenses(conn, limit=12)
 
             if recent_exp_df.empty:
@@ -906,7 +986,7 @@ def render():
                     height=360,
                 )
 
-        with tab4:
+        with tab5:
             sales_top_df = get_top_products(
                 conn,
                 current["date_from"],
