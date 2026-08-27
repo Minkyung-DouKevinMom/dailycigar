@@ -899,16 +899,15 @@ def render():
             else:
                 st.markdown(f"###### {year}년 {month}월 일별 매출 추이")
 
-                daily_melt = daily_df[["일", "소매매출", "도매매출", "총매출"]].melt(
+                # 그래프에는 소매/도매 추이만 표시한다(총매출은 값이 커서 추이를 가리므로 제외,
+                # 대신 아래 표에는 참고용으로 계속 표시).
+                daily_melt = daily_df[["일", "소매매출", "도매매출"]].melt(
                     id_vars="일", var_name="구분", value_name="금액"
                 )
 
-                # 총매출은 값이 커서 항상 앞에 겹쳐 보이므로, 연한 회색으로 칠하고
-                # 레이어 순서상 맨 뒤(소매/도매보다 먼저 그려짐)에 배치해 소매/도매 추이가
-                # 잘 보이도록 한다.
                 daily_color_scale = alt.Scale(
-                    domain=["총매출", "도매매출", "소매매출"],
-                    range=["#C7C7C7", "#F58518", "#4C78A8"],
+                    domain=["도매매출", "소매매출"],
+                    range=["#F58518", "#4C78A8"],
                 )
                 daily_base = alt.Chart(daily_melt).encode(
                     x=alt.X("일:O", title="일", sort=list(daily_df["일"])),
@@ -917,7 +916,7 @@ def render():
                         "구분:N",
                         title=None,
                         scale=daily_color_scale,
-                        sort=["소매매출", "도매매출", "총매출"],
+                        sort=["소매매출", "도매매출"],
                     ),
                     tooltip=[
                         alt.Tooltip("일:O", title="일"),
@@ -926,7 +925,6 @@ def render():
                     ],
                 )
                 daily_chart = alt.layer(
-                    daily_base.transform_filter(alt.datum.구분 == "총매출").mark_line(point=True),
                     daily_base.transform_filter(alt.datum.구분 == "도매매출").mark_line(point=True),
                     daily_base.transform_filter(alt.datum.구분 == "소매매출").mark_line(point=True),
                 ).properties(height=340)
