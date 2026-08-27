@@ -902,21 +902,34 @@ def render():
                 daily_melt = daily_df[["일", "소매매출", "도매매출", "총매출"]].melt(
                     id_vars="일", var_name="구분", value_name="금액"
                 )
-                daily_chart = (
-                    alt.Chart(daily_melt)
-                    .mark_line(point=True)
-                    .encode(
-                        x=alt.X("일:O", title="일", sort=list(daily_df["일"])),
-                        y=alt.Y("금액:Q", title="금액(원)", axis=alt.Axis(format=",.0f")),
-                        color=alt.Color("구분:N", title=None),
-                        tooltip=[
-                            alt.Tooltip("일:O", title="일"),
-                            alt.Tooltip("구분:N", title="구분"),
-                            alt.Tooltip("금액:Q", title="금액", format=",.0f"),
-                        ],
-                    )
-                    .properties(height=340)
+
+                # 총매출은 값이 커서 항상 앞에 겹쳐 보이므로, 연한 회색으로 칠하고
+                # 레이어 순서상 맨 뒤(소매/도매보다 먼저 그려짐)에 배치해 소매/도매 추이가
+                # 잘 보이도록 한다.
+                daily_color_scale = alt.Scale(
+                    domain=["총매출", "도매매출", "소매매출"],
+                    range=["#C7C7C7", "#F58518", "#4C78A8"],
                 )
+                daily_base = alt.Chart(daily_melt).encode(
+                    x=alt.X("일:O", title="일", sort=list(daily_df["일"])),
+                    y=alt.Y("금액:Q", title="금액(원)", axis=alt.Axis(format=",.0f")),
+                    color=alt.Color(
+                        "구분:N",
+                        title=None,
+                        scale=daily_color_scale,
+                        sort=["소매매출", "도매매출", "총매출"],
+                    ),
+                    tooltip=[
+                        alt.Tooltip("일:O", title="일"),
+                        alt.Tooltip("구분:N", title="구분"),
+                        alt.Tooltip("금액:Q", title="금액", format=",.0f"),
+                    ],
+                )
+                daily_chart = alt.layer(
+                    daily_base.transform_filter(alt.datum.구분 == "총매출").mark_line(point=True),
+                    daily_base.transform_filter(alt.datum.구분 == "도매매출").mark_line(point=True),
+                    daily_base.transform_filter(alt.datum.구분 == "소매매출").mark_line(point=True),
+                ).properties(height=340)
                 st.altair_chart(daily_chart, use_container_width=True)
 
                 show_daily_df = daily_df[["일자", "소매매출", "도매매출", "총매출"]].copy()
