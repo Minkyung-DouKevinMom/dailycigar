@@ -401,24 +401,50 @@ def render():
 
         st.divider()
 
+        # 기간 A/B 일별 추이를 나란히 비교할 때, 각 차트가 자기 데이터 기준으로만
+        # y축을 자동 조정하면 한쪽 매출이 훨씬 커도 두 그래프가 비슷한 높이로
+        # 그려져서 실제 크기 차이를 오독하게 된다. 두 차트에 동일한 y축 스케일을
+        # 적용해서 높이를 직접 비교할 수 있게 한다.
+        daily_a = (
+            df_a.groupby(df_a["sale_date"].dt.strftime("%Y-%m-%d"))["sales_amount"]
+            .sum()
+            .reset_index()
+            .rename(columns={"sale_date": "날짜", "sales_amount": "매출액"})
+            if not df_a.empty
+            else pd.DataFrame(columns=["날짜", "매출액"])
+        )
+        daily_b = (
+            df_b.groupby(df_b["sale_date"].dt.strftime("%Y-%m-%d"))["sales_amount"]
+            .sum()
+            .reset_index()
+            .rename(columns={"sale_date": "날짜", "sales_amount": "매출액"})
+            if not df_b.empty
+            else pd.DataFrame(columns=["날짜", "매출액"])
+        )
+
+        shared_max = max(
+            daily_a["매출액"].max() if not daily_a.empty else 0,
+            daily_b["매출액"].max() if not daily_b.empty else 0,
+        )
+        shared_domain = [0, shared_max * 1.05] if shared_max > 0 else [0, 1]
+
         d1, d2 = st.columns(2)
         with d1:
             st.markdown("#### 기간 A 일별 추이")
             if df_a.empty:
                 st.info("기간 A 데이터가 없습니다.")
             else:
-                daily_a = (
-                    df_a.groupby(df_a["sale_date"].dt.strftime("%Y-%m-%d"))["sales_amount"]
-                    .sum()
-                    .reset_index()
-                    .rename(columns={"sale_date": "날짜", "sales_amount": "매출액"})
-                )
                 line_a = (
                     alt.Chart(daily_a)
                     .mark_line(point=True, color="#4C72B0")
                     .encode(
                         x=alt.X("날짜:N", title=None, axis=alt.Axis(labelAngle=-45, labelOverlap=True)),
-                        y=alt.Y("매출액:Q", title="금액(원)", axis=alt.Axis(format=",.0f")),
+                        y=alt.Y(
+                            "매출액:Q",
+                            title="금액(원)",
+                            axis=alt.Axis(format=",.0f"),
+                            scale=alt.Scale(domain=shared_domain),
+                        ),
                         tooltip=[
                             alt.Tooltip("날짜:N", title="날짜"),
                             alt.Tooltip("매출액:Q", title="매출액", format=",.0f"),
@@ -433,18 +459,17 @@ def render():
             if df_b.empty:
                 st.info("기간 B 데이터가 없습니다.")
             else:
-                daily_b = (
-                    df_b.groupby(df_b["sale_date"].dt.strftime("%Y-%m-%d"))["sales_amount"]
-                    .sum()
-                    .reset_index()
-                    .rename(columns={"sale_date": "날짜", "sales_amount": "매출액"})
-                )
                 line_b = (
                     alt.Chart(daily_b)
                     .mark_line(point=True, color="#DD8452")
                     .encode(
                         x=alt.X("날짜:N", title=None, axis=alt.Axis(labelAngle=-45, labelOverlap=True)),
-                        y=alt.Y("매출액:Q", title="금액(원)", axis=alt.Axis(format=",.0f")),
+                        y=alt.Y(
+                            "매출액:Q",
+                            title="금액(원)",
+                            axis=alt.Axis(format=",.0f"),
+                            scale=alt.Scale(domain=shared_domain),
+                        ),
                         tooltip=[
                             alt.Tooltip("날짜:N", title="날짜"),
                             alt.Tooltip("매출액:Q", title="매출액", format=",.0f"),
