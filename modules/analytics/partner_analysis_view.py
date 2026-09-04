@@ -162,8 +162,8 @@ def render():
             height=420,
             hide_index=True,
             column_config={
-                "매출": st.column_config.NumberColumn("매출", format="%,.0f"),
-                "이익": st.column_config.NumberColumn("이익", format="%,.0f"),
+                "매출": st.column_config.NumberColumn("매출(원)", format="%,.0f"),
+                "이익": st.column_config.NumberColumn("이익(원)", format="%,.0f"),
                 "마진율(%)": st.column_config.NumberColumn("마진율(%)", format="%.1f"),
             },
         )
@@ -280,8 +280,8 @@ def render():
                 column_config={
                     "최근 구매간격(일)": st.column_config.NumberColumn("최근 구매간격(일)", format="%d"),
                     "평균 구매간격(일)": st.column_config.NumberColumn("평균 구매간격(일)", format="%.1f"),
-                    "최근 구매금액": st.column_config.NumberColumn("최근 구매금액", format="%,.0f"),
-                    "누적 매출": st.column_config.NumberColumn("누적 매출", format="%,.0f"),
+                    "최근 구매금액": st.column_config.NumberColumn("최근 구매금액(원)", format="%,.0f"),
+                    "누적 매출": st.column_config.NumberColumn("누적 매출(원)", format="%,.0f"),
                 },
             )
 
