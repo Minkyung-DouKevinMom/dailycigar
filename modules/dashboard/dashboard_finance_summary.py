@@ -222,14 +222,26 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
         qty_col = pick_col(cols, ["qty", "quantity"])
         gp_col = pick_col(cols, ["retail_gross_profit_krw", "gross_profit_krw", "margin_amount"])
         cost_col = pick_col(cols, ["total_korea_cost_krw", "total_cost_krw"])
+        vat_col = pick_col(cols, ["vat_amount"])
+        taxable_col = pick_col(cols, ["taxable_yn"])
 
         if not sale_date_col or not sales_col:
             return pd.DataFrame()
 
+        # 뷰가 없을 때도 부가세 제외(공급가액) 기준 — v_retail_sales_enriched.sales_supply_amount_krw 와 동일 식
+        if vat_col and taxable_col:
+            sales_expr = (
+                f"CASE WHEN COALESCE({taxable_col}, '과세') = '과세' "
+                f"THEN COALESCE({sales_col}, 0) - COALESCE({vat_col}, 0) "
+                f"ELSE COALESCE({sales_col}, 0) END"
+            )
+        else:
+            sales_expr = f"COALESCE({sales_col}, 0)"
+
         sql = f"""
             SELECT
                 {sale_date_col} AS sale_date,
-                COALESCE({sales_col}, 0) AS net_sales_amount,
+                {sales_expr} AS net_sales_amount,
                 {"COALESCE(" + cost_col + ", 0)" if cost_col else "0"} AS total_korea_cost_krw,
                 {"COALESCE(" + gp_col + ", 0)" if gp_col else "0"} AS gross_profit_krw,
                 {"COALESCE(" + product_code_col + ", '')" if product_code_col else "''"} AS product_code,

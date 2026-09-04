@@ -6,7 +6,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from db import get_non_cigar_purchase_price_map
+from db import apply_non_cigar_margin_logic
 
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
 
@@ -110,7 +110,9 @@ def get_retail_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
             COALESCE(order_no, '') AS order_no,
             TRIM(COALESCE(product_code, '')) AS product_code,
             COALESCE(qty, 0) AS qty,
-            COALESCE(net_sales_amount, 0) AS sales_amount
+            CASE WHEN COALESCE(taxable_yn, '과세') = '과세'
+                 THEN COALESCE(net_sales_amount, 0) - COALESCE(vat_amount, 0)
+                 ELSE COALESCE(net_sales_amount, 0) END AS sales_amount  -- 부가세 제외(뷰와 동일 식)
         FROM retail_sales
         WHERE sale_date BETWEEN ? AND ?
         """
@@ -127,19 +129,20 @@ def get_retail_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
 
     df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
 
-    # ★ 시가 외 상품 이익 재계산 (소매관리와 동일하게)
-    purchase_price_map = get_non_cigar_purchase_price_map(conn)
-    if purchase_price_map and not df.empty:
-        non_cigar_mask = df["product_code"].isin(purchase_price_map.keys())
-        if non_cigar_mask.any():
-            df.loc[non_cigar_mask, "cost_amount"] = (
-                df.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
-                * df.loc[non_cigar_mask, "qty"]
-            )
-            df.loc[non_cigar_mask, "profit_amount"] = (
-                df.loc[non_cigar_mask, "sales_amount"]
-                - df.loc[non_cigar_mask, "cost_amount"]
-            )
+    # ★ 시가 외 상품 원가/이익 재계산 — 정본 로직(db.apply_non_cigar_margin_logic) 사용
+    #   (매입가×수량, 기프트패키지는 구성품 원가 합계. 소매관리/대시보드/재무관리와 동일)
+    if not df.empty:
+        work = df.rename(columns={
+            "sales_amount": "net_sales_amount",
+            "cost_amount": "total_korea_cost_krw",
+            "profit_amount": "retail_gross_profit_krw",
+        })
+        work = apply_non_cigar_margin_logic(work, conn)
+        df = work.rename(columns={
+            "net_sales_amount": "sales_amount",
+            "total_korea_cost_krw": "cost_amount",
+            "retail_gross_profit_krw": "profit_amount",
+        })
 
     df["sales_type"] = "소매"
     return df

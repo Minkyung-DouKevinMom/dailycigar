@@ -28,6 +28,24 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import pandas as pd
 
+# 매출/이익 계산 정본 로직 (앱 화면들과 동일한 기준을 쓰기 위해 db.py의 함수를 재사용)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from db import apply_non_cigar_margin_logic  # noqa: E402
+
+
+RETAIL_SALES_EXPR_VIEW = "COALESCE(sales_supply_amount_krw, 0)"
+# 뷰가 없을 때(retail_sales 직접 조회) 부가세 제외 매출: v_retail_sales_enriched.sales_supply_amount_krw 와 동일 식
+RETAIL_SALES_EXPR_TABLE = (
+    "CASE WHEN COALESCE(taxable_yn, '과세') = '과세' "
+    "THEN COALESCE(net_sales_amount, 0) - COALESCE(vat_amount, 0) "
+    "ELSE COALESCE(net_sales_amount, 0) END"
+)
+
+
+def retail_sales_expr(retail_src: str) -> str:
+    """소매 매출(부가세 제외, 공급가액) SQL 식. 대시보드/재무관리 화면과 동일 기준."""
+    return RETAIL_SALES_EXPR_VIEW if retail_src == "v_retail_sales_enriched" else RETAIL_SALES_EXPR_TABLE
+
 # ── 한글 폰트 설정 (클라우드 실행 환경엔 기본적으로 한글 폰트가 없을 수 있음) ──
 def setup_korean_font():
     candidates = [
@@ -103,7 +121,7 @@ def section_brand_overview(conn, out_dir: str):
         SELECT
             UPPER(TRIM(COALESCE(product_code, product_code_raw, ''))) AS product_code,
             COALESCE(qty, 0) AS qty,
-            COALESCE(net_sales_amount, 0) AS sales,
+            {retail_sales_expr(retail_src)} AS sales,
             COALESCE(retail_gross_profit_krw, 0) AS profit
         FROM {retail_src}
     """
@@ -251,38 +269,19 @@ def section_month_over_month(conn, out_dir: str):
     retail_src = "v_retail_sales_enriched" if table_or_view_exists(conn, "v_retail_sales_enriched") else "retail_sales"
     wholesale_src = "v_wholesale_sales" if table_or_view_exists(conn, "v_wholesale_sales") else "wholesale_sales"
 
-    def get_non_cigar_purchase_price_map():
-        try:
-            cols = pd.read_sql_query("PRAGMA table_info(non_cigar_product_mst)", conn)["name"].tolist()
-        except Exception:
-            return {}
-        if "product_code" not in cols or "purchase_price" not in cols:
-            return {}
-        try:
-            pp_df = pd.read_sql_query(
-                "SELECT TRIM(COALESCE(product_code,'')) AS product_code, "
-                "COALESCE(purchase_price,0) AS purchase_price FROM non_cigar_product_mst",
-                conn,
-            )
-        except Exception:
-            return {}
-        pp_df["product_code"] = pp_df["product_code"].astype(str).str.strip()
-        pp_df = pp_df[pp_df["product_code"] != ""]
-        return dict(zip(pp_df["product_code"], pp_df["purchase_price"]))
-
-    non_cigar_price_map = get_non_cigar_purchase_price_map()
-
     def retail_totals(d_from, d_to):
         """
-        '소매 매출 조회' 화면(retail_sales_view.py)의 apply_non_cigar_margin_logic()과 동일한 보정을 적용:
-        시가 외(non_cigar_product_mst 등록) 상품은 net_sales_amount - (매입가 × 수량)으로 이익을 재계산.
+        소매 매출(부가세 제외) / 이익 합계.
+        시가 외 상품 원가·이익은 db.apply_non_cigar_margin_logic(정본)으로 재계산해
+        소매관리/대시보드/재무관리 화면과 동일한 숫자가 나오도록 한다.
         """
         sql = f"""
             SELECT
                 TRIM(COALESCE(product_code, '')) AS product_code,
                 COALESCE(qty, 0) AS qty,
-                COALESCE(net_sales_amount, 0) AS sales,
-                COALESCE(retail_gross_profit_krw, 0) AS profit
+                {retail_sales_expr(retail_src)} AS net_sales_amount,
+                COALESCE(total_korea_cost_krw, 0) AS total_korea_cost_krw,
+                COALESCE(retail_gross_profit_krw, 0) AS retail_gross_profit_krw
             FROM {retail_src}
             WHERE sale_date BETWEEN ? AND ?
         """
@@ -292,12 +291,8 @@ def section_month_over_month(conn, out_dir: str):
             print(f"  소매 조회 실패: {e}")
             return 0, 0
 
-        if non_cigar_price_map:
-            mask = r["product_code"].isin(non_cigar_price_map.keys())
-            r.loc[mask, "profit"] = r.loc[mask, "sales"] - (
-                r.loc[mask, "product_code"].map(non_cigar_price_map).fillna(0) * r.loc[mask, "qty"]
-            )
-        return r["sales"].sum(), r["profit"].sum()
+        r = apply_non_cigar_margin_logic(r, conn)
+        return r["net_sales_amount"].sum(), r["retail_gross_profit_krw"].sum()
 
     def period_totals(d_from, d_to):
         r_sales, r_profit = retail_totals(d_from, d_to)
@@ -365,11 +360,11 @@ def section_retail_monthly_trend(conn, out_dir: str):
     print("[4] 소매 월별 매출 추이 (채널별: 택배/매장)")
     print("=" * 60)
 
-    sql = """
+    sql = f"""
         SELECT
             strftime('%Y-%m', sale_date) AS ym,
             CASE WHEN delivery_yn = 'Y' THEN '택배' ELSE '매장' END AS channel,
-            COALESCE(net_sales_amount, 0) AS sales
+            {RETAIL_SALES_EXPR_TABLE} AS sales
         FROM retail_sales
     """
     try:

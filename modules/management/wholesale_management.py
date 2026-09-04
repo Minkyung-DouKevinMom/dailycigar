@@ -808,7 +808,7 @@ def load_non_cigar_products(conn) -> pd.DataFrame:
     retail_price_krw / supply_price_krw 로 함께 반환하여
     도매 판매 등록 시 기본값으로 사용할 수 있게 한다.
     """
-    empty_cols = ["id", "product_name", "retail_price_krw", "supply_price_krw"]
+    empty_cols = ["id", "product_name", "retail_price_krw", "supply_price_krw", "korea_cost_krw"]
 
     if not table_exists(conn, "non_cigar_product_mst"):
         return pd.DataFrame(columns=empty_cols)
@@ -820,10 +820,13 @@ def load_non_cigar_products(conn) -> pd.DataFrame:
 
     retail_col = find_existing_column(cols, ["retail_price", "retail_price_krw"])
     supply_col = find_existing_column(cols, ["wholesale_price", "supply_price_krw", "supply_price"])
+    # 시가 외 상품 원가 = non_cigar_product_mst.purchase_price (소매 이익 계산과 동일 기준)
+    cost_col = find_existing_column(cols, ["purchase_price", "korea_cost_krw", "unit_cost"])
 
     select_parts = ["id", f"{name_col} AS product_name"]
     select_parts.append(f"{retail_col} AS retail_price_krw" if retail_col else "0 AS retail_price_krw")
     select_parts.append(f"{supply_col} AS supply_price_krw" if supply_col else "0 AS supply_price_krw")
+    select_parts.append(f"{cost_col} AS korea_cost_krw" if cost_col else "0 AS korea_cost_krw")
 
     sql = f"""
         SELECT {', '.join(select_parts)}
@@ -836,6 +839,7 @@ def load_non_cigar_products(conn) -> pd.DataFrame:
 
     df["retail_price_krw"] = df["retail_price_krw"].apply(_safe_float)
     df["supply_price_krw"] = df["supply_price_krw"].apply(_safe_float)
+    df["korea_cost_krw"] = df["korea_cost_krw"].apply(_safe_float)
     return df
 
 
@@ -1993,7 +1997,9 @@ def render_wholesale_management(conn):
             base_unit_price = _safe_float(selected_product.get("retail_price_krw", 0))
             base_supply_price = _safe_float(selected_product.get("supply_price_krw", 0))
             base_supply_price_ref = base_supply_price
-            auto_unit_cost = 0
+            # 원가 기본값 = 시가 외 상품 매입가(purchase_price). 0으로 두면 이익이 공급가액 전체로
+            # 과대계상되어 소매 쪽(매입가 기준 원가)과 기준이 어긋나므로 매입가를 기본값으로 사용.
+            auto_unit_cost = _safe_float(selected_product.get("korea_cost_krw", 0))
 
             pricing_result = compute_tiered_order_pricing(
                 conn,
@@ -2069,7 +2075,7 @@ def render_wholesale_management(conn):
         if item_type == "cigar":
             st.caption("정상가 기준 = import_item.retail_price_krw / import_item.supply_price_krw (원가는 할인 미반영: import_item.korea_cost_krw)")
         else:
-            st.caption("정상가 기준 = non_cigar_product_mst.retail_price / wholesale_price")
+            st.caption("정상가 기준 = non_cigar_product_mst.retail_price / wholesale_price (원가 = purchase_price)")
 
         if st.button("도매 판매 저장", use_container_width=True, key="wh_insert_btn"):
             partner_id = int(partners.loc[partners["partner_name"] == partner_name, "id"].iloc[0])

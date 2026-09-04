@@ -3,6 +3,8 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
+from db import apply_non_cigar_margin_logic
+
 st.set_page_config(page_title="Daily Cigar DB", layout="wide")
 
 DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
@@ -73,30 +75,19 @@ def view_exists(conn, view_name: str) -> bool:
         return False
 
 
-def get_non_cigar_purchase_price_map(conn) -> dict:
-    if not has_table(conn, "non_cigar_product_mst"):
-        return {}
-
-    cols = get_table_columns(conn, "non_cigar_product_mst")
-    if "product_code" not in cols or "purchase_price" not in cols:
-        return {}
-
-    sql = """
-        SELECT
-            TRIM(COALESCE(product_code, '')) AS product_code,
-            COALESCE(purchase_price, 0) AS purchase_price
-        FROM non_cigar_product_mst
+def _apply_non_cigar_margin_home(df: pd.DataFrame, conn) -> pd.DataFrame:
     """
-    df = pd.read_sql_query(sql, conn)
-
-    if df.empty:
-        return {}
-
-    df["product_code"] = df["product_code"].astype(str).str.strip()
-    df["purchase_price"] = pd.to_numeric(df["purchase_price"], errors="coerce").fillna(0)
-    df = df[df["product_code"] != ""].copy()
-
-    return dict(zip(df["product_code"], df["purchase_price"]))
+    홈 화면 프레임(sales_amount / margin_amount 컬럼명)에 db.apply_non_cigar_margin_logic(정본)을 적용.
+    - sales_amount 는 부가세 제외 매출(sales_supply_amount_krw)이어야 한다.
+    - 시가 외 상품 원가 = 매입가×수량(기프트패키지는 구성품 원가 합계), 이익 = 매출 - 원가
+    """
+    if df.empty or "product_code" not in df.columns:
+        return df
+    work = df.rename(columns={"sales_amount": "net_sales_amount", "margin_amount": "retail_gross_profit_krw"})
+    if "total_korea_cost_krw" not in work.columns:
+        work["total_korea_cost_krw"] = 0.0
+    work = apply_non_cigar_margin_logic(work, conn)
+    return work.rename(columns={"net_sales_amount": "sales_amount", "retail_gross_profit_krw": "margin_amount"})
 
 
 def get_product_name_map(conn) -> dict:
@@ -178,14 +169,14 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
         "sales_type", "product_code", "product_name", "qty", "unit_price"
     ]
 
-    purchase_price_map = get_non_cigar_purchase_price_map(conn)
     product_name_map = get_product_name_map(conn)
 
     if view_exists(conn, "v_retail_sales_enriched"):
         vcols = get_table_columns(conn, "v_retail_sales_enriched")
 
         sale_date_col = pick_col(vcols, ["sale_date", "sales_date", "dt"])
-        sales_col = pick_col(vcols, ["net_sales_amount", "sales_amount", "amount"])
+        # 매출은 부가세 제외(공급가액) 기준으로 통일 (대시보드/재무관리와 동일)
+        sales_col = pick_col(vcols, ["sales_supply_amount_krw", "net_sales_amount", "sales_amount", "amount"])
         cost_col = pick_col(vcols, ["total_korea_cost_krw", "total_cost_krw"])
         gp_col = pick_col(vcols, ["retail_gross_profit_krw", "gross_profit_krw", "margin_amount"])
         product_code_col = pick_col(vcols, ["product_code", "product_code_raw"])
@@ -228,19 +219,8 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
                     df.loc[missing_name_mask, "product_code"].map(product_name_map).fillna("")
                 )
 
-                non_cigar_mask = df["product_code"].isin(purchase_price_map.keys())
-                df.loc[non_cigar_mask, "_purchase_price"] = (
-                    df.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
-                )
-                df.loc[non_cigar_mask, "total_korea_cost_krw"] = (
-                    df.loc[non_cigar_mask, "_purchase_price"] * df.loc[non_cigar_mask, "qty"]
-                )
-                df.loc[non_cigar_mask, "margin_amount"] = (
-                    df.loc[non_cigar_mask, "sales_amount"] - df.loc[non_cigar_mask, "total_korea_cost_krw"]
-                )
-
-                if "_purchase_price" in df.columns:
-                    df = df.drop(columns=["_purchase_price"])
+                # 시가 외 상품 원가/이익 재계산 (정본: db.apply_non_cigar_margin_logic)
+                df = _apply_non_cigar_margin_home(df, conn)
 
                 df["sales_type"] = "소매"
                 df = df.dropna(subset=["dt"])
@@ -258,6 +238,8 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
 
     sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
     sales_col = pick_col(cols, ["net_sales_amount", "sales_amount", "amount"])
+    vat_col = pick_col(cols, ["vat_amount"])
+    taxable_col = pick_col(cols, ["taxable_yn"])
     name_col = pick_col(cols, ["customer_name", "customer", "customer_nm", "buyer_name", "store_name"])
     product_code_col = pick_col(cols, ["product_code", "product_code_raw"])
     product_name_col = pick_col(cols, ["product_name"])
@@ -268,10 +250,20 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     if not sale_date_col or not sales_col:
         return pd.DataFrame(columns=empty_cols)
 
+    # 뷰가 없을 때도 부가세 제외(공급가액) 기준으로 매출을 계산 (v_retail_sales_enriched와 동일 식)
+    if vat_col and taxable_col:
+        sales_expr = (
+            f"CASE WHEN COALESCE({taxable_col}, '과세') = '과세' "
+            f"THEN COALESCE({sales_col}, 0) - COALESCE({vat_col}, 0) "
+            f"ELSE COALESCE({sales_col}, 0) END"
+        )
+    else:
+        sales_expr = f"COALESCE({sales_col}, 0)"
+
     sql = f"""
         SELECT
             {sale_date_col} AS sale_date,
-            COALESCE({sales_col}, 0) AS sales_amount,
+            {sales_expr} AS sales_amount,
             {"COALESCE(" + gp_col + ", 0)" if gp_col else "0"} AS margin_amount,
             {"COALESCE(" + name_col + ", '')" if name_col else "''"} AS customer_name,
             {"COALESCE(" + product_code_col + ", '')" if product_code_col else "''"} AS product_code,
@@ -300,17 +292,8 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
         df.loc[missing_name_mask, "product_code"].map(product_name_map).fillna("")
     )
 
-    non_cigar_mask = df["product_code"].isin(purchase_price_map.keys())
-    df.loc[non_cigar_mask, "_purchase_price"] = (
-        df.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
-    )
-    df.loc[non_cigar_mask, "margin_amount"] = (
-        df.loc[non_cigar_mask, "sales_amount"]
-        - (df.loc[non_cigar_mask, "_purchase_price"] * df.loc[non_cigar_mask, "qty"])
-    )
-
-    if "_purchase_price" in df.columns:
-        df = df.drop(columns=["_purchase_price"])
+    # 시가 외 상품 원가/이익 재계산 (정본: db.apply_non_cigar_margin_logic)
+    df = _apply_non_cigar_margin_home(df, conn)
 
     df["sales_type"] = "소매"
     df = df.dropna(subset=["dt"])

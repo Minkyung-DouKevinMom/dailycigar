@@ -96,7 +96,7 @@ def main():
             COALESCE(product_code, product_code_raw,'') AS product_code,
             COALESCE(mst_product_name, product_code_raw,'미분류') AS product_name,
             COALESCE(qty,0) AS qty,
-            COALESCE(net_sales_amount,0) AS sales,
+            COALESCE(sales_supply_amount_krw,0) AS sales,  -- 부가세 제외(공급가액), 앱 화면과 동일 기준
             COALESCE(retail_gross_profit_krw,0) AS profit
         FROM v_retail_sales_enriched
         """,
