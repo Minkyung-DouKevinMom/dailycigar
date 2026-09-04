@@ -76,8 +76,8 @@ def _build_partner_cycle_summary(line_df: pd.DataFrame) -> pd.DataFrame:
                 "거래처": partner_name,
                 "최근 구매일": recent_purchase_date.date() if pd.notna(recent_purchase_date) else "",
                 "이전 구매일": prev_purchase_date.date() if pd.notna(prev_purchase_date) else "",
-                "최근 구매간격(일)": recent_interval if recent_interval is not None else "",
-                "평균 구매간격(일)": avg_interval if avg_interval is not None else "",
+                "최근 구매간격(일)": recent_interval if recent_interval is not None else None,
+                "평균 구매간격(일)": avg_interval if avg_interval is not None else None,
                 "구매일수": purchase_count,
                 "최근 구매금액": recent_purchase_amount,
                 "누적 매출": total_sales,
@@ -154,10 +154,19 @@ def render():
         st.divider()
 
         show_df = grouped.rename(columns={"partner_name": "거래처"}).copy()
-        for col in ["매출", "이익"]:
-            show_df[col] = show_df[col].apply(fmt_krw)
-
-        st.dataframe(show_df, use_container_width=True, height=420, hide_index=True)
+        # 매출/이익은 문자열(₩ 포함)로 바꾸지 않고 숫자형 그대로 두어 표에서 숫자 기준
+        # 정렬이 올바르게 동작하도록 한다. 표시 형식(천단위 구분)은 column_config로 지정.
+        st.dataframe(
+            show_df,
+            use_container_width=True,
+            height=420,
+            hide_index=True,
+            column_config={
+                "매출": st.column_config.NumberColumn("매출", format="%,.0f"),
+                "이익": st.column_config.NumberColumn("이익", format="%,.0f"),
+                "마진율(%)": st.column_config.NumberColumn("마진율(%)", format="%.1f"),
+            },
+        )
 
         st.markdown("### TOP 거래처")
 
@@ -262,11 +271,19 @@ def render():
         if summary_df.empty:
             st.info("구매주기 요약을 계산할 데이터가 없습니다.")
         else:
-            for col in ["최근 구매금액", "누적 매출"]:
-                if col in summary_df.columns:
-                    summary_df[col] = summary_df[col].apply(fmt_krw)
-
-            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+            # 숫자 컬럼은 문자열(₩ 포함)로 바꾸지 않고 숫자형 그대로 두어
+            # 표에서 숫자 기준 정렬이 올바르게 동작하도록 한다.
+            st.dataframe(
+                summary_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "최근 구매간격(일)": st.column_config.NumberColumn("최근 구매간격(일)", format="%d"),
+                    "평균 구매간격(일)": st.column_config.NumberColumn("평균 구매간격(일)", format="%.1f"),
+                    "최근 구매금액": st.column_config.NumberColumn("최근 구매금액", format="%,.0f"),
+                    "누적 매출": st.column_config.NumberColumn("누적 매출", format="%,.0f"),
+                },
+            )
 
     finally:
         conn.close()
