@@ -8,11 +8,7 @@ from db import (
 )
 
 
-def _fmt(v) -> str:
-    try:
-        return f"₩{float(v):,.0f}"
-    except Exception:
-        return "₩0"
+from modules.common.fmt import fmt_krw as _fmt  # 공통 포맷 함수 사용
 
 
 def _render_margin_chart(

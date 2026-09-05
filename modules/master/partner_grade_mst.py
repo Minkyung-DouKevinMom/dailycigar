@@ -1,23 +1,19 @@
 # modules/master/partner_grade_mst.py
 
-import sqlite3
 from contextlib import closing
 
 import pandas as pd
 import streamlit as st
 
+from modules.common.dbutil import get_conn
 
-DB_PATH = "cigar.db"
+
 TABLE_NAME = "partner_grade_mst"
 
 
 # -----------------------------
 # DB 공통
 # -----------------------------
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
 def get_table_columns():
     with closing(get_conn()) as conn:
         cur = conn.cursor()

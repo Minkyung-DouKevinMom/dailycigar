@@ -1,31 +1,12 @@
-import os
 import sqlite3
 from typing import Optional
 
 import pandas as pd
 import streamlit as st
 
-DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
+from modules.common.dbutil import get_conn, table_exists
+
 TABLE_NAME = "non_cigar_product_mst"
-
-
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
-def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
-        (table_name,),
-    )
-    return cur.fetchone() is not None
-
-
-def get_table_columns(conn: sqlite3.Connection, table_name: str):
-    cur = conn.cursor()
-    cur.execute(f"PRAGMA table_info({table_name})")
-    return cur.fetchall()
 
 
 def init_session_state():

@@ -1,34 +1,15 @@
-import os
-import sqlite3
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 
 from db import apply_non_cigar_margin_logic
 
-DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
-
 
 # =========================
 # 공통
 # =========================
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
-def fmt_krw(x):
-    try:
-        return f"₩{float(x):,.0f}"
-    except:
-        return "₩0"
-
-
-def apply_currency(df, cols):
-    df = df.copy()
-    for c in cols:
-        if c in df.columns:
-            df[c] = df[c].apply(fmt_krw)
-    return df
+from modules.common.dbutil import get_conn
+from modules.common.fmt import fmt_krw, apply_currency_format as apply_currency
 
 
 # =========================

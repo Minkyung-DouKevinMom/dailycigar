@@ -1,22 +1,9 @@
-import os
-import sqlite3
-
 import altair as alt
 import pandas as pd
 import streamlit as st
 
-DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
-
-
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
-def fmt_krw(x):
-    try:
-        return f"₩{float(x):,.0f}"
-    except Exception:
-        return "₩0"
+from modules.common.dbutil import get_conn
+from modules.common.fmt import fmt_krw
 
 
 def _find_date_column(df: pd.DataFrame):

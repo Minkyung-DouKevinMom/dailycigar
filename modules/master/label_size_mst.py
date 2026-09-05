@@ -6,23 +6,15 @@
 전후면(Front & Back)/측면(Side) 라벨 사이즈를 공유한다.
 """
 
-import sqlite3
 from contextlib import closing
 
 import pandas as pd
 import streamlit as st
 
 import db
+from modules.common.dbutil import get_conn
 
-DB_PATH = "cigar.db"
 TABLE_NAME = "label_size_mst"
-
-
-# -----------------------------
-# DB 공통
-# -----------------------------
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
 def load_data():
