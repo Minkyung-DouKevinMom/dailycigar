@@ -8,6 +8,7 @@ from modules.common.dbutil import get_conn, table_exists, get_table_columns, pic
 from modules.common.fmt import fmt_krw
 from modules.common.dates import month_range, prev_month
 from modules.common.sales_query import load_retail_sales, load_wholesale_sales
+from modules.dashboard.monthly_target import render_target_widget
 
 
 # 대시보드는 "순수 판매 성과"만 보여주는 목적이라, 투자비(자산성 구매)·일회성비용
@@ -533,6 +534,10 @@ def render():
             "※ 월 지출/영업이익은 순수 판매 성과를 보기 위해 투자비·일회성비용·물류비 지출그룹을 제외한 값입니다. "
             "전체 지출(투자비·일회성비용·물류비 포함)은 재무관리 화면에서 확인해 주세요."
         )
+
+        st.divider()
+        render_target_widget(conn, year, month, current)
+        st.divider()
 
         tab1, tab2, tab3, tab4, tab5 = st.tabs(
             ["월별 추이", "일별 매출 추이", "최근 판매 내역", "최근 지출", "상위 제품"]
