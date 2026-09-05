@@ -12,6 +12,7 @@ from modules.dashboard.channel_share import render_channel_share
 from modules.dashboard.weekday_pattern import render_weekday_pattern
 from modules.dashboard.monthly_target import render_target_summary_line
 from modules.dashboard.dashboard_finance_summary import get_month_summary
+from modules.dashboard.stock_alert import render_stock_depletion
 
 st.set_page_config(page_title="Daily Cigar DB", layout="wide")
 
@@ -319,9 +320,12 @@ def get_last_sale_date_map(conn) -> pd.DataFrame:
         return pd.DataFrame(columns=["product_code", "last_sale_date"])
 
 
-def calc_long_unsold_stock(conn, today: pd.Timestamp, threshold_days: int = 60) -> pd.DataFrame:
+def calc_long_unsold_stock(
+    conn, today: pd.Timestamp, threshold_days: int = 60, stock_df: pd.DataFrame | None = None
+) -> pd.DataFrame:
     """현재고 > 0 인데 threshold_days일 이상(또는 판매 이력 자체가 없는) 상품 목록."""
-    stock_df = get_current_stock_df(conn)
+    if stock_df is None:
+        stock_df = get_current_stock_df(conn)
     if stock_df.empty:
         return pd.DataFrame()
 
@@ -495,9 +499,17 @@ try:
 
     st.divider()
 
+    # 현재고는 한 번만 조회해서 소진 임박 / 장기 미판매 두 섹션이 함께 사용
+    stock_df = get_current_stock_df(conn)
+
+    # 재고 소진 임박 (최근 30일 판매 속도 기준) — card_df = 최근 30일 판매
+    render_stock_depletion(stock_df, card_df, today)
+
+    st.markdown("")
+
     st.markdown("**📦 장기 미판매 재고**")
     st.caption("현재고가 있으나 60일 이상 판매 이력이 없는 상품 (판매 이력이 아예 없는 상품 포함)")
-    unsold_df = calc_long_unsold_stock(conn, today, threshold_days=60)
+    unsold_df = calc_long_unsold_stock(conn, today, threshold_days=60, stock_df=stock_df)
     if unsold_df.empty:
         st.success("60일 이상 미판매 재고가 없습니다.")
     else:
