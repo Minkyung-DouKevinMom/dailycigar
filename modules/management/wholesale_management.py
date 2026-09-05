@@ -280,6 +280,67 @@ def load_partners(conn) -> pd.DataFrame:
     """
     return pd.read_sql(sql, conn)
 
+def load_partner_last_purchase(conn) -> pd.DataFrame:
+    """거래처별 마지막 도매 구매일 / 구매일수(거래 횟수)."""
+    empty = pd.DataFrame(columns=["partner_id", "last_purchase_date", "purchase_count"])
+    if not table_exists(conn, "wholesale_sales"):
+        return empty
+    sql = """
+        SELECT
+            partner_id,
+            MAX(sale_date) AS last_purchase_date,
+            COUNT(DISTINCT sale_date) AS purchase_count
+        FROM wholesale_sales
+        WHERE partner_id IS NOT NULL AND COALESCE(sale_date, '') <> ''
+        GROUP BY partner_id
+    """
+    try:
+        df = pd.read_sql(sql, conn)
+    except Exception:
+        return empty
+    if df.empty:
+        return empty
+    df["partner_id"] = pd.to_numeric(df["partner_id"], errors="coerce").astype("Int64")
+    df["purchase_count"] = pd.to_numeric(df["purchase_count"], errors="coerce").fillna(0).astype(int)
+    return df
+
+
+PARTNER_SORT_RECENT = "최근구매순"
+PARTNER_SORT_NAME = "거래처명순"
+PARTNER_SORT_AMOUNT = "구매금액순"
+PARTNER_SORT_OPTIONS = (PARTNER_SORT_RECENT, PARTNER_SORT_NAME, PARTNER_SORT_AMOUNT)
+
+
+def sort_partners(df: pd.DataFrame, sort_key: str = PARTNER_SORT_RECENT) -> pd.DataFrame:
+    """
+    거래처 목록 정렬 (순수 함수).
+    - 최근구매순: 마지막 구매일 내림차순, 구매 이력이 없는 거래처는 맨 뒤, 동률은 거래처명순
+    - 거래처명순 / 구매금액순(등급업 이후 공급가합계 내림차순)
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    name = out["partner_name"].fillna("") if "partner_name" in out.columns else pd.Series("", index=out.index)
+
+    if sort_key == PARTNER_SORT_NAME or "last_purchase_date" not in out.columns:
+        if sort_key == PARTNER_SORT_AMOUNT and "purchase_supply_amount_sum" in out.columns:
+            amount = pd.to_numeric(out["purchase_supply_amount_sum"], errors="coerce").fillna(0)
+            return out.assign(_a=amount, _n=name).sort_values(["_a", "_n"], ascending=[False, True]).drop(columns=["_a", "_n"])
+        return out.assign(_n=name).sort_values("_n").drop(columns=["_n"])
+
+    if sort_key == PARTNER_SORT_AMOUNT:
+        amount = pd.to_numeric(out.get("purchase_supply_amount_sum"), errors="coerce").fillna(0)
+        return out.assign(_a=amount, _n=name).sort_values(["_a", "_n"], ascending=[False, True]).drop(columns=["_a", "_n"])
+
+    last = pd.to_datetime(out["last_purchase_date"], errors="coerce")
+    return (
+        out.assign(_never=last.isna(), _last=last, _n=name)
+        .sort_values(["_never", "_last", "_n"], ascending=[True, False, True])
+        .drop(columns=["_never", "_last", "_n"])
+    )
+
+
 def load_grade_codes(conn) -> list[str]:
     if not table_exists(conn, "partner_grade_mst"):
         return []
@@ -1574,6 +1635,19 @@ def render_partner_registration(conn):
         partners["next_grade_code"] = None
         partners["next_grade_remaining"] = None
 
+    last_purchase = load_partner_last_purchase(conn)
+    if not last_purchase.empty:
+        partners = partners.merge(
+            last_purchase,
+            how="left",
+            left_on="id",
+            right_on="partner_id",
+            suffixes=("", "_lp"),
+        )
+    else:
+        partners["last_purchase_date"] = None
+        partners["purchase_count"] = 0
+
     if not grade_active_map.empty:
         partners = partners.merge(
             grade_active_map.rename(columns={
@@ -1775,7 +1849,13 @@ def render_partner_registration(conn):
     if not partners.empty:
         st.divider()
         st.markdown("#### 등록된 거래처")
-        view_df = partners.rename(columns={
+        sort_key = st.selectbox(
+            "정렬", list(PARTNER_SORT_OPTIONS), index=0, key="partner_list_sort",
+            help="기본값은 최근구매순입니다. 구매 이력이 없는 거래처는 맨 뒤에 표시됩니다.",
+        )
+        view_df = sort_partners(partners, sort_key).rename(columns={
+            "last_purchase_date": "최근구매일",
+            "purchase_count": "구매횟수",
             "partner_name": "거래처명",
             "partner_type": "유형",
             "phone": "연락처",
@@ -1822,8 +1902,17 @@ def render_partner_registration(conn):
                 .map(lambda x: "Y" if int(x) == 1 else "")
             )
 
+        if "최근구매일" in view_df.columns:
+            view_df["최근구매일"] = view_df["최근구매일"].fillna("구매이력없음")
+        if "구매횟수" in view_df.columns:
+            view_df["구매횟수"] = (
+                pd.to_numeric(view_df["구매횟수"], errors="coerce").fillna(0).map(lambda x: f"{int(x):,}회")
+            )
+
         preferred_order = [
             "거래처명",
+            "최근구매일",
+            "구매횟수",
             "유형",
             "연락처",
             "등급(자동계산)",
