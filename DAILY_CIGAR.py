@@ -6,6 +6,7 @@ from modules.common.dbutil import get_conn, get_db_path, get_table_columns, pick
 from modules.common.fmt import fmt_krw, fmt_count
 from modules.common.sales_query import load_retail_sales, load_wholesale_sales
 from modules.common.upload_status import render_retail_upload_status
+from modules.dashboard.month_cumulative import render_month_cumulative
 
 st.set_page_config(page_title="Daily Cigar DB", layout="wide")
 
@@ -525,6 +526,9 @@ try:
         r1.metric("소매", f"{retail_ratio:.1f}%")
         r2.metric("도매", f"{wholesale_ratio:.1f}%")
         st.caption(f"소매 {fmt_krw(retail_sales)} / 도매 {fmt_krw(wholesale_sales)}")
+
+        # 이번 달 vs 지난 달 일자별 누적 매출 (all_time_df 재사용, 추가 조회 없음)
+        render_month_cumulative(all_time_df, today)
 
     st.divider()
 
