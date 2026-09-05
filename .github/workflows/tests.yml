@@ -1,0 +1,23 @@
+name: tests
+
+# main 에 푸시되거나 PR 이 열릴 때마다 계산 로직 회귀 테스트(tests/)를 자동 실행합니다.
+# cigar.db 가 저장소에 포함돼 있으므로 실제 데이터 기준으로 화면 간 집계 일치를 검증합니다.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run tests
+        run: python -m pytest tests -q
