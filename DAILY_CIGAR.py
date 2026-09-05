@@ -13,6 +13,7 @@ from modules.dashboard.weekday_pattern import render_weekday_pattern
 from modules.dashboard.monthly_target import render_target_summary_line
 from modules.dashboard.dashboard_finance_summary import get_month_summary
 from modules.dashboard.stock_alert import render_stock_depletion
+from modules.dashboard.kpi_summary import summarize_kpis, split_period, format_delta_pct, format_delta_count
 
 st.set_page_config(page_title="Daily Cigar DB", layout="wide")
 
@@ -22,8 +23,8 @@ st.set_page_config(page_title="Daily Cigar DB", layout="wide")
 # =========================
 
 
-def metric_with_caption(column, label: str, value: str, caption: str):
-    column.metric(label, value)
+def metric_with_caption(column, label: str, value: str, caption: str, delta: str | None = None):
+    column.metric(label, value, delta=delta)
     column.caption(caption)
 
 
@@ -165,53 +166,8 @@ def load_period_sales(conn, date_from: str, date_to: str) -> pd.DataFrame:
 
 
 # =========================
-# 인사이트
+# 인사이트 (상품별 증감 하이라이트)
 # =========================
-def calc_insights(df: pd.DataFrame) -> list[str]:
-    if df.empty:
-        return ["매출 데이터가 아직 없습니다."]
-
-    today = pd.Timestamp.today().normalize()
-
-    # 최근 30일: today-29 ~ today
-    recent_start = today - pd.Timedelta(days=29)
-    # 이전 30일: today-59 ~ today-30
-    prior_end = today - pd.Timedelta(days=30)
-    prior_start = today - pd.Timedelta(days=59)
-
-    recent = df[(df["dt"] >= recent_start) & (df["dt"] <= today)]
-    prior  = df[(df["dt"] >= prior_start)  & (df["dt"] <= prior_end)]
-
-    messages = []
-
-    recent_sales = recent["sales_amount"].sum()
-    prior_sales  = prior["sales_amount"].sum()
-
-    if prior_sales > 0:
-        diff_pct = (recent_sales - prior_sales) / prior_sales * 100
-        direction = "증가" if diff_pct >= 0 else "감소"
-        messages.append(
-            f"최근 30일 매출({recent_start.strftime('%m/%d')}\u2013{today.strftime('%m/%d')})은 "
-            f"이전 30일({prior_start.strftime('%m/%d')}\u2013{prior_end.strftime('%m/%d')}) 대비 "
-            f"{abs(diff_pct):.1f}% {direction}했습니다. "
-            f"({fmt_krw(prior_sales)} → {fmt_krw(recent_sales)})"
-        )
-    else:
-        messages.append("이전 30일 비교를 위한 데이터가 아직 충분하지 않습니다.")
-
-    if recent_sales > 0:
-        recent_margin = recent["margin_amount"].sum()
-        margin_rate = (recent_margin / recent_sales * 100) if recent_sales else 0
-        messages.append(f"최근 30일 마진율은 {margin_rate:.1f}%입니다.")
-
-    wholesale_sales = recent.loc[recent["sales_type"] == "도매", "sales_amount"].sum()
-    wholesale_ratio = (wholesale_sales / recent_sales * 100) if recent_sales else 0
-    retail_ratio = 100 - wholesale_ratio if recent_sales else 0
-    messages.append(f"최근 30일 매출 비중은 소매 {retail_ratio:.1f}% / 도매 {wholesale_ratio:.1f}%입니다.")
-
-    return messages[:3]
-
-
 def calc_product_sales_highlights(
     df: pd.DataFrame, today: pd.Timestamp, top_n: int = 2
 ) -> tuple[list[dict], list[dict]]:
@@ -398,46 +354,45 @@ try:
     all_time_df = load_period_sales(conn, "2000-01-01", today.strftime("%Y-%m-%d"))
 
     card_df = last_30_df.copy()
-    st.caption(f"계산기간: {last_30_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')}")
+    prior_df = split_period(sales_df, today, window_days=30)[1]
+    cur = summarize_kpis(card_df)
+    prev = summarize_kpis(prior_df)
 
-    card_sales = card_df["sales_amount"].sum() if not card_df.empty else 0
-    card_margin = card_df["margin_amount"].sum() if not card_df.empty else 0
-    deal_count = len(card_df)
-    avg_ticket = card_sales / deal_count if deal_count > 0 else 0
-
-    wholesale_sales = card_df.loc[card_df["sales_type"] == "도매", "sales_amount"].sum() if not card_df.empty else 0
-    retail_sales = card_df.loc[card_df["sales_type"] == "소매", "sales_amount"].sum() if not card_df.empty else 0
-
-    wholesale_margin = card_df.loc[card_df["sales_type"] == "도매", "margin_amount"].sum() if not card_df.empty else 0
-    retail_margin = card_df.loc[card_df["sales_type"] == "소매", "margin_amount"].sum() if not card_df.empty else 0
-
-    wholesale_count = int((card_df["sales_type"] == "도매").sum()) if not card_df.empty else 0
-    retail_count = int((card_df["sales_type"] == "소매").sum()) if not card_df.empty else 0
+    prior_start = today - pd.Timedelta(days=59)
+    prior_end = today - pd.Timedelta(days=30)
+    st.caption(
+        f"계산기간: {last_30_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')}  |  "
+        f"증감 비교 대상: 이전 30일 {prior_start.strftime('%Y-%m-%d')}~{prior_end.strftime('%Y-%m-%d')}"
+    )
 
     k1, k2, k3, k4 = st.columns(4)
     metric_with_caption(
         k1,
         "최근 30일 매출",
-        fmt_krw(card_sales),
-        f"소매: {fmt_krw(retail_sales)}, 도매: {fmt_krw(wholesale_sales)}",
+        fmt_krw(cur["sales"]),
+        f"소매: {fmt_krw(cur['retail_sales'])}, 도매: {fmt_krw(cur['wholesale_sales'])}",
+        delta=format_delta_pct(cur["sales"], prev["sales"]),
     )
     metric_with_caption(
         k2,
         "최근 30일 마진",
-        fmt_krw(card_margin),
-        f"소매: {fmt_krw(retail_margin)}, 도매: {fmt_krw(wholesale_margin)}",
+        fmt_krw(cur["margin"]),
+        f"마진율 {cur['margin_rate']:.1f}%  ·  소매: {fmt_krw(cur['retail_margin'])}, 도매: {fmt_krw(cur['wholesale_margin'])}",
+        delta=format_delta_pct(cur["margin"], prev["margin"]),
     )
     metric_with_caption(
         k3,
         "거래건수",
-        fmt_count(deal_count),
-        f"소매: {retail_count:,}건, 도매: {wholesale_count:,}건",
+        fmt_count(cur["deal_count"]),
+        f"소매: {cur['retail_count']:,}건, 도매: {cur['wholesale_count']:,}건",
+        delta=format_delta_count(cur["deal_count"], prev["deal_count"]),
     )
     metric_with_caption(
         k4,
         "객단가",
-        fmt_krw(avg_ticket),
+        fmt_krw(cur["avg_ticket"]),
         "최근 30일 매출 ÷ 거래건수",
+        delta=format_delta_pct(cur["avg_ticket"], prev["avg_ticket"]),
     )
 
     st.divider()
@@ -462,13 +417,11 @@ try:
 
     st.divider()
 
-    st.subheader("인사이트")
-    for msg in calc_insights(sales_df):
-        st.text(f"• {msg}")
-    st.caption(f"비교기간: 최근 30일 vs 이전 30일  |  {insight_period_start.strftime('%Y-%m-%d')} ~ {today.strftime('%Y-%m-%d')}")
-
-    st.markdown("**📈 상품별 매출 증감 하이라이트**")
-    st.caption("최근 30일 vs 이전 30일, 소매+도매 합산 상품별 매출")
+    st.subheader("상품별 매출 증감 하이라이트")
+    st.caption(
+        f"최근 30일 vs 이전 30일, 소매+도매 합산 상품별 매출  |  "
+        f"{insight_period_start.strftime('%Y-%m-%d')} ~ {today.strftime('%Y-%m-%d')}"
+    )
     gainers, decliners = calc_product_sales_highlights(sales_df, today)
     if not gainers and not decliners:
         st.info("비교할 데이터가 아직 충분하지 않습니다.")
