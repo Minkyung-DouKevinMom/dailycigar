@@ -166,48 +166,6 @@ def load_period_sales(conn, date_from: str, date_to: str) -> pd.DataFrame:
 
 
 # =========================
-# 인사이트 (상품별 증감 하이라이트)
-# =========================
-def calc_product_sales_highlights(
-    df: pd.DataFrame, today: pd.Timestamp, top_n: int = 2
-) -> tuple[list[dict], list[dict]]:
-    """
-    최근 30일 vs 이전 30일, 상품별(소매+도매 합산) 매출 증감 Top N.
-    반환: (증가 Top N, 감소 Top N) - 각 원소는
-    {"product_name", "recent", "prior", "diff"}
-    """
-    if df.empty:
-        return [], []
-
-    recent_start = today - pd.Timedelta(days=29)
-    prior_end = today - pd.Timedelta(days=30)
-    prior_start = today - pd.Timedelta(days=59)
-
-    recent = df[(df["dt"] >= recent_start) & (df["dt"] <= today)]
-    prior = df[(df["dt"] >= prior_start) & (df["dt"] <= prior_end)]
-
-    def agg(d: pd.DataFrame) -> pd.Series:
-        d = d[d["product_name"].astype(str).str.strip() != ""]
-        if d.empty:
-            return pd.Series(dtype=float)
-        return d.groupby("product_name")["sales_amount"].sum()
-
-    recent_g = agg(recent)
-    prior_g = agg(prior)
-    names = set(recent_g.index) | set(prior_g.index)
-
-    rows = []
-    for name in names:
-        r = float(recent_g.get(name, 0))
-        p = float(prior_g.get(name, 0))
-        rows.append({"product_name": name, "recent": r, "prior": p, "diff": r - p})
-
-    gainers = sorted([r for r in rows if r["diff"] > 0], key=lambda x: x["diff"], reverse=True)[:top_n]
-    decliners = sorted([r for r in rows if r["diff"] < 0], key=lambda x: x["diff"])[:top_n]
-    return gainers, decliners
-
-
-# =========================
 # 장기 미판매 재고
 # =========================
 def get_current_stock_df(conn) -> pd.DataFrame:
@@ -336,7 +294,7 @@ try:
 
     month_start = today.replace(day=1)
     last_30_start = today - pd.Timedelta(days=29)
-    insight_period_start = today - pd.Timedelta(days=59)  # 최근 30일 + 이전 30일
+    compare_period_start = today - pd.Timedelta(days=59)  # KPI 증감 비교용: 최근 30일 + 이전 30일
 
     last_30_df = load_period_sales(
         conn,
@@ -346,7 +304,7 @@ try:
 
     sales_df = load_period_sales(
         conn,
-        insight_period_start.strftime("%Y-%m-%d"),
+        compare_period_start.strftime("%Y-%m-%d"),
         today.strftime("%Y-%m-%d"),
     )
 
@@ -414,41 +372,6 @@ try:
 
         # 이번 달 vs 지난 달 일자별 누적 매출 (all_time_df 재사용, 추가 조회 없음)
         render_month_cumulative(all_time_df, today)
-
-    st.divider()
-
-    st.subheader("상품별 매출 증감 하이라이트")
-    st.caption(
-        f"최근 30일 vs 이전 30일, 소매+도매 합산 상품별 매출  |  "
-        f"{insight_period_start.strftime('%Y-%m-%d')} ~ {today.strftime('%Y-%m-%d')}"
-    )
-    gainers, decliners = calc_product_sales_highlights(sales_df, today)
-    if not gainers and not decliners:
-        st.info("비교할 데이터가 아직 충분하지 않습니다.")
-    else:
-        hc1, hc2 = st.columns(2)
-        with hc1:
-            st.markdown("🔼 매출 증가 Top")
-            if gainers:
-                for g in gainers:
-                    pct_str = f"{g['diff'] / g['prior'] * 100:+.0f}%" if g["prior"] > 0 else "신규 판매"
-                    st.text(
-                        f"• {g['product_name']}: {fmt_krw(g['prior'])} → {fmt_krw(g['recent'])} "
-                        f"({pct_str}, +{fmt_krw(g['diff'])})"
-                    )
-            else:
-                st.caption("증가한 상품이 없습니다.")
-        with hc2:
-            st.markdown("🔽 매출 감소 Top")
-            if decliners:
-                for d in decliners:
-                    pct_str = f"{d['diff'] / d['prior'] * 100:+.0f}%" if d["prior"] > 0 else "-"
-                    st.text(
-                        f"• {d['product_name']}: {fmt_krw(d['prior'])} → {fmt_krw(d['recent'])} "
-                        f"({pct_str}, {fmt_krw(d['diff'])})"
-                    )
-            else:
-                st.caption("감소한 상품이 없습니다.")
 
     st.divider()
 
