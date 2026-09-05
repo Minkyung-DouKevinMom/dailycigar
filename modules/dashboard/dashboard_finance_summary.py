@@ -526,9 +526,10 @@ def render():
         )
         c8.metric("소매/도매 비중", f"{sales_mix_retail:.0f}% / {sales_mix_wholesale:.0f}%")
 
+        # 물결표는 마크다운에서 취소선(~text~)으로 해석되므로 이스케이프
         st.caption(
-            f"기준기간: {current['date_from']} ~ {current['date_to']} / "
-            f"비교기간: {previous['date_from']} ~ {previous['date_to']}"
+            f"기준기간: {current['date_from']} \\~ {current['date_to']} / "
+            f"비교기간: {previous['date_from']} \\~ {previous['date_to']}"
         )
         st.caption(
             "※ 월 지출/영업이익은 순수 판매 성과를 보기 위해 투자비·일회성비용·물류비 지출그룹을 제외한 값입니다. "

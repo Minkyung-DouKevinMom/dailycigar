@@ -318,9 +318,10 @@ try:
 
     prior_start = today - pd.Timedelta(days=59)
     prior_end = today - pd.Timedelta(days=30)
+    # 물결표는 마크다운에서 취소선(~text~)으로 해석되므로 이스케이프해서 그대로 보이게 한다
     st.caption(
-        f"계산기간: {last_30_start.strftime('%Y-%m-%d')}~{today.strftime('%Y-%m-%d')}  |  "
-        f"증감 비교 대상: 이전 30일 {prior_start.strftime('%Y-%m-%d')}~{prior_end.strftime('%Y-%m-%d')}"
+        f"계산기간: {last_30_start.strftime('%Y-%m-%d')}\\~{today.strftime('%Y-%m-%d')}  |  "
+        f"증감 비교 대상: 이전 30일 {prior_start.strftime('%Y-%m-%d')}\\~{prior_end.strftime('%Y-%m-%d')}"
     )
 
     k1, k2, k3, k4 = st.columns(4)
