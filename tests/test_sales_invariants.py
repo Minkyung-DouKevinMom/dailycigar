@@ -34,7 +34,7 @@ def test_retail_sales_is_vat_excluded(conn):
 
 
 # 원가 산정 근거가 없는 과거 상품코드(마스터/수입기록 없음). 새 코드가 여기 없이 나타나면 실패 → 마스터 등록 필요.
-KNOWN_LEGACY_CODES_WITHOUT_COST = {"시가커터선물용", "레스토랑휴미더", "1881PB(SR)"}
+KNOWN_LEGACY_CODES_WITHOUT_COST = {"시가커터선물용", "1881PB(SR)"}
 
 
 def _codes_with_cost_basis(conn) -> set[str]:
