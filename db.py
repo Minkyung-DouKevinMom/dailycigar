@@ -124,20 +124,27 @@ def apply_non_cigar_margin_logic(df: pd.DataFrame, conn) -> pd.DataFrame:
     out["total_korea_cost_krw"] = pd.to_numeric(out["total_korea_cost_krw"], errors="coerce").fillna(0)
     out["retail_gross_profit_krw"] = pd.to_numeric(out["retail_gross_profit_krw"], errors="coerce").fillna(0)
 
-    non_cigar_mask = out["product_code"].isin(purchase_price_map.keys())
+    # ⚠️ 매칭은 대소문자 무시: retail_sales.product_code 는 업로드 시 대문자로 정규화되지만
+    #    non_cigar_product_mst.product_code 는 원문 그대로(예: 'WoodenAshtraywithDrawer')라서
+    #    대소문자 구분 매칭 시 시가 외 상품 일부가 보정에서 빠져 이익이 0으로 집계되는 문제가 있었다.
+    code_upper = out["product_code"].str.upper()
+    purchase_price_map_u = {str(k).strip().upper(): v for k, v in purchase_price_map.items()}
+    gift_cost_map_u = {str(k).strip().upper(): v for k, v in gift_cost_map.items()}
+
+    non_cigar_mask = code_upper.isin(purchase_price_map_u.keys())
 
     out.loc[non_cigar_mask, "_purchase_price"] = (
-        out.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
+        code_upper[non_cigar_mask].map(purchase_price_map_u).fillna(0)
     )
     out.loc[non_cigar_mask, "total_korea_cost_krw"] = (
         out.loc[non_cigar_mask, "_purchase_price"] * out.loc[non_cigar_mask, "qty"]
     )
 
     # 기프트패키지는 구성품 원가 합계로 덮어씀 (purchase_price보다 우선)
-    gift_mask = out["product_code"].isin(gift_cost_map.keys())
+    gift_mask = code_upper.isin(gift_cost_map_u.keys())
     if gift_mask.any():
         out.loc[gift_mask, "_gift_unit_cost"] = (
-            out.loc[gift_mask, "product_code"].map(gift_cost_map).fillna(0)
+            code_upper[gift_mask].map(gift_cost_map_u).fillna(0)
         )
         out.loc[gift_mask, "total_korea_cost_krw"] = (
             out.loc[gift_mask, "_gift_unit_cost"] * out.loc[gift_mask, "qty"]

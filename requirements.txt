@@ -4,4 +4,4 @@ openpyxl
 numpy
 matplotlib
 plotly
-streamlit-aggrid
+streamlit-aggridpytest  # 테스트 스위트(tests/) 실행용

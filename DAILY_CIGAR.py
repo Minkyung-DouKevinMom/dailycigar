@@ -107,7 +107,8 @@ def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     df.loc[missing, "product_name"] = df.loc[missing, "product_code"].map(name_map).fillna("")
     df["sales_type"] = "소매"
     df = df.dropna(subset=["dt"])
-    df = df[df["sales_amount"] != 0].copy()
+    # 매출 0이지만 원가가 있는 라인(무상 제공 등)은 이익에 영향을 주므로 남긴다 — 다른 화면과 이익 합계 일치
+    df = df[(df["sales_amount"] != 0) | (df["margin_amount"] != 0)].copy()
     return df[cols]
 
 def get_wholesale_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
@@ -128,7 +129,8 @@ def get_wholesale_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame
     df.loc[missing, "product_name"] = df.loc[missing, "product_code"].map(name_map).fillna("")
     df["sales_type"] = "도매"
     df = df.dropna(subset=["dt"])
-    df = df[df["sales_amount"] != 0].copy()
+    # 매출 0이지만 원가가 있는 라인(무상 제공 등)은 이익에 영향을 주므로 남긴다 — 다른 화면과 이익 합계 일치
+    df = df[(df["sales_amount"] != 0) | (df["margin_amount"] != 0)].copy()
     return df[cols]
 
 
