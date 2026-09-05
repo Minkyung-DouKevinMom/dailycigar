@@ -4,10 +4,10 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from db import apply_non_cigar_margin_logic
 
-from modules.common.dbutil import get_conn, object_exists, table_exists, view_exists, get_table_columns
+from modules.common.dbutil import get_conn
 from modules.common.fmt import fmt_krw
+from modules.common.sales_query import load_retail_sales, load_wholesale_sales
 
 
 # =========================
@@ -52,101 +52,34 @@ def fmt_delta_count(curr: float, prev: float) -> str:
 # 데이터 로딩
 # =========================
 def get_retail_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
-    if view_exists(conn, "v_retail_sales_enriched"):
-        sql = """
-        SELECT
-            sale_date,
-            COALESCE(order_no, '') AS order_no,
-            TRIM(COALESCE(product_code, '')) AS product_code,
-            COALESCE(qty, 0) AS qty,
-            COALESCE(sales_supply_amount_krw, 0) AS sales_amount,
-            COALESCE(total_korea_cost_krw, 0) AS cost_amount,
-            COALESCE(retail_gross_profit_krw, 0) AS profit_amount
-        FROM v_retail_sales_enriched
-        WHERE sale_date BETWEEN ? AND ?
-        """
-        df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
-
-    elif table_exists(conn, "retail_sales"):
-        sql = """
-        SELECT
-            sale_date,
-            COALESCE(order_no, '') AS order_no,
-            TRIM(COALESCE(product_code, '')) AS product_code,
-            COALESCE(qty, 0) AS qty,
-            CASE WHEN COALESCE(taxable_yn, '과세') = '과세'
-                 THEN COALESCE(net_sales_amount, 0) - COALESCE(vat_amount, 0)
-                 ELSE COALESCE(net_sales_amount, 0) END AS sales_amount  -- 부가세 제외(뷰와 동일 식)
-        FROM retail_sales
-        WHERE sale_date BETWEEN ? AND ?
-        """
-        df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
-        df["cost_amount"] = 0
-        df["profit_amount"] = 0
-
-    else:
-        return pd.DataFrame(columns=["sale_date", "order_no", "product_code", "qty",
-                                     "sales_amount", "cost_amount", "profit_amount", "sales_type"])
-
-    for c in ["sales_amount", "cost_amount", "profit_amount", "qty"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-    df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
-
-    # ★ 시가 외 상품 원가/이익 재계산 — 정본 로직(db.apply_non_cigar_margin_logic) 사용
-    #   (매입가×수량, 기프트패키지는 구성품 원가 합계. 소매관리/대시보드/재무관리와 동일)
-    if not df.empty:
-        work = df.rename(columns={
-            "sales_amount": "net_sales_amount",
-            "cost_amount": "total_korea_cost_krw",
-            "profit_amount": "retail_gross_profit_krw",
-        })
-        work = apply_non_cigar_margin_logic(work, conn)
-        df = work.rename(columns={
-            "net_sales_amount": "sales_amount",
-            "total_korea_cost_krw": "cost_amount",
-            "retail_gross_profit_krw": "profit_amount",
-        })
-
+    """소매 데이터 (정본: modules.common.sales_query.load_retail_sales) → 기간비교용 컬럼명."""
+    cols = ["sale_date", "order_no", "product_code", "qty", "sales_amount", "cost_amount", "profit_amount", "sales_type"]
+    df = load_retail_sales(conn, date_from, date_to)
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    df = df.rename(columns={
+        "net_sales_amount": "sales_amount",
+        "total_korea_cost_krw": "cost_amount",
+        "retail_gross_profit_krw": "profit_amount",
+    })
     df["sales_type"] = "소매"
-    return df
+    return df[cols]
 
 
 def get_wholesale_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
-    if view_exists(conn, "v_wholesale_sales"):
-        sql = """
-        SELECT
-            sale_date,
-            CAST(id AS TEXT) AS order_no,
-            COALESCE(sales_amount, 0) AS sales_amount,
-            COALESCE(qty, 0) * COALESCE(unit_cost, 0) AS cost_amount,
-            COALESCE(profit_amount, 0) AS profit_amount
-        FROM v_wholesale_sales
-        WHERE sale_date BETWEEN ? AND ?
-        """
-        df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
-
-    elif table_exists(conn, "wholesale_sales"):
-        sql = """
-        SELECT
-            sale_date,
-            CAST(id AS TEXT) AS order_no,
-            COALESCE(sales_amount, 0) AS sales_amount,
-            COALESCE(qty, 0) * COALESCE(unit_cost, 0) AS cost_amount,
-            COALESCE(profit_amount, 0) AS profit_amount
-        FROM wholesale_sales
-        WHERE sale_date BETWEEN ? AND ?
-        """
-        df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
-
-    else:
-        return pd.DataFrame(columns=["sale_date", "order_no", "sales_amount", "cost_amount", "profit_amount", "sales_type"])
-
-    for c in ["sales_amount", "cost_amount", "profit_amount"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
+    """도매 데이터 (정본: modules.common.sales_query.load_wholesale_sales) → 기간비교용 컬럼명."""
+    cols = ["sale_date", "order_no", "sales_amount", "cost_amount", "profit_amount", "sales_type"]
+    df = load_wholesale_sales(conn, date_from, date_to)
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    df = df.rename(columns={
+        "net_sales_amount": "sales_amount",
+        "total_korea_cost_krw": "cost_amount",
+        "gross_profit_krw": "profit_amount",
+    })
+    df["order_no"] = df["id"].astype(str)
     df["sales_type"] = "도매"
-    return df
+    return df[cols]
 
 
 def load_period_sales(conn, date_from: str, date_to: str) -> pd.DataFrame:

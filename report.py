@@ -33,18 +33,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from db import apply_non_cigar_margin_logic  # noqa: E402
 
 
-RETAIL_SALES_EXPR_VIEW = "COALESCE(sales_supply_amount_krw, 0)"
-# 뷰가 없을 때(retail_sales 직접 조회) 부가세 제외 매출: v_retail_sales_enriched.sales_supply_amount_krw 와 동일 식
-RETAIL_SALES_EXPR_TABLE = (
-    "CASE WHEN COALESCE(taxable_yn, '과세') = '과세' "
-    "THEN COALESCE(net_sales_amount, 0) - COALESCE(vat_amount, 0) "
-    "ELSE COALESCE(net_sales_amount, 0) END"
+from modules.common.sales_query import (  # noqa: E402
+    RETAIL_SALES_EXPR_TABLE,
+    retail_sales_amount_expr as retail_sales_expr,
 )
-
-
-def retail_sales_expr(retail_src: str) -> str:
-    """소매 매출(부가세 제외, 공급가액) SQL 식. 대시보드/재무관리 화면과 동일 기준."""
-    return RETAIL_SALES_EXPR_VIEW if retail_src == "v_retail_sales_enriched" else RETAIL_SALES_EXPR_TABLE
 
 # ── 한글 폰트 설정 (클라우드 실행 환경엔 기본적으로 한글 폰트가 없을 수 있음) ──
 def setup_korean_font():

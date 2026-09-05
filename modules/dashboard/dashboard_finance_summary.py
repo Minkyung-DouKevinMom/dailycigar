@@ -4,11 +4,10 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 
-from db import get_non_cigar_purchase_price_map, apply_non_cigar_margin_logic
-
-from modules.common.dbutil import get_conn, object_exists, table_exists, view_exists, get_table_columns, pick_col
+from modules.common.dbutil import get_conn, table_exists, get_table_columns, pick_col
 from modules.common.fmt import fmt_krw
 from modules.common.dates import month_range, prev_month
+from modules.common.sales_query import load_retail_sales, load_wholesale_sales
 
 
 # 대시보드는 "순수 판매 성과"만 보여주는 목적이라, 투자비(자산성 구매)·일회성비용
@@ -113,170 +112,23 @@ def get_product_name_map(conn) -> dict:
 
 def get_retail_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
     """
-    - 시가는 기존 로직 유지
-    - 시가 외 상품만 purchase_price 기준으로 원가/이익 재계산 (db.apply_non_cigar_margin_logic 사용)
+    소매 라인 데이터 (정본: modules.common.sales_query.load_retail_sales).
+    매출은 부가세 제외, 시가 외 상품 원가/이익은 정본 로직으로 보정된 상태.
     """
-    if view_exists(conn, "v_retail_sales_enriched"):
-        vcols = get_table_columns(conn, "v_retail_sales_enriched")
-
-        sale_date_col = pick_col(vcols, ["sale_date", "sales_date", "dt"])
-        sales_col = pick_col(vcols, ["sales_supply_amount_krw", "net_sales_amount", "sales_amount", "amount"])
-        cost_col = pick_col(vcols, ["total_korea_cost_krw", "total_cost_krw"])
-        gp_col = pick_col(vcols, ["retail_gross_profit_krw", "gross_profit_krw", "margin_amount"])
-        product_code_col = pick_col(vcols, ["product_code", "product_code_raw"])
-        qty_col = pick_col(vcols, ["qty", "quantity"])
-
-        if not sale_date_col or not sales_col:
-            return pd.DataFrame()
-
-        sql = f"""
-            SELECT
-                {sale_date_col} AS sale_date,
-                COALESCE({sales_col}, 0) AS net_sales_amount,
-                {"COALESCE(" + cost_col + ", 0)" if cost_col else "0"} AS total_korea_cost_krw,
-                {"COALESCE(" + gp_col + ", 0)" if gp_col else "0"} AS gross_profit_krw,
-                {"COALESCE(" + product_code_col + ", '')" if product_code_col else "''"} AS product_code,
-                {"COALESCE(" + qty_col + ", 0)" if qty_col else "0"} AS qty
-            FROM v_retail_sales_enriched
-            WHERE {sale_date_col} BETWEEN ? AND ?
-        """
-        try:
-            df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
-        except Exception:
-            df = pd.DataFrame()
-
-        if not df.empty:
-            for c in ["net_sales_amount", "total_korea_cost_krw", "gross_profit_krw", "qty"]:
-                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-            df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
-
-            # 공용 로직(db.apply_non_cigar_margin_logic)은 retail_gross_profit_krw 컬럼명을
-            # 쓰므로 임시로 맞춰 호출 후 원래 컬럼명으로 되돌린다.
-            df = df.rename(columns={"gross_profit_krw": "retail_gross_profit_krw"})
-            df = apply_non_cigar_margin_logic(df, conn)
-            df = df.rename(columns={"retail_gross_profit_krw": "gross_profit_krw"})
-
-            return df
-
-    if table_exists(conn, "retail_sales"):
-        cols = get_table_columns(conn, "retail_sales")
-        sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
-        sales_col = pick_col(cols, ["net_sales_amount", "sales_amount", "amount"])
-        product_code_col = pick_col(cols, ["product_code", "product_code_raw"])
-        qty_col = pick_col(cols, ["qty", "quantity"])
-        gp_col = pick_col(cols, ["retail_gross_profit_krw", "gross_profit_krw", "margin_amount"])
-        cost_col = pick_col(cols, ["total_korea_cost_krw", "total_cost_krw"])
-        vat_col = pick_col(cols, ["vat_amount"])
-        taxable_col = pick_col(cols, ["taxable_yn"])
-
-        if not sale_date_col or not sales_col:
-            return pd.DataFrame()
-
-        # 뷰가 없을 때도 부가세 제외(공급가액) 기준 — v_retail_sales_enriched.sales_supply_amount_krw 와 동일 식
-        if vat_col and taxable_col:
-            sales_expr = (
-                f"CASE WHEN COALESCE({taxable_col}, '과세') = '과세' "
-                f"THEN COALESCE({sales_col}, 0) - COALESCE({vat_col}, 0) "
-                f"ELSE COALESCE({sales_col}, 0) END"
-            )
-        else:
-            sales_expr = f"COALESCE({sales_col}, 0)"
-
-        sql = f"""
-            SELECT
-                {sale_date_col} AS sale_date,
-                {sales_expr} AS net_sales_amount,
-                {"COALESCE(" + cost_col + ", 0)" if cost_col else "0"} AS total_korea_cost_krw,
-                {"COALESCE(" + gp_col + ", 0)" if gp_col else "0"} AS gross_profit_krw,
-                {"COALESCE(" + product_code_col + ", '')" if product_code_col else "''"} AS product_code,
-                {"COALESCE(" + qty_col + ", 0)" if qty_col else "0"} AS qty
-            FROM retail_sales
-            WHERE {sale_date_col} BETWEEN ? AND ?
-        """
-        df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
-
-        if not df.empty:
-            for c in ["net_sales_amount", "total_korea_cost_krw", "gross_profit_krw", "qty"]:
-                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-            df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
-
-            df = df.rename(columns={"gross_profit_krw": "retail_gross_profit_krw"})
-            df = apply_non_cigar_margin_logic(df, conn)
-            df = df.rename(columns={"retail_gross_profit_krw": "gross_profit_krw"})
-
-        return df
-
-    return pd.DataFrame()
+    df = load_retail_sales(conn, date_from, date_to)
+    if df.empty:
+        return pd.DataFrame()
+    return df.rename(columns={"retail_gross_profit_krw": "gross_profit_krw"})[
+        ["sale_date", "net_sales_amount", "total_korea_cost_krw", "gross_profit_krw", "product_code", "qty"]
+    ]
 
 
 def get_wholesale_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
-    if view_exists(conn, "v_wholesale_sales"):
-        cols = get_table_columns(conn, "v_wholesale_sales")
-        sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
-        sales_col = pick_col(cols, ["sales_amount", "net_sales_amount", "amount"])
-        qty_col = pick_col(cols, ["qty", "quantity"])
-        unit_cost_col = pick_col(cols, ["unit_cost", "cost_per_unit"])
-        gp_col = pick_col(cols, ["profit_amount", "gross_profit_krw", "margin_amount"])
-
-        if sale_date_col and sales_col:
-            qty_expr = f"COALESCE({qty_col}, 0)" if qty_col else "0"
-            unit_cost_expr = f"COALESCE({unit_cost_col}, 0)" if unit_cost_col else "0"
-            gp_expr = f"COALESCE({gp_col}, 0)" if gp_col else "0"
-
-            sql = f"""
-                SELECT
-                    {sale_date_col} AS sale_date,
-                    COALESCE({sales_col}, 0) AS net_sales_amount,
-                    ({qty_expr} * {unit_cost_expr}) AS total_korea_cost_krw,
-                    {gp_expr} AS gross_profit_krw
-                FROM v_wholesale_sales
-                WHERE {sale_date_col} BETWEEN ? AND ?
-            """
-            try:
-                df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
-            except Exception:
-                df = pd.DataFrame()
-        else:
-            df = pd.DataFrame()
-
-        if not df.empty:
-            for c in ["net_sales_amount", "total_korea_cost_krw", "gross_profit_krw"]:
-                df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-            return df
-
-    if table_exists(conn, "wholesale_sales"):
-        cols = get_table_columns(conn, "wholesale_sales")
-        sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
-        sales_col = pick_col(cols, ["sales_amount", "net_sales_amount", "amount"])
-        qty_col = pick_col(cols, ["qty", "quantity"])
-        unit_cost_col = pick_col(cols, ["unit_cost", "cost_per_unit"])
-        gp_col = pick_col(cols, ["profit_amount", "gross_profit_krw", "margin_amount"])
-
-        if not sale_date_col or not sales_col:
-            return pd.DataFrame()
-
-        qty_expr = f"COALESCE({qty_col}, 0)" if qty_col else "0"
-        unit_cost_expr = f"COALESCE({unit_cost_col}, 0)" if unit_cost_col else "0"
-        gp_expr = f"COALESCE({gp_col}, 0)" if gp_col else "0"
-
-        sql = f"""
-            SELECT
-                {sale_date_col} AS sale_date,
-                COALESCE({sales_col}, 0) AS net_sales_amount,
-                ({qty_expr} * {unit_cost_expr}) AS total_korea_cost_krw,
-                {gp_expr} AS gross_profit_krw
-            FROM wholesale_sales
-            WHERE {sale_date_col} BETWEEN ? AND ?
-        """
-        df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
-
-        for c in ["net_sales_amount", "total_korea_cost_krw", "gross_profit_krw"]:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-        return df
-
-    return pd.DataFrame()
+    """도매 라인 데이터 (정본: modules.common.sales_query.load_wholesale_sales)."""
+    df = load_wholesale_sales(conn, date_from, date_to)
+    if df.empty:
+        return pd.DataFrame()
+    return df[["sale_date", "net_sales_amount", "total_korea_cost_krw", "gross_profit_krw"]]
 
 
 def get_expense_month_data(conn, date_from: str, date_to: str) -> pd.DataFrame:
@@ -515,147 +367,47 @@ def get_recent_expenses(conn, limit: int = 10) -> pd.DataFrame:
 
 def get_recent_sales_with_margin(conn, limit: int = 20) -> pd.DataFrame:
     """
-    - 시가는 v_retail_sales_enriched의 retail_gross_profit_krw(부가세 제외 공급가액 기준) 그대로 사용
-    - 시가 외만 판매금액(부가세 제외) - (매입가 × 수량)으로 재계산
+    최근 소매 판매 내역 + 마진 (정본: modules.common.sales_query.load_retail_sales).
+    - 매출은 부가세 제외, 시가 외 상품 원가/이익은 정본 로직(매입가×수량, 기프트패키지는 구성품 원가)으로 보정됨
+    - '매입가' 컬럼은 개당 원가(총원가 ÷ 수량)로 표시
     """
-    empty = pd.DataFrame(
-        columns=[
-            "sale_date", "product_code", "product_name", "qty",
-            "unit_price", "net_sales_amount", "매입가", "마진"
-        ]
-    )
-
-    use_view = view_exists(conn, "v_retail_sales_enriched")
-    source = "v_retail_sales_enriched" if use_view else "retail_sales"
-    if not use_view and not table_exists(conn, "retail_sales"):
-        return empty
-
-    cols = get_table_columns(conn, source)
-    sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
-    product_code_col = pick_col(cols, ["product_code", "product_code_raw"])
-    product_name_col = pick_col(cols, ["mst_product_name", "product_name", "item_name"])
-    qty_col = pick_col(cols, ["qty", "quantity"])
-    unit_price_col = pick_col(cols, ["unit_price", "price"])
-    sales_col = pick_col(cols, ["sales_supply_amount_krw", "net_sales_amount", "sales_amount", "amount"])
-    margin_col = pick_col(cols, ["retail_gross_profit_krw", "gross_profit_krw", "margin_amount"])
-
-    if not sale_date_col or not sales_col:
-        return empty
-
-    sql = f"""
-        SELECT
-            {sale_date_col} AS sale_date,
-            {"COALESCE(" + product_code_col + ", '')" if product_code_col else "''"} AS product_code,
-            {"COALESCE(" + product_name_col + ", '')" if product_name_col else "''"} AS product_name,
-            {"COALESCE(" + qty_col + ", 0)" if qty_col else "0"} AS qty,
-            {"COALESCE(" + unit_price_col + ", 0)" if unit_price_col else "0"} AS unit_price,
-            COALESCE({sales_col}, 0) AS net_sales_amount,
-            {"COALESCE(" + margin_col + ", 0)" if margin_col else "0"} AS base_margin
-        FROM {source}
-        ORDER BY {sale_date_col} DESC, id DESC
-        LIMIT ?
-    """
-    df = pd.read_sql_query(sql, conn, params=[limit])
-
+    cols = ["sale_date", "product_code", "product_name", "qty", "unit_price", "net_sales_amount", "매입가", "마진"]
+    df = load_retail_sales(conn)
     if df.empty:
-        return empty
+        return pd.DataFrame(columns=cols)
+    df = df.sort_values("sale_date", ascending=False).head(limit).copy()
 
-    for c in ["qty", "unit_price", "net_sales_amount", "base_margin"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-    df["product_code"] = df["product_code"].fillna("").astype(str).str.strip()
-    df["product_name"] = df["product_name"].fillna("").astype(str).str.strip()
-
-    purchase_price_map = get_non_cigar_purchase_price_map(conn)
     product_name_map = get_product_name_map(conn)
+    blank = df["product_name"].eq("") & df["product_code"].ne("")
+    df.loc[blank, "product_name"] = df.loc[blank, "product_code"].map(product_name_map).fillna("")
 
-    blank_name_mask = df["product_name"].eq("") & df["product_code"].ne("")
-    df.loc[blank_name_mask, "product_name"] = (
-        df.loc[blank_name_mask, "product_code"].map(product_name_map).fillna("")
-    )
-
-    # 기본은 기존 마진
-    df["매입가"] = 0
-    df["마진"] = df["base_margin"]
-
-    # 시가 외만 재계산
-    non_cigar_mask = df["product_code"].isin(purchase_price_map.keys())
-
-    df.loc[non_cigar_mask, "매입가"] = (
-        df.loc[non_cigar_mask, "product_code"].map(purchase_price_map).fillna(0)
-    )
-    df.loc[non_cigar_mask, "마진"] = (
-        df.loc[non_cigar_mask, "net_sales_amount"]
-        - (df.loc[non_cigar_mask, "매입가"] * df.loc[non_cigar_mask, "qty"])
-    )
-
-    return df[
-        ["sale_date", "product_code", "product_name", "qty", "unit_price", "net_sales_amount", "매입가", "마진"]
-    ]
+    qty_nonzero = df["qty"].replace(0, pd.NA)
+    df["매입가"] = (df["total_korea_cost_krw"] / qty_nonzero).fillna(0).round(0)
+    df["마진"] = df["retail_gross_profit_krw"]
+    return df[cols]
 
 
 def get_top_products(conn, date_from: str, date_to: str, limit: int = 10, metric: str = "sales") -> pd.DataFrame:
+    """
+    기간 내 상위 제품 (소매+도매 합산). metric: "sales"(매출) / "profit"(이익)
+    정본 로더를 사용하므로 시가 외 상품 이익도 다른 화면과 동일하게 보정된 값이다.
+    """
+    metric_col_name = "metric_value"
     frames = []
 
-    retail_metric_sql = "COALESCE(sales_supply_amount_krw, 0)"
-    wholesale_metric_sql = "COALESCE(sales_amount, 0)"
-    metric_col_name = "metric_value"
+    retail = load_retail_sales(conn, date_from, date_to)
+    if not retail.empty:
+        r = retail[["product_code", "product_name"]].copy()
+        r[metric_col_name] = retail["retail_gross_profit_krw"] if metric == "profit" else retail["net_sales_amount"]
+        r.loc[r["product_name"] == "", "product_name"] = r["product_code"]
+        frames.append(r)
 
-    if metric == "profit":
-        retail_metric_sql = "COALESCE(retail_gross_profit_krw, 0)"
-        wholesale_metric_sql = "COALESCE(profit_amount, 0)"
-
-    if view_exists(conn, "v_retail_sales_enriched"):
-        cols = get_table_columns(conn, "v_retail_sales_enriched")
-        sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
-        product_code_col = pick_col(cols, ["product_code", "product_code_raw"])
-        product_name_col = pick_col(cols, ["mst_product_name", "product_name", "product_code_raw"])
-
-        if sale_date_col:
-            code_expr = f"COALESCE({product_code_col}, '')" if product_code_col else "''"
-            name_expr = f"COALESCE({product_name_col}, {code_expr})" if product_name_col else code_expr
-
-            sql = f"""
-                SELECT
-                    {code_expr} AS product_code,
-                    {name_expr} AS product_name,
-                    {retail_metric_sql} AS {metric_col_name}
-                FROM v_retail_sales_enriched
-                WHERE {sale_date_col} BETWEEN ? AND ?
-            """
-            try:
-                retail_df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
-                if not retail_df.empty:
-                    retail_df[metric_col_name] = pd.to_numeric(retail_df[metric_col_name], errors="coerce").fillna(0)
-                    frames.append(retail_df)
-            except Exception:
-                pass
-
-    if view_exists(conn, "v_wholesale_sales"):
-        cols = get_table_columns(conn, "v_wholesale_sales")
-        sale_date_col = pick_col(cols, ["sale_date", "sales_date", "dt"])
-        product_code_col = pick_col(cols, ["product_code"])
-        product_name_col = pick_col(cols, ["product_name"])
-
-        if sale_date_col:
-            code_expr = f"COALESCE({product_code_col}, '')" if product_code_col else "''"
-            name_expr = f"COALESCE({product_name_col}, {code_expr})" if product_name_col else code_expr
-
-            sql = f"""
-                SELECT
-                    {code_expr} AS product_code,
-                    {name_expr} AS product_name,
-                    {wholesale_metric_sql} AS {metric_col_name}
-                FROM v_wholesale_sales
-                WHERE {sale_date_col} BETWEEN ? AND ?
-            """
-            try:
-                wholesale_df = pd.read_sql_query(sql, conn, params=[date_from, date_to])
-                if not wholesale_df.empty:
-                    wholesale_df[metric_col_name] = pd.to_numeric(wholesale_df[metric_col_name], errors="coerce").fillna(0)
-                    frames.append(wholesale_df)
-            except Exception:
-                pass
+    wholesale = load_wholesale_sales(conn, date_from, date_to)
+    if not wholesale.empty:
+        w = wholesale[["product_code", "product_name"]].copy()
+        w[metric_col_name] = wholesale["gross_profit_krw"] if metric == "profit" else wholesale["net_sales_amount"]
+        w.loc[w["product_name"] == "", "product_name"] = w["product_code"]
+        frames.append(w)
 
     if not frames:
         return pd.DataFrame()
@@ -668,7 +420,6 @@ def get_top_products(conn, date_from: str, date_to: str, limit: int = 10, metric
         .sort_values(metric_col_name, ascending=False)
         .head(limit)
     )
-
     return df
 
 
