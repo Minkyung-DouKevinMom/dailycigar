@@ -5,6 +5,7 @@ import streamlit as st
 from modules.common.dbutil import get_conn, get_db_path, get_table_columns, pick_col, has_table
 from modules.common.fmt import fmt_krw, fmt_count
 from modules.common.sales_query import load_retail_sales, load_wholesale_sales
+from modules.common.upload_status import render_retail_upload_status
 
 st.set_page_config(page_title="Daily Cigar DB", layout="wide")
 
@@ -359,6 +360,9 @@ with st.sidebar:
 conn = get_conn()
 
 try:
+    # 소매 매출 업로드 현황 (누락 방지용 상단 배너)
+    render_retail_upload_status(conn, lookback_days=30)
+
     today = pd.Timestamp.today().normalize()
     month_start = today.replace(day=1)
     last_30_start = today - pd.Timedelta(days=29)
