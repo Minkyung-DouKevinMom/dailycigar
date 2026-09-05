@@ -8,6 +8,7 @@ from modules.common.sales_query import load_retail_sales, load_wholesale_sales
 from modules.common.upload_status import render_retail_upload_status
 from modules.dashboard.month_cumulative import render_month_cumulative
 from modules.dashboard.sales_trend import render_sales_trend
+from modules.dashboard.channel_share import render_channel_share
 
 st.set_page_config(page_title="Daily Cigar DB", layout="wide")
 
@@ -402,9 +403,6 @@ try:
     wholesale_count = int((card_df["sales_type"] == "도매").sum()) if not card_df.empty else 0
     retail_count = int((card_df["sales_type"] == "소매").sum()) if not card_df.empty else 0
 
-    wholesale_ratio = (wholesale_sales / card_sales * 100) if card_sales else 0
-    retail_ratio = (retail_sales / card_sales * 100) if card_sales else 0
-
     k1, k2, k3, k4 = st.columns(4)
     metric_with_caption(
         k1,
@@ -442,10 +440,8 @@ try:
 
     with right:
         st.subheader("최근 30일 채널 비중")
-        r1, r2 = st.columns(2)
-        r1.metric("소매", f"{retail_ratio:.1f}%")
-        r2.metric("도매", f"{wholesale_ratio:.1f}%")
-        st.caption(f"소매 {fmt_krw(retail_sales)} / 도매 {fmt_krw(wholesale_sales)}")
+        # 매출 기준 / 마진 기준 도넛 병기 (card_df = 최근 30일, 정본 로더 기반)
+        render_channel_share(card_df)
 
         # 이번 달 vs 지난 달 일자별 누적 매출 (all_time_df 재사용, 추가 조회 없음)
         render_month_cumulative(all_time_df, today)
