@@ -67,13 +67,30 @@ def save_target(conn, year: int, month: int, target_sales: float, target_operati
     conn.commit()
 
 
-def compute_progress(actual: float, target: float, elapsed_days: int, total_days: int, month_closed: bool) -> dict:
-    """진행률 계산 (순수 함수, 테스트 대상)."""
+def compute_progress(
+    actual: float,
+    target: float,
+    elapsed_days: int,
+    total_days: int,
+    month_closed: bool,
+    flat_component: float = 0.0,
+) -> dict:
+    """진행률 계산 (순수 함수, 테스트 대상).
+
+    flat_component: actual 중 '남은 기간에 더 늘어나지 않는다'고 보는 부분.
+      영업이익 예상에 쓴다 — 지출(임대료·일회성 비용 등)은 월초에 몰려 찍히는 경우가 많아
+      경과일수로 비례 확대하면 월말 예상이 터무니없이 나빠진다. 그래서 지출은 현재 수준으로
+      고정하고(= -지출액을 flat_component 로 전달), 매출총이익만 남은 기간만큼 추정한다.
+      예) 5/30일 경과, 매출총이익 215만, 지출 900만 → 영업이익 -684만
+          기존: -684만 ÷ 5 × 30 = -4,107만
+          현재: (215만 ÷ 5 × 30) - 900만 = +393만
+    """
     rate = (actual / target * 100) if target else None
     if month_closed or elapsed_days <= 0:
         projected = actual
     else:
-        projected = actual / elapsed_days * total_days
+        variable = float(actual) - float(flat_component)
+        projected = variable / elapsed_days * total_days + float(flat_component)
     remaining = max(target - actual, 0.0) if target else None
     remaining_days = max(total_days - elapsed_days, 0)
     # 남은 기간 동안 하루 얼마씩 더 필요한가
@@ -141,12 +158,15 @@ def build_target_summary(
     if target is None:
         return out
 
+    # 지출은 남은 기간에 비례해 늘지 않는다고 보고 현재 수준으로 고정 (영업이익 예상에만 적용)
+    expense_total = float(summary.get("expense_total", 0) or 0)
     pairs = (
-        ("매출", float(summary.get("total_sales", 0) or 0), float(target.get("target_sales", 0) or 0)),
-        ("영업이익", float(summary.get("operating_profit", 0) or 0), float(target.get("target_operating_profit", 0) or 0)),
+        ("매출", float(summary.get("total_sales", 0) or 0), float(target.get("target_sales", 0) or 0), 0.0),
+        ("영업이익", float(summary.get("operating_profit", 0) or 0),
+         float(target.get("target_operating_profit", 0) or 0), -expense_total),
     )
-    for label, actual, target_v in pairs:
-        p = compute_progress(actual, target_v, elapsed, total_days, closed)
+    for label, actual, target_v, flat in pairs:
+        p = compute_progress(actual, target_v, elapsed, total_days, closed, flat_component=flat)
         out["metrics"][label] = {
             "actual": actual,
             "target": target_v,
@@ -154,6 +174,7 @@ def build_target_summary(
             "projected": p["projected"],
             "projected_rate": p["projected_rate"],
             "icon": status_icon(p["projected_rate"]),
+            "flat_component": flat,
         }
     return out
 
@@ -188,6 +209,8 @@ def render_target_summary_line(conn, year: int, month: int, summary: dict) -> No
         parts.append(seg)
 
     st_.markdown("　·　".join(parts))
+    if not closed:
+        st_.caption("※ 월말 예상은 지출을 현재 수준으로 고정하고, 매출·매출총이익만 경과일 기준으로 환산한 값입니다.")
 
 
 def render_target_widget(conn, year: int, month: int, summary: dict) -> None:
@@ -225,11 +248,19 @@ def render_target_widget(conn, year: int, month: int, summary: dict) -> None:
 
     actual_sales = float(summary.get("total_sales", 0) or 0)
     actual_profit = float(summary.get("operating_profit", 0) or 0)
+    expense_total = float(summary.get("expense_total", 0) or 0)
     ps = compute_progress(actual_sales, target["target_sales"], elapsed, total_days, closed)
-    pp = compute_progress(actual_profit, target["target_operating_profit"], elapsed, total_days, closed)
+    # 지출은 현재 수준으로 고정하고 매출총이익만 남은 기간만큼 추정
+    pp = compute_progress(
+        actual_profit, target["target_operating_profit"], elapsed, total_days, closed,
+        flat_component=-expense_total,
+    )
 
     period_txt = f"{elapsed}/{total_days}일 경과" if not closed else "마감"
-    st.caption(f"{year}년 {month}월 · {period_txt}")
+    caption = f"{year}년 {month}월 · {period_txt}"
+    if not closed:
+        caption += f" · 월말 예상은 지출 {fmt_krw(expense_total)}을 현재 수준으로 고정하고 매출총이익만 환산"
+    st.caption(caption)
 
     def _block(col, label, actual, target_v, p):
         col.metric(f"{label} 실적", fmt_krw(actual), f"목표 {fmt_krw(target_v)}", delta_color="off")

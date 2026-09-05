@@ -24,7 +24,7 @@ def test_status_icon_thresholds():
 
 def test_summary_rates_and_projection():
     # 30일 중 5일 경과, 매출 250만 → 월말 예상 1,500만 = 목표 100%
-    summary = {"total_sales": 2_500_000, "operating_profit": 250_000}
+    summary = {"total_sales": 2_500_000, "operating_profit": 250_000, "expense_total": 0}
     s = build_target_summary(TARGET, summary, elapsed=5, total_days=30, closed=False)
     assert s["has_target"] and s["elapsed"] == 5 and not s["closed"]
 
@@ -40,10 +40,26 @@ def test_summary_rates_and_projection():
 
 def test_deficit_month_does_not_break_summary():
     """임시 대형 지출 등으로 영업이익이 크게 적자여도 요약이 계산돼야 한다."""
-    summary = {"total_sales": 2_223_235, "operating_profit": -7_593_225}
+    # 지출이 매출총이익보다 훨씬 커서 월말까지 벌어도 못 메우는 경우 → 예상도 적자
+    summary = {"total_sales": 2_223_235, "operating_profit": -7_593_225, "expense_total": 9_000_000}
     s = build_target_summary(TARGET, summary, elapsed=5, total_days=30, closed=False)
     p = s["metrics"]["영업이익"]
-    assert p["rate"] < 0 and p["projected_rate"] < 0 and p["icon"] == "🔴"
+    assert p["rate"] < 0
+    # 매출총이익 140.7만 → 월말 844.6만, 지출 900만 고정 → 예상 약 -55만 (적자지만 -1369% 같은 값은 아님)
+    assert -1_000_000 < p["projected"] < 0 and p["icon"] == "🔴"
+
+
+def test_expenses_are_not_scaled_in_projection():
+    """지출은 현재 수준 고정 — 경과일수로 비례 확대하지 않는다."""
+    summary = {"total_sales": 3_533_235, "operating_profit": -6_844_858, "expense_total": 9_000_000}
+    s = build_target_summary(TARGET, summary, elapsed=5, total_days=30, closed=False)
+    p = s["metrics"]["영업이익"]
+    gross = summary["operating_profit"] + summary["expense_total"]      # 매출총이익 215.5만
+    assert p["projected"] == gross / 5 * 30 - summary["expense_total"]  # ≈ +393만
+    assert p["projected"] > 0 and p["icon"] == "🟢"
+    assert p["flat_component"] == -summary["expense_total"]
+    # 매출 지표에는 고정 성분이 없다
+    assert s["metrics"]["매출"]["flat_component"] == 0.0
 
 
 def test_no_target_and_zero_target():
@@ -57,7 +73,7 @@ def test_no_target_and_zero_target():
 
 
 def test_closed_month_uses_actual_not_projection():
-    summary = {"total_sales": 30_086_744, "operating_profit": 5_000_000}
+    summary = {"total_sales": 30_086_744, "operating_profit": 5_000_000, "expense_total": 2_000_000}
     s = build_target_summary(TARGET, summary, elapsed=31, total_days=31, closed=True)
     assert s["metrics"]["매출"]["projected"] == 30_086_744   # 마감 달은 예상 = 실적
     assert s["metrics"]["영업이익"]["projected"] == 5_000_000

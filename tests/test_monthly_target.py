@@ -38,3 +38,23 @@ def test_progress_bar_ratio_clamped_to_valid_range():
     assert progress_bar_ratio(300) == 1.0
     # 정상 범위는 그대로 비율로 변환된다.
     assert progress_bar_ratio(50) == 0.5
+
+
+def test_flat_component_keeps_expenses_at_current_level():
+    """지출은 남은 기간에 늘지 않는다고 보고, 매출총이익만 환산해야 한다."""
+    # 5/30일 경과, 매출총이익 215만, 지출 900만 → 영업이익 -685만
+    gross, expense = 2_150_000, 9_000_000
+    actual = gross - expense
+    p = compute_progress(actual, 3_000_000, elapsed_days=5, total_days=30,
+                         month_closed=False, flat_component=-expense)
+    assert p["projected"] == gross / 5 * 30 - expense          # = +390만
+    assert p["projected"] > 0 and p["rate"] < 0                # 현재는 적자지만 월말 예상은 흑자
+    # flat_component 를 주지 않으면 예전처럼 적자가 그대로 6배로 커진다
+    old = compute_progress(actual, 3_000_000, 5, 30, False)
+    assert old["projected"] == actual / 5 * 30 and old["projected"] < p["projected"]
+
+
+def test_flat_component_ignored_when_month_closed():
+    p = compute_progress(-1000, 3000, elapsed_days=30, total_days=30,
+                         month_closed=True, flat_component=-5000)
+    assert p["projected"] == -1000            # 마감 달은 실적 그대로
