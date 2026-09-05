@@ -5,14 +5,11 @@ import streamlit.components.v1 as components
 
 from db import get_all_import_batch, get_store_menu_view
 
+from modules.common.fmt import fmt_krw as _fmt_krw
+
 
 def format_krw(value):
-    try:
-        if pd.isna(value):
-            return "-"
-        return f"₩{float(value):,.0f}"
-    except Exception:
-        return "-"
+    return _fmt_krw(value, default="-")
 
 
 def safe_text(value, default="-"):

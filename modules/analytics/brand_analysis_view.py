@@ -1,52 +1,11 @@
-import os
-import sqlite3
 import pandas as pd
 import streamlit as st
 import altair as alt
 
 from db import get_stock_summary, get_gift_set_component_attribution
 
-DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
-
-
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
-def fmt_krw(x):
-    try:
-        return f"₩{float(x):,.0f}"
-    except Exception:
-        return "₩0"
-
-
-def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-        (table_name,),
-    )
-    return cur.fetchone() is not None
-
-
-def view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='view' AND name=?",
-        (view_name,),
-    )
-    return cur.fetchone() is not None
-
-
-def get_table_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
-    cur = conn.cursor()
-    cur.execute(f"PRAGMA table_info({table_name})")
-    rows = cur.fetchall()
-    return [str(r[1]).strip() for r in rows]
-
-
-def normalize_code(series: pd.Series) -> pd.Series:
-    return series.fillna("").astype(str).str.strip().str.upper()
+from modules.common.dbutil import get_conn, table_exists, view_exists, get_table_columns
+from modules.common.fmt import fmt_krw, normalize_code
 
 
 # ── 하드코딩: 특정 상품코드에 대한 계산 예외 처리 ──
@@ -87,7 +46,6 @@ def apply_discount_to_grouped(
             lambda x: round(x[profit_col] / x[qty_col], 0) if x[qty_col] else 0, axis=1
         )
     return grp
-
 
 
 def _hsl_to_hex(h: float, s: float, l: float) -> str:

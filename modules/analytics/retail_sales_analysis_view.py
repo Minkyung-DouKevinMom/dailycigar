@@ -1,34 +1,9 @@
-import os
-import sqlite3
 import pandas as pd
 import streamlit as st
 import altair as alt
 
-DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
-
-
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
-def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-        (table_name,),
-    )
-    return cur.fetchone() is not None
-
-
-def get_table_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
-    cur = conn.cursor()
-    cur.execute(f"PRAGMA table_info({table_name})")
-    rows = cur.fetchall()
-    return [str(r[1]).strip() for r in rows]
-
-
-def normalize_code(series: pd.Series) -> pd.Series:
-    return series.fillna("").astype(str).str.strip().str.upper()
+from modules.common.dbutil import get_conn, table_exists, view_exists, get_table_columns
+from modules.common.fmt import normalize_code
 
 
 def get_non_cigar_category_map(conn) -> dict:
@@ -347,15 +322,6 @@ def render_delivery_trend_chart(trend_df: pd.DataFrame):
     )
 
     st.altair_chart(chart, use_container_width=True)
-
-
-def view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='view' AND name=?",
-        (view_name,),
-    )
-    return cur.fetchone() is not None
 
 
 def group_minor_as_others(df: pd.DataFrame, label_col: str, value_col: str, top_n: int = 6) -> pd.DataFrame:

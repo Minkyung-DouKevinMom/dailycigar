@@ -1,4 +1,3 @@
-import os
 import re
 import sqlite3
 from datetime import datetime
@@ -7,20 +6,7 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
-DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
-
-
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
-def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
-        (table_name,),
-    )
-    return cur.fetchone() is not None
+from modules.common.dbutil import get_conn, table_exists
 
 
 def normalize_phone(value: str) -> str:

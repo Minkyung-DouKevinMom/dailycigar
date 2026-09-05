@@ -1,4 +1,3 @@
-import os
 import sqlite3
 from io import BytesIO
 
@@ -9,38 +8,8 @@ import streamlit as st
 
 from db import apply_non_cigar_margin_logic
 
-DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
-
-
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
-def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
-        (table_name,),
-    )
-    return cur.fetchone() is not None
-
-
-def view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='view' AND name = ?",
-        (view_name,),
-    )
-    return cur.fetchone() is not None
-
-
-def get_table_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
-    try:
-        cur = conn.execute(f"PRAGMA table_info({table_name})")
-        rows = cur.fetchall()
-        return [r[1] for r in rows]
-    except Exception:
-        return []
+from modules.common.dbutil import get_conn, table_exists, view_exists, get_table_columns
+from modules.common.fmt import fmt_krw as format_krw
 
 
 def load_filter_values(conn: sqlite3.Connection):
@@ -150,7 +119,6 @@ def build_query(use_view: bool, filters: dict):
     return sql, params
 
 
-
 def calc_kpis(df: pd.DataFrame):
     # 주문수 = (판매일자, 주문번호) 조합 기준 유니크 카운트.
     # 주문번호는 일자별로 재사용되는 짧은 순번(예: '001')이라 order_no만으로
@@ -240,15 +208,6 @@ HEADER_MAP = {
     "마진율(%)": "마진율(%)",
     "주문수": "주문수",
 }
-
-
-def format_krw(v) -> str:
-    try:
-        if pd.isna(v):
-            return ""
-        return f"₩{int(round(float(v))):,}"
-    except Exception:
-        return v
 
 
 def prettify_df(df: pd.DataFrame) -> pd.DataFrame:

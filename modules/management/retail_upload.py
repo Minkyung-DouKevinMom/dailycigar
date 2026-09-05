@@ -1,4 +1,3 @@
-import os
 import re
 import sqlite3
 from typing import Dict, Optional, Set, Tuple
@@ -8,7 +7,14 @@ import streamlit as st
 
 import db
 
-DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
+from modules.common.dbutil import get_conn, table_exists, get_table_columns as _get_table_columns_list
+from modules.common.fmt import safe_str, safe_float
+
+
+def get_table_columns(conn: sqlite3.Connection, table_name: str) -> Set[str]:
+    # 이 모듈은 컬럼 집합 연산(차집합 등)을 쓰므로 set 으로 반환
+    return set(_get_table_columns_list(conn, table_name))
+
 
 ITEM_SHEET_NAME = "상품 주문 상세내역"
 
@@ -43,41 +49,6 @@ MIN_REQUIRED_DB_COLUMNS = {
 
 # 기프트패키지 판매 시 자동 재고 차감 관련
 GIFT_PACKAGE_CATEGORY = "기프트패키지"
-
-
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
-def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
-        (table_name,),
-    )
-    return cur.fetchone() is not None
-
-
-def get_table_columns(conn: sqlite3.Connection, table_name: str) -> Set[str]:
-    cur = conn.cursor()
-    cur.execute(f"PRAGMA table_info({table_name})")
-    rows = cur.fetchall()
-    return {row[1] for row in rows}
-
-
-def safe_str(value) -> str:
-    if pd.isna(value):
-        return ""
-    return str(value).strip()
-
-
-def safe_float(value) -> float:
-    if pd.isna(value) or value == "":
-        return 0.0
-    try:
-        return float(value)
-    except Exception:
-        return 0.0
 
 
 def normalize_product_code(value) -> str:

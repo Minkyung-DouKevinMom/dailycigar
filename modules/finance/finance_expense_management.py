@@ -1,24 +1,10 @@
-import os
-import sqlite3
 from typing import Optional
 
 import pandas as pd
 import streamlit as st
 
-DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
-
-
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
-def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
-        (table_name,),
-    )
-    return cur.fetchone() is not None
+from modules.common.dbutil import get_conn, table_exists
+from modules.common.fmt import safe_float
 
 
 def init_session_state():
@@ -31,15 +17,6 @@ def init_session_state():
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
-
-
-def safe_float(v) -> float:
-    if v in (None, ""):
-        return 0.0
-    try:
-        return float(v)
-    except Exception:
-        return 0.0
 
 
 # =========================================================

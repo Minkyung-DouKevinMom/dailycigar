@@ -1,4 +1,3 @@
-import os
 import sqlite3
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
@@ -8,28 +7,9 @@ import streamlit as st
 
 from db import apply_non_cigar_margin_logic as apply_non_cigar_cost_logic
 
-DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
-
-
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
-def object_exists(conn: sqlite3.Connection, name: str, obj_type: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT name FROM sqlite_master WHERE type = ? AND name = ?",
-        (obj_type, name),
-    )
-    return cur.fetchone() is not None
-
-
-def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return object_exists(conn, table_name, "table")
-
-
-def view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
-    return object_exists(conn, view_name, "view")
+from modules.common.dbutil import get_conn, object_exists, table_exists, view_exists, get_table_columns
+from modules.common.fmt import fmt_krw, apply_currency_format
+from modules.common.dates import monthify
 
 
 def choose_source(conn: sqlite3.Connection, candidates: List[str]) -> Optional[str]:
@@ -46,34 +26,6 @@ def to_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
             df.to_excel(writer, index=False, sheet_name=name[:31])
     output.seek(0)
     return output.getvalue()
-
-
-def monthify(series):
-    return pd.to_datetime(series, errors="coerce").dt.strftime("%Y-%m")
-
-
-def fmt_krw(value) -> str:
-    try:
-        return f"₩{float(value):,.0f}"
-    except Exception:
-        return "₩0"
-
-
-def apply_currency_format(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
-    result = df.copy()
-    for col in cols:
-        if col in result.columns:
-            result[col] = result[col].apply(fmt_krw)
-    return result
-
-
-def get_table_columns(conn: sqlite3.Connection, table_name: str) -> List[str]:
-    try:
-        cur = conn.execute(f"PRAGMA table_info({table_name})")
-        rows = cur.fetchall()
-        return [r[1] for r in rows]
-    except Exception:
-        return []
 
 
 def get_retail_data(conn, date_from: Optional[str], date_to: Optional[str]) -> Tuple[pd.DataFrame, str]:

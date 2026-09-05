@@ -6,6 +6,8 @@ import streamlit as st
 
 from modules.common.dbutil import get_conn, table_exists
 
+from modules.common.fmt import safe_int, fmt_number as format_krw
+
 TABLE_NAME = "non_cigar_product_mst"
 
 
@@ -78,22 +80,6 @@ def load_one(conn: sqlite3.Connection, row_id: int) -> Optional[dict]:
     if df.empty:
         return None
     return df.iloc[0].to_dict()
-
-
-def safe_int(v) -> int:
-    if v in (None, ""):
-        return 0
-    try:
-        return int(float(v))
-    except Exception:
-        return 0
-
-
-def format_krw(v) -> str:
-    try:
-        return f"{int(float(v or 0)):,}"
-    except Exception:
-        return "0"
 
 
 def reset_form():

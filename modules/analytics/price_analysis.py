@@ -11,6 +11,12 @@ from openpyxl.cell.cell import MergedCell
 from copy import copy
 from db import get_all_import_batch, get_price_analysis_view
 
+from modules.common.fmt import fmt_krw as _fmt_krw
+
+
+def format_krw(value):
+    return _fmt_krw(value, default="")
+
 def align_product_name_center(ws, start_row: int, end_row: int, product_col: int = 1):
     for row in range(start_row, end_row + 1):
         cell = ws.cell(row=row, column=product_col)
@@ -72,12 +78,6 @@ def setup_korean_font():
 
     plt.rcParams["axes.unicode_minus"] = False
     plt.rcParams["font.size"] = 9
-
-
-def format_krw(value):
-    if pd.isna(value):
-        return ""
-    return f"₩{value:,.0f}"
 
 
 def metric_with_caption(column, label: str, value: str, caption: str):

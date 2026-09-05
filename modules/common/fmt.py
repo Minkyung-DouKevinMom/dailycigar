@@ -10,8 +10,10 @@ import pandas as pd
 
 
 def fmt_krw(value, default: str = "₩0") -> str:
-    """원화 표시: ₩1,234,567 (소수점 없음). 변환 실패 시 default."""
+    """원화 표시: ₩1,234,567 (소수점 없음). None/NaN/변환 실패 시 default."""
     try:
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return default
         return f"₩{float(value):,.0f}"
     except Exception:
         return default

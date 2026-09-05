@@ -1,5 +1,3 @@
-import os
-import sqlite3
 from typing import Tuple
 
 import pandas as pd
@@ -8,69 +6,16 @@ import altair as alt
 
 from db import get_non_cigar_purchase_price_map, apply_non_cigar_margin_logic
 
-DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
+from modules.common.dbutil import get_conn, object_exists, table_exists, view_exists, get_table_columns, pick_col
+from modules.common.fmt import fmt_krw
+from modules.common.dates import month_range, prev_month
+
 
 # 대시보드는 "순수 판매 성과"만 보여주는 목적이라, 투자비(자산성 구매)·일회성비용
 # (인테리어·행정사 수수료 등 매달 반복되지 않는 지출)·물류비처럼 개별 판매와
 # 직접 연결되지 않는 지출그룹은 월 지출/영업이익 계산과 최근 지출 목록에서 제외한다.
 # 전체 지출(투자비·일회성비용·물류비 포함)은 재무관리 화면에서만 확인한다.
 DASHBOARD_EXCLUDED_EXPENSE_GROUPS = {"투자비", "일회성비용", "물류비"}
-
-
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
-def object_exists(conn: sqlite3.Connection, name: str, obj_type: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT name FROM sqlite_master WHERE type = ? AND name = ?",
-        (obj_type, name),
-    )
-    return cur.fetchone() is not None
-
-
-def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return object_exists(conn, table_name, "table")
-
-
-def view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
-    return object_exists(conn, view_name, "view")
-
-
-def get_table_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
-    try:
-        cur = conn.execute(f"PRAGMA table_info({table_name})")
-        rows = cur.fetchall()
-        return [r[1] for r in rows]
-    except Exception:
-        return []
-
-
-def pick_col(cols: list[str], candidates: list[str]):
-    col_set = set(cols)
-    for c in candidates:
-        if c in col_set:
-            return c
-    return None
-
-
-def month_range(year: int, month: int) -> Tuple[str, str]:
-    start = pd.Timestamp(year=year, month=month, day=1)
-    end = start + pd.offsets.MonthEnd(1)
-    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
-
-
-def prev_month(year: int, month: int) -> Tuple[int, int]:
-    dt = pd.Timestamp(year=year, month=month, day=1) - pd.DateOffset(months=1)
-    return dt.year, dt.month
-
-
-def fmt_krw(value) -> str:
-    try:
-        return f"₩{float(value):,.0f}"
-    except Exception:
-        return "₩0"
 
 
 def fmt_delta_krw(curr, prev) -> str:

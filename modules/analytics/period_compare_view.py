@@ -1,5 +1,3 @@
-import os
-import sqlite3
 from typing import Tuple
 
 import altair as alt
@@ -8,47 +6,13 @@ import streamlit as st
 
 from db import apply_non_cigar_margin_logic
 
-DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", "cigar.db")
+from modules.common.dbutil import get_conn, object_exists, table_exists, view_exists, get_table_columns
+from modules.common.fmt import fmt_krw
 
 
 # =========================
 # 공통
 # =========================
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
-
-
-def object_exists(conn: sqlite3.Connection, name: str, obj_type: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT name FROM sqlite_master WHERE type = ? AND name = ?",
-        (obj_type, name),
-    )
-    return cur.fetchone() is not None
-
-
-def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return object_exists(conn, table_name, "table")
-
-
-def view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
-    return object_exists(conn, view_name, "view")
-
-
-def get_table_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
-    try:
-        cur = conn.execute(f"PRAGMA table_info({table_name})")
-        rows = cur.fetchall()
-        return [r[1] for r in rows]
-    except Exception:
-        return []
-
-
-def fmt_krw(value) -> str:
-    try:
-        return f"₩{float(value):,.0f}"
-    except Exception:
-        return "₩0"
 
 
 def fmt_count(value) -> str:

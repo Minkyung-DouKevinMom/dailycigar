@@ -11,8 +11,10 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 from openpyxl.cell.cell import MergedCell
 
+from modules.common.dbutil import get_conn, table_exists, get_table_columns, find_existing_column
+from modules.common.fmt import safe_float as _safe_float, safe_int as _safe_int, fmt_krw as _currency
+
 BASE_DIR = Path(__file__).resolve().parents[2]
-DB_PATH = os.getenv("DAILYCIGAR_DB_PATH", str(BASE_DIR / "cigar.db"))
 
 STATEMENT_COMPANY_NAME = "㈜ 데일리시가"
 STATEMENT_BANK_NAME = "신한은행"
@@ -25,21 +27,7 @@ STATEMENT_TEMPLATE_PATH = Path(os.getenv("DAILYCIGAR_STATEMENT_TEMPLATE_PATH", s
 # -----------------------------
 # DB helpers
 # -----------------------------
-def get_conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
 
-
-def table_exists(conn, table_name: str) -> bool:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT name
-        FROM sqlite_master
-        WHERE type='table' AND name=?
-        """,
-        (table_name,),
-    )
-    return cur.fetchone() is not None
 
 def set_merged_cell_value(ws, cell_ref: str, value):
     cell = ws[cell_ref]
@@ -59,22 +47,6 @@ def _apply_alignment_safe(ws, cell_ref: str, alignment):
                 return
     else:
         cell.alignment = alignment
-
-
-def get_table_columns(conn, table_name: str) -> list[str]:
-    if not table_exists(conn, table_name):
-        return []
-    df = pd.read_sql(f"PRAGMA table_info({table_name})", conn)
-    if "name" not in df.columns:
-        return []
-    return df["name"].tolist()
-
-
-def find_existing_column(columns: list[str], candidates: list[str]) -> Optional[str]:
-    for c in candidates:
-        if c in columns:
-            return c
-    return None
 
 
 def ensure_required_tables(conn):
@@ -471,7 +443,6 @@ def load_partner_active_grade_map(conn) -> pd.DataFrame:
     return df.sort_values("start_date").drop_duplicates(subset=["partner_id"], keep="last")
 
 
-
 def compute_grade_reset_cumulative(
     conn, partner_id: int, order_date: str, join_date: str, thresholds: pd.DataFrame
 ) -> dict:
@@ -669,32 +640,6 @@ def build_tiered_pricing_note(pricing_result: dict) -> str:
         return ""
     parts = [f"{s['grade_code']}구간 ₩{s['amount']:,.0f}×{s['discount_rate']*100:.0f}%" for s in segs]
     return "[혼합할인] " + " + ".join(parts)
-
-
-def _safe_float(value, default=0.0) -> float:
-    try:
-        if value is None:
-            return float(default)
-        if isinstance(value, str) and value.strip() == "":
-            return float(default)
-        return float(value)
-    except Exception:
-        return float(default)
-
-
-def _safe_int(value, default=0) -> int:
-    try:
-        if value is None:
-            return int(default)
-        if isinstance(value, str) and value.strip() == "":
-            return int(default)
-        return int(float(value))
-    except Exception:
-        return int(default)
-
-
-def _currency(value) -> str:
-    return f"₩{_safe_float(value):,.0f}"
 
 
 def load_cigar_products_for_wholesale(conn) -> pd.DataFrame:
@@ -1492,7 +1437,6 @@ def insert_wholesale_sale(
         ),
     )
     conn.commit()
-
 
 
 def update_wholesale_sale(
