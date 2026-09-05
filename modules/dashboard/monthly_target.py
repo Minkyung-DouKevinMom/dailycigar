@@ -98,21 +98,104 @@ def progress_bar_ratio(rate: float) -> float:
     return max(0.0, min(rate / 100, 1.0))
 
 
+def month_elapsed(year: int, month: int, today: pd.Timestamp | None = None) -> tuple[int, int, bool]:
+    """(경과일수, 그 달의 총일수, 마감여부). 미래 달이면 0일 경과, 지난 달이면 마감."""
+    today = pd.Timestamp(today).normalize() if today is not None else pd.Timestamp.today().normalize()
+    month_start = pd.Timestamp(year=year, month=month, day=1)
+    month_end = month_start + pd.offsets.MonthEnd(1)
+    total_days = int(month_end.day)
+    if today < month_start:
+        return 0, total_days, False
+    if today > month_end:
+        return total_days, total_days, True
+    return int(today.day), total_days, False
+
+
+def status_icon(projected_rate: float | None) -> str:
+    """월말 예상 달성률 기준 신호등."""
+    if projected_rate is None:
+        return "⚪"
+    if projected_rate >= 100:
+        return "🟢"
+    if projected_rate >= 80:
+        return "🟡"
+    return "🔴"
+
+
+def build_target_summary(
+    target: dict | None, summary: dict, elapsed: int, total_days: int, closed: bool
+) -> dict:
+    """
+    홈 상단 한 줄 요약용 계산 (순수 함수).
+    반환: {has_target, elapsed, total_days, closed,
+           metrics: {"매출": {...}, "영업이익": {...}}}
+      각 metric: actual, target, rate(None 가능), projected, projected_rate(None 가능), icon
+    """
+    out = {
+        "has_target": target is not None,
+        "elapsed": elapsed,
+        "total_days": total_days,
+        "closed": closed,
+        "metrics": {},
+    }
+    if target is None:
+        return out
+
+    pairs = (
+        ("매출", float(summary.get("total_sales", 0) or 0), float(target.get("target_sales", 0) or 0)),
+        ("영업이익", float(summary.get("operating_profit", 0) or 0), float(target.get("target_operating_profit", 0) or 0)),
+    )
+    for label, actual, target_v in pairs:
+        p = compute_progress(actual, target_v, elapsed, total_days, closed)
+        out["metrics"][label] = {
+            "actual": actual,
+            "target": target_v,
+            "rate": p["rate"],
+            "projected": p["projected"],
+            "projected_rate": p["projected_rate"],
+            "icon": status_icon(p["projected_rate"]),
+        }
+    return out
+
+
+def render_target_summary_line(conn, year: int, month: int, summary: dict) -> None:
+    """홈 상단용 한 줄 요약 (달성률 + 월말 예상). 상세 위젯은 대시보드에 있음."""
+    import streamlit as st_
+
+    ensure_target_table(conn)
+    elapsed, total_days, closed = month_elapsed(year, month)
+    target, is_own = get_target(conn, year, month)
+    s = build_target_summary(target, summary, elapsed, total_days, closed)
+
+    if not s["has_target"]:
+        st_.caption("🎯 이번 달 목표가 설정되지 않았습니다 — 대시보드 > 월 목표에서 설정하면 여기에 진행률이 표시됩니다.")
+        return
+
+    head = f"🎯 **{year}년 {month}월 목표**"
+    head += " (마감)" if closed else f" ({elapsed}/{total_days}일 경과)"
+    if not is_own:
+        head += " *이월*"
+
+    parts = [head]
+    for label, m in s["metrics"].items():
+        if m["rate"] is None:
+            parts.append(f"⚪ {label} 목표 미설정")
+            continue
+        seg = f"{m['icon']} {label} **{m['rate']:.0f}%**"
+        if not closed:
+            seg += f" → 월말 예상 **{m['projected_rate']:.0f}%**"
+        seg += f" ({fmt_krw(m['actual'])} / {fmt_krw(m['target'])})"
+        parts.append(seg)
+
+    st_.markdown("　·　".join(parts))
+
+
 def render_target_widget(conn, year: int, month: int, summary: dict) -> None:
     """
     summary: get_month_summary() 결과 (total_sales, operating_profit 사용)
     """
     ensure_target_table(conn)
-    today = pd.Timestamp.today().normalize()
-    month_start = pd.Timestamp(year=year, month=month, day=1)
-    month_end = month_start + pd.offsets.MonthEnd(1)
-    total_days = int(month_end.day)
-    if today < month_start:
-        elapsed, closed = 0, False
-    elif today > month_end:
-        elapsed, closed = total_days, True
-    else:
-        elapsed, closed = int(today.day), False
+    elapsed, total_days, closed = month_elapsed(year, month)
 
     target, is_own = get_target(conn, year, month)
 

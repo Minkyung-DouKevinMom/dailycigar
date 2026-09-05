@@ -10,6 +10,8 @@ from modules.dashboard.month_cumulative import render_month_cumulative
 from modules.dashboard.sales_trend import render_sales_trend
 from modules.dashboard.channel_share import render_channel_share
 from modules.dashboard.weekday_pattern import render_weekday_pattern
+from modules.dashboard.monthly_target import render_target_summary_line
+from modules.dashboard.dashboard_finance_summary import get_month_summary
 
 st.set_page_config(page_title="Daily Cigar DB", layout="wide")
 
@@ -368,6 +370,10 @@ try:
     render_retail_upload_status(conn, lookback_days=30)
 
     today = pd.Timestamp.today().normalize()
+
+    # 이번 달 목표 진행률 한 줄 요약 (상세 위젯은 대시보드)
+    render_target_summary_line(conn, today.year, today.month, get_month_summary(conn, today.year, today.month))
+
     month_start = today.replace(day=1)
     last_30_start = today - pd.Timedelta(days=29)
     insight_period_start = today - pd.Timedelta(days=59)  # 최근 30일 + 이전 30일
