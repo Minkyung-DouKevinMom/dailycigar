@@ -5,6 +5,7 @@ import streamlit as st
 
 from modules.common.dbutil import get_conn, table_exists
 from modules.common.fmt import safe_float
+from modules.finance import finance_expense_upload as feu
 
 
 def init_session_state():
@@ -635,13 +636,17 @@ def render():
             st.error("필수 테이블이 없습니다: " + ", ".join(missing_tables))
             return
 
-        tab1, tab2, tab3 = st.tabs(["지출항목 관리", "지출내역 관리", "지출 요약"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["지출항목 관리", "지출내역 관리", "지출 요약", "엑셀 업로드", "자동분류 규칙"])
         with tab1:
             render_category_tab(conn)
         with tab2:
             render_expense_tab(conn)
         with tab3:
             render_summary_tab(conn)
+        with tab4:
+            feu.render_upload_tab(conn)
+        with tab5:
+            feu.render_rules_tab(conn)
 
     finally:
         conn.close()
