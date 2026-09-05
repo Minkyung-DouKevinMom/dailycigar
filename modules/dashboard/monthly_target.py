@@ -88,6 +88,16 @@ def compute_progress(actual: float, target: float, elapsed_days: int, total_days
     }
 
 
+def progress_bar_ratio(rate: float) -> float:
+    """달성률(%)을 st.progress()가 요구하는 0.0~1.0 범위로 변환.
+
+    적자(rate < 0)나 목표 초과 달성(rate > 100)에서도 항상 유효 범위를 반환해야
+    StreamlitValueOutOfRangeError가 나지 않는다. 실제 달성률 표시(텍스트)는
+    클램프하지 않은 rate를 그대로 쓴다.
+    """
+    return max(0.0, min(rate / 100, 1.0))
+
+
 def render_target_widget(conn, year: int, month: int, summary: dict) -> None:
     """
     summary: get_month_summary() 결과 (total_sales, operating_profit 사용)
@@ -141,7 +151,7 @@ def render_target_widget(conn, year: int, month: int, summary: dict) -> None:
     def _block(col, label, actual, target_v, p):
         col.metric(f"{label} 실적", fmt_krw(actual), f"목표 {fmt_krw(target_v)}", delta_color="off")
         if p["rate"] is not None:
-            col.progress(min(p["rate"] / 100, 1.0), text=f"달성률 {p['rate']:.0f}%")
+            col.progress(progress_bar_ratio(p["rate"]), text=f"달성률 {p['rate']:.0f}%")
             if closed:
                 col.caption("최종 달성률" + (" — 목표 달성 ✅" if p["rate"] >= 100 else f" — 미달 {fmt_krw(p['remaining'])}"))
             else:
