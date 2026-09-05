@@ -703,7 +703,14 @@ def build_tiered_pricing_note(pricing_result: dict) -> str:
     return "[혼합할인] " + " + ".join(parts)
 
 
-def load_cigar_products_for_wholesale(conn) -> pd.DataFrame:
+def load_cigar_products_for_wholesale(conn, as_of_date: str | None = None) -> pd.DataFrame:
+    """
+    시가 상품 + 기준일(as_of_date, 기본 오늘) 시점의 최신 수입배치 가격/원가.
+
+    ⚠ 배치 선택 기준은 import_batch.import_date 이다 (견적서 get_estimate_cigar_items 와 동일).
+      예전에는 import_item.created_at 순으로 골라서, 나중에 입력했지만 수입일은 더 이른
+      배치의 가격/원가가 잡히는 문제가 있었다(예: 1881(R) 8월 수입분 대신 5월 수입분).
+    """
     product_cols = get_table_columns(conn, "product_mst")
     code_col = find_existing_column(product_cols, ["product_code", "code", "item_code"])
     name_col = find_existing_column(product_cols, ["product_name", "name"])
@@ -756,22 +763,35 @@ def load_cigar_products_for_wholesale(conn) -> pd.DataFrame:
     if not import_ref_col:
         return product_df
 
-    import_select = [f"{import_ref_col} AS import_ref"]
-    import_select.append(f"{retail_col} AS retail_price_krw" if retail_col else "0 AS retail_price_krw")
-    import_select.append(f"{supply_col} AS supply_price_krw" if supply_col else "0 AS supply_price_krw")
-    import_select.append(f"{korea_cost_col} AS korea_cost_krw" if korea_cost_col else "0 AS korea_cost_krw")
+    import_select = [
+        f"i.{import_ref_col} AS import_ref",
+        f"i.{retail_col} AS retail_price_krw" if retail_col else "0 AS retail_price_krw",
+        f"i.{supply_col} AS supply_price_krw" if supply_col else "0 AS supply_price_krw",
+        f"i.{korea_cost_col} AS korea_cost_krw" if korea_cost_col else "0 AS korea_cost_krw",
+        "i.id AS _item_id",
+    ]
 
-    order_candidates = [c for c in ["updated_at", "created_at", "import_date", "id"] if c in import_cols]
-    for c in order_candidates:
-        import_select.append(c)
-
-    import_df = pd.read_sql(f"SELECT {', '.join(import_select)} FROM import_item", conn)
+    # 기준일까지 들어온 배치 중 수입일이 가장 늦은 행 (동일 수입일이면 나중에 등록된 행)
+    as_of = str(as_of_date or pd.Timestamp.today().strftime("%Y-%m-%d"))
+    if table_exists(conn, "import_batch") and "batch_id" in import_cols:
+        import_df = pd.read_sql(
+            f"""
+            SELECT {', '.join(import_select)}, b.import_date AS _import_date
+            FROM import_item i
+            JOIN import_batch b ON i.batch_id = b.id
+            WHERE COALESCE(b.import_date, '9999-12-31') <= ?
+            """,
+            conn,
+            params=[as_of],
+        )
+    else:
+        import_df = pd.read_sql(
+            f"SELECT {', '.join(import_select)}, '' AS _import_date FROM import_item i", conn
+        )
     if import_df.empty:
         return product_df
 
-    sort_cols = [c for c in ["updated_at", "created_at", "import_date", "id"] if c in import_df.columns]
-    if sort_cols:
-        import_df = import_df.sort_values(sort_cols, ascending=False)
+    import_df = import_df.sort_values(["_import_date", "_item_id"], ascending=False)
 
     if import_ref_col in ["product_id", "cigar_product_id", "product_mst_id"]:
         product_df["join_ref"] = product_df["id"].astype(str)
@@ -1948,12 +1968,17 @@ def render_wholesale_management(conn):
     st.caption("상단에서 등록하고, 하단 표에서 행을 선택하여 수정/삭제하거나 거래명세서를 출력할 수 있습니다.")
 
     partners = load_partners(conn)
-    cigar_products = load_cigar_products_for_wholesale(conn)
     non_cigar_products = load_non_cigar_products(conn)
 
     if partners.empty:
         st.warning("먼저 거래처를 등록해 주세요.")
         return
+
+    # 시가 가격/원가는 '판매일자 시점의 최신 수입배치' 기준 (판매일자를 바꾸면 다시 조회)
+    _sale_date_for_price = st.session_state.get("wh_sale_date")
+    cigar_products = load_cigar_products_for_wholesale(
+        conn, as_of_date=str(_sale_date_for_price) if _sale_date_for_price else None
+    )
 
     with st.expander("신규 도매 판매 등록", expanded=True):
         item_type_label = st.radio("상품 구분", ["시가", "시가 외"], horizontal=True, key="wh_item_type_label")

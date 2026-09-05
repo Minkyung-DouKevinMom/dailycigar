@@ -83,3 +83,44 @@ def test_real_partner_list_sorted_desc(conn):
     have = dates.dropna()
     assert have.is_monotonic_decreasing                      # 구매 이력 있는 쪽은 내림차순
     assert dates.isna().sum() == 0 or dates.tail(int(dates.isna().sum())).isna().all()  # 이력 없는 쪽이 뒤
+
+
+def test_wholesale_cigar_prices_match_estimate_source(conn):
+    """도매 등록 화면의 시가 가격/원가는 견적서와 같은 기준(수입일 최신 배치)이어야 한다.
+
+    과거 버그: import_item.created_at 순으로 배치를 골라, 나중에 입력했지만 수입일은 더 이른
+    배치의 가격·원가가 잡혔다(예: 1881(R) 8월 수입분 대신 5월 수입분 → 원가 880원 차이).
+    """
+    import db
+    from modules.management.wholesale_management import load_cigar_products_for_wholesale
+
+    est = db.get_estimate_cigar_items().set_index("product_code")
+    wh = load_cigar_products_for_wholesale(conn).set_index("product_code")
+    for code in est.index:
+        if code not in wh.index:
+            continue
+        assert round(float(wh.loc[code, "retail_price_krw"]), 2) == round(float(est.loc[code, "retail_price_krw"]), 2), code
+        assert round(float(wh.loc[code, "supply_price_krw"]), 2) == round(float(est.loc[code, "supply_price_krw"]), 2), code
+
+
+def test_wholesale_cigar_prices_respect_as_of_date(conn):
+    """기준일을 과거로 주면 그 시점 이후에 들어온 배치는 반영되지 않는다."""
+    import pandas as pd
+    from modules.management.wholesale_management import load_cigar_products_for_wholesale
+
+    latest = load_cigar_products_for_wholesale(conn, as_of_date="2026-09-07").set_index("product_code")
+    early = load_cigar_products_for_wholesale(conn, as_of_date="2026-02-01").set_index("product_code")
+    assert not latest.empty and not early.empty
+
+    src = pd.read_sql_query(
+        """
+        SELECT i.product_code, b.import_date, i.korea_cost_krw
+        FROM import_item i JOIN import_batch b ON i.batch_id = b.id
+        WHERE COALESCE(i.product_code,'') <> '' AND b.import_date <= '2026-02-01'
+        ORDER BY b.import_date DESC, i.id DESC
+        """,
+        conn,
+    ).drop_duplicates(subset=["product_code"], keep="first").set_index("product_code")
+    for code in src.index:
+        if code in early.index:
+            assert round(float(early.loc[code, "korea_cost_krw"]), 2) == round(float(src.loc[code, "korea_cost_krw"]), 2), code
