@@ -9,6 +9,7 @@ from modules.common.upload_status import render_retail_upload_status
 from modules.dashboard.month_cumulative import render_month_cumulative
 from modules.dashboard.sales_trend import render_sales_trend
 from modules.dashboard.channel_share import render_channel_share
+from modules.dashboard.weekday_pattern import render_weekday_pattern
 
 st.set_page_config(page_title="Daily Cigar DB", layout="wide")
 
@@ -437,6 +438,9 @@ try:
         st.subheader("전체 기간 매출 추이")
         # 일/주/월 전환 가능한 추이 차트 (modules.dashboard.sales_trend, all_time_df 재사용)
         render_sales_trend(all_time_df, today)
+
+        # 요일별 평균 매출 패턴 (최근 13주 소매 기준, all_time_df 재사용)
+        render_weekday_pattern(all_time_df, today)
 
     with right:
         st.subheader("최근 30일 채널 비중")
