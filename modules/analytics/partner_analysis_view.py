@@ -24,6 +24,37 @@ def _find_date_column(df: pd.DataFrame):
     return None
 
 
+MIN_PURCHASES_FOR_CHART = 2   # 일자별 비교 그래프에 그릴 최소 구매일수
+
+
+def count_purchase_days(daily_df: pd.DataFrame) -> pd.Series:
+    """거래처별 구매일수(매출 > 0 인 서로 다른 날짜 수). 구매주기 요약의 '구매일수'와 같은 기준."""
+    if daily_df is None or daily_df.empty:
+        return pd.Series(dtype=int)
+    d = daily_df.copy()
+    d["sales"] = pd.to_numeric(d["sales"], errors="coerce").fillna(0)
+    d = d[d["sales"] > 0]
+    if d.empty:
+        return pd.Series(dtype=int)
+    return d.groupby("partner_name", dropna=False)["date"].nunique().astype(int)
+
+
+def filter_repeat_partners(
+    daily_df: pd.DataFrame, min_purchases: int = MIN_PURCHASES_FOR_CHART
+) -> tuple[pd.DataFrame, list[str]]:
+    """
+    구매일수가 min_purchases 이상인 거래처만 남긴다.
+    반환: (필터된 daily_df, 제외된 거래처명 목록)
+      1회성 구매 거래처는 선 하나에 점 하나뿐이라 구매주기 비교 그래프에서 노이즈가 된다.
+    """
+    counts = count_purchase_days(daily_df)
+    if counts.empty:
+        return daily_df.iloc[0:0] if daily_df is not None else pd.DataFrame(), []
+    keep = set(counts[counts >= min_purchases].index)
+    excluded = sorted(str(n) for n in counts.index if n not in keep)
+    return daily_df[daily_df["partner_name"].isin(keep)].copy(), excluded
+
+
 def _build_partner_cycle_summary(line_df: pd.DataFrame) -> pd.DataFrame:
     if line_df.empty:
         return pd.DataFrame()
@@ -216,6 +247,12 @@ def render():
             st.info("일자별 집계 데이터가 없습니다.")
             return
 
+        # 1회만 구매한 거래처는 그래프에서 제외 (선이 점 하나라 구매주기 비교에 방해)
+        daily_df, excluded_partners = filter_repeat_partners(daily_df, MIN_PURCHASES_FOR_CHART)
+        if daily_df.empty:
+            st.info(f"{MIN_PURCHASES_FOR_CHART}번 이상 구매한 거래처가 없어 비교 그래프를 표시할 수 없습니다.")
+            return
+
         min_date = pd.to_datetime(daily_df["date"]).min()
         max_date = pd.to_datetime(daily_df["date"]).max()
         all_dates = pd.date_range(start=min_date, end=max_date, freq="D")
@@ -229,7 +266,16 @@ def render():
         pivot_df = pivot_df.reindex(all_dates).fillna(0)
         pivot_df.index.name = "date"
 
-        st.caption("거래가 없는 날짜는 0으로 표시하여 거래처별 구매 주기를 비교합니다.")
+        caption = (
+            f"{MIN_PURCHASES_FOR_CHART}번 이상 구매한 거래처 {daily_df['partner_name'].nunique():,}곳만 표시합니다. "
+            "거래가 없는 날짜는 0으로 표시하여 거래처별 구매 주기를 비교합니다."
+        )
+        if excluded_partners:
+            caption += (
+                f"  \n제외된 1회 구매 거래처 {len(excluded_partners)}곳: " + ", ".join(excluded_partners)
+                + " (아래 구매주기 요약 표에는 그대로 표시됩니다)"
+            )
+        st.caption(caption)
 
         # pivot → long format으로 변환
         long_df = pivot_df.reset_index().melt(id_vars="date", var_name="거래처", value_name="매출")
