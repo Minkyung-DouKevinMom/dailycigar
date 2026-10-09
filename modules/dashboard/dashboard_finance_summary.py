@@ -223,12 +223,41 @@ def get_month_summary(conn, year: int, month: int) -> dict:
     }
 
 
-def get_monthly_trend(conn, months: int = 12, up_to_year: int = None, up_to_month: int = None) -> pd.DataFrame:
+def get_earliest_sales_month(conn) -> pd.Timestamp | None:
+    """최초 매출(소매+도매) 발생월의 1일. 매출 데이터가 전혀 없으면 None."""
+    dates = []
+    for table in ("retail_sales", "wholesale_sales"):
+        if not table_exists(conn, table):
+            continue
+        cols = get_table_columns(conn, table)
+        if "sale_date" not in cols:
+            continue
+        row = conn.execute(f"SELECT MIN(sale_date) FROM {table}").fetchone()
+        if row and row[0]:
+            dates.append(row[0])
+    if not dates:
+        return None
+    return pd.to_datetime(min(dates)).replace(day=1)
+
+
+def get_monthly_trend(conn, months: int = None, up_to_year: int = None, up_to_month: int = None) -> pd.DataFrame:
+    """
+    월별 매출/손익 추이. months 를 지정하지 않으면(기본) 최초 매출월부터 up_to 월까지
+    영업 시작 이후 전체 기간을 보여준다 (예전처럼 최근 12개월로 잘리지 않음).
+    """
     # 선택한 연/월이 있으면 그 달까지, 없으면 오늘 기준
     if up_to_year is not None and up_to_month is not None:
         base = pd.Timestamp(year=up_to_year, month=up_to_month, day=1)
     else:
         base = pd.Timestamp.today().replace(day=1)
+
+    if months is None:
+        earliest = get_earliest_sales_month(conn)
+        if earliest is None:
+            months = 12
+        else:
+            months = max(1, (base.year - earliest.year) * 12 + (base.month - earliest.month) + 1)
+
     rows = []
 
     for i in range(months - 1, -1, -1):
@@ -545,7 +574,7 @@ def render():
         )
 
         with tab1:
-            trend_df = get_monthly_trend(conn, months=12, up_to_year=year, up_to_month=month)
+            trend_df = get_monthly_trend(conn, up_to_year=year, up_to_month=month)
 
             if not trend_df.empty:
                 show_trend_df = trend_df.copy()
