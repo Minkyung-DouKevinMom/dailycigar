@@ -7,6 +7,7 @@ from io import BytesIO
 
 import pandas as pd
 import streamlit as st
+import db
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 from openpyxl.cell.cell import MergedCell
@@ -1747,6 +1748,98 @@ def render_partner_registration(conn):
                         st.rerun()
                     except ValueError as e:
                         st.error(str(e))
+
+        with st.expander("🏬 지점/담당자 관리", expanded=False):
+            st.caption(
+                "같은 거래처라도 지점마다 대표자·연락처·주소가 다르면 여기에 지점별로 추가해 등록합니다. "
+                "매입 누적액/등급은 지점 단위가 아니라 이 거래처 전체 기준으로 계산됩니다."
+            )
+            db.init_partner_branch_table()
+            branch_partner_id = int(selected_row["id"])
+            st.session_state.setdefault("partner_branch_reset_key", 0)
+            branches_df = db.get_partner_branches(branch_partner_id)
+
+            if branches_df.empty:
+                st.info("등록된 지점이 없습니다. 아래에서 추가해 주세요.")
+            else:
+                display_branches = branches_df.rename(columns={
+                    "branch_name": "지점명",
+                    "owner_name": "대표자명",
+                    "phone": "연락처",
+                    "address": "주소",
+                    "notes": "비고",
+                    "is_active": "사용",
+                }).copy()
+                display_branches["사용"] = display_branches["사용"].apply(lambda x: "Y" if int(x or 0) == 1 else "N")
+                st.dataframe(
+                    display_branches[["지점명", "대표자명", "연락처", "주소", "비고", "사용"]],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                branch_options = [
+                    f"{int(r['id'])} | {r['branch_name']}" for _, r in branches_df.iterrows()
+                ]
+                selected_branch_label = st.selectbox(
+                    "수정/삭제할 지점 선택",
+                    options=[""] + branch_options,
+                    key=f"partner_branch_select_{branch_partner_id}_{st.session_state.partner_branch_reset_key}",
+                )
+                if selected_branch_label:
+                    branch_id = int(selected_branch_label.split("|")[0].strip())
+                    branch_row = branches_df.loc[branches_df["id"] == branch_id].iloc[0]
+                    with st.form(f"partner_branch_edit_form_{branch_id}_{st.session_state.partner_branch_reset_key}"):
+                        eb_name = st.text_input("지점명 *", value=str(branch_row["branch_name"] or ""))
+                        eb_owner = st.text_input("대표자명", value=str(branch_row["owner_name"] or ""))
+                        eb_phone = st.text_input("연락처", value=str(branch_row["phone"] or ""))
+                        eb_address = st.text_input("주소", value=str(branch_row["address"] or ""))
+                        eb_notes = st.text_input("비고", value=str(branch_row["notes"] or ""))
+                        eb_active = st.selectbox(
+                            "사용여부", options=[1, 0], format_func=lambda x: "사용" if x == 1 else "미사용",
+                            index=0 if int(branch_row["is_active"] or 1) == 1 else 1,
+                        )
+                        ebc1, ebc2 = st.columns(2)
+                        eb_upd = ebc1.form_submit_button("수정 저장", use_container_width=True)
+                        eb_del = ebc2.form_submit_button("삭제", use_container_width=True)
+
+                        if eb_upd:
+                            if not eb_name.strip():
+                                st.error("지점명은 필수입니다.")
+                            else:
+                                db.update_partner_branch(
+                                    branch_id, eb_name.strip(), eb_owner.strip(), eb_phone.strip(),
+                                    eb_address.strip(), eb_notes.strip(), int(eb_active),
+                                )
+                                st.success("지점 정보가 수정되었습니다.")
+                                st.session_state.partner_branch_reset_key += 1
+                                st.rerun()
+
+                        if eb_del:
+                            db.delete_partner_branch(branch_id)
+                            st.success("지점이 삭제되었습니다.")
+                            st.session_state.partner_branch_reset_key += 1
+                            st.rerun()
+
+            st.markdown("##### 지점 추가")
+            with st.form(f"partner_branch_add_form_{branch_partner_id}_{st.session_state.partner_branch_reset_key}", clear_on_submit=True):
+                nb_name = st.text_input("지점명 *", placeholder="예: 마가리타1585 강남점")
+                nb_owner = st.text_input("대표자명")
+                nb_phone = st.text_input("연락처")
+                nb_address = st.text_input("주소")
+                nb_notes = st.text_input("비고")
+                nb_submit = st.form_submit_button("지점 추가", use_container_width=True)
+
+                if nb_submit:
+                    if not nb_name.strip():
+                        st.error("지점명은 필수입니다.")
+                    else:
+                        db.insert_partner_branch(
+                            branch_partner_id, nb_name.strip(), nb_owner.strip(),
+                            nb_phone.strip(), nb_address.strip(), nb_notes.strip(),
+                        )
+                        st.success(f"지점이 추가되었습니다: {nb_name}")
+                        st.session_state.partner_branch_reset_key += 1
+                        st.rerun()
 
     with st.form("partner_registration_form", clear_on_submit=(mode == "신규 등록")):
         c1, c2 = st.columns(2)

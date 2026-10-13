@@ -2695,6 +2695,79 @@ def delete_gift_package_component(row_id: int):
     execute("DELETE FROM gift_package_component WHERE id = ?", [row_id])
 
 
+def init_partner_branch_table():
+    """거래처 지점/담당자 테이블이 없으면 생성.
+
+    partner_mst 는 거래처 1건당 대표자/담당자/연락처/주소를 1개씩만 가지는데,
+    같은 상호(예: 마가리타1585)가 지점마다 대표자·연락처·주소가 다른 경우가 있어
+    partner_mst 1건에 여러 지점 정보를 매달 수 있도록 별도 테이블로 분리한다.
+    매입 누적액/등급은 지점 단위가 아니라 partner_mst(거래처) 단위로 그대로 유지된다.
+    """
+    execute("""
+        CREATE TABLE IF NOT EXISTS partner_branch (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            partner_id   INTEGER NOT NULL,
+            branch_name  TEXT    NOT NULL,
+            owner_name   TEXT,
+            phone        TEXT,
+            address      TEXT,
+            notes        TEXT,
+            is_active    INTEGER NOT NULL DEFAULT 1,
+            created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (partner_id) REFERENCES partner_mst(id)
+        )
+    """)
+
+
+def get_partner_branches(partner_id: int) -> pd.DataFrame:
+    return run_query(
+        "SELECT * FROM partner_branch WHERE partner_id = ? ORDER BY id",
+        [partner_id],
+    )
+
+
+def insert_partner_branch(
+    partner_id: int,
+    branch_name: str,
+    owner_name: str = "",
+    phone: str = "",
+    address: str = "",
+    notes: str = None,
+) -> int:
+    return execute(
+        """
+        INSERT INTO partner_branch (partner_id, branch_name, owner_name, phone, address, notes)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [partner_id, branch_name, owner_name, phone, address, notes],
+    )
+
+
+def update_partner_branch(
+    row_id: int,
+    branch_name: str,
+    owner_name: str,
+    phone: str,
+    address: str,
+    notes: str,
+    is_active: int = 1,
+):
+    execute(
+        """
+        UPDATE partner_branch
+        SET branch_name = ?, owner_name = ?, phone = ?, address = ?, notes = ?,
+            is_active = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        [branch_name, owner_name, phone, address, notes, is_active, row_id],
+    )
+
+
+def delete_partner_branch(row_id: int):
+    execute("DELETE FROM partner_branch WHERE id = ?", [row_id])
+
+
 def get_gift_set_component_attribution(conn, date_from: str = None, date_to: str = None) -> pd.DataFrame:
     """
     선물세트(기프트패키지)로 판매된 매출/원가를 구성품(시가 + 기타) 단위로 정확히 귀속시킨다.
