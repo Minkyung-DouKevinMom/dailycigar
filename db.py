@@ -2727,6 +2727,30 @@ def get_partner_branches(partner_id: int) -> pd.DataFrame:
     )
 
 
+def get_all_partner_branches() -> pd.DataFrame:
+    """전체 거래처의 지점/담당자 목록 (거래처명 포함, 조회용).
+
+    견적서 등의 대표자명/연락처/주소를 등록 전 빠르게 대조해보기 위한 용도.
+    """
+    return run_query(
+        """
+        SELECT
+            pb.id,
+            pb.partner_id,
+            p.partner_name,
+            pb.branch_name,
+            pb.owner_name,
+            pb.phone,
+            pb.address,
+            pb.notes,
+            pb.is_active
+        FROM partner_branch pb
+        JOIN partner_mst p ON pb.partner_id = p.id
+        ORDER BY p.partner_name, pb.branch_name
+        """
+    )
+
+
 def insert_partner_branch(
     partner_id: int,
     branch_name: str,
