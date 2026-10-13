@@ -1639,34 +1639,6 @@ def render_partner_registration(conn):
     grade_codes = load_grade_codes(conn)
     grade_active_map = load_partner_active_grade_map(conn)
 
-    all_branches_df = db.get_all_partner_branches()
-    if not all_branches_df.empty:
-        st.markdown("#### 🏬 지점이 있는 거래처")
-        st.caption(
-            "지점이 등록된 거래처만 아래에 표시됩니다. 거래처를 펼치면 지점명/대표자명/연락처/주소를 "
-            "바로 확인할 수 있습니다 (견적서 대조용). 수정/삭제는 아래 '기존 업체 수정'에서 거래처를 "
-            "선택한 뒤 '지점/담당자 관리'에서 해주세요."
-        )
-        for partner_name, group in all_branches_df.groupby("partner_name", sort=True):
-            with st.expander(f"{partner_name} ({len(group)}개 지점)", expanded=False):
-                branch_display = group.rename(columns={
-                    "branch_name": "지점명",
-                    "owner_name": "대표자명",
-                    "phone": "연락처",
-                    "address": "주소",
-                    "notes": "비고",
-                    "is_active": "사용",
-                }).copy()
-                branch_display["사용"] = branch_display["사용"].apply(lambda x: "Y" if int(x or 0) == 1 else "N")
-                st.dataframe(
-                    branch_display[["지점명", "대표자명", "연락처", "주소", "비고", "사용"]],
-                    use_container_width=True,
-                    hide_index=True,
-                )
-        st.divider()
-
-    mode = st.radio("작업", ["신규 등록", "기존 업체 수정"], horizontal=True)
-
     purchase_summary = load_partner_purchase_summary_from_grade(conn)
 
     if not purchase_summary.empty:
@@ -1713,375 +1685,431 @@ def render_partner_registration(conn):
         partners["active_start_date"] = None
         partners["active_end_date"] = None
 
-    selected_partner = None
-    selected_row = None
-    if mode == "기존 업체 수정":
-        if partners.empty:
-            st.info("수정할 거래처가 없습니다.")
-            return
+    tab_list, tab_edit = st.tabs(["거래처 목록", "거래처 등록/수정"])
 
-        option_df = partners[["id", "partner_name"]].copy()
-        option_df["label"] = option_df["partner_name"].fillna("") + " (ID:" + option_df["id"].astype(str) + ")"
-        selected_label = st.selectbox("수정할 업체 선택", option_df["label"].tolist())
-        selected_partner = option_df.loc[option_df["label"] == selected_label].iloc[0]
-        selected_row = partners.loc[partners["id"] == selected_partner["id"]].iloc[0]
-
-        active_grade_display = selected_row.get("active_grade_code") or selected_row.get("current_grade_code") or "-"
-        active_end_display = selected_row.get("active_end_date") or "-"
-        st.caption(
-            f"현재 등급: **{active_grade_display}** / 만료일: {active_end_display} "
-            "(등급 변경은 '판매관리 > 거래처등급관리' 화면에서 처리해 주세요)"
+    with tab_list:
+        all_branches_df = db.get_all_partner_branches()
+        branch_counts = (
+            all_branches_df.groupby("partner_id").size() if not all_branches_df.empty else pd.Series(dtype=int)
         )
 
-        with st.expander("⚠️ 거래처 삭제"):
-            del_partner_id = int(selected_row["id"])
-            del_cur = conn.cursor()
-            del_cur.execute("SELECT COUNT(*) FROM wholesale_sales WHERE partner_id = ?", (del_partner_id,))
-            del_sales_cnt = del_cur.fetchone()[0]
-            del_cur.execute("SELECT COUNT(*) FROM statement_history WHERE partner_id = ?", (del_partner_id,))
-            del_stmt_cnt = del_cur.fetchone()[0]
-            del_cur.execute("SELECT COUNT(*) FROM stock_out WHERE partner_id = ?", (del_partner_id,))
-            del_stockout_cnt = del_cur.fetchone()[0]
-            del_cur.execute("SELECT COUNT(*) FROM partner_grade_history WHERE partner_id = ?", (del_partner_id,))
-            del_grade_cnt = del_cur.fetchone()[0]
-
+        if not partners.empty:
+            st.markdown("#### 등록된 거래처")
             st.caption(
-                f"연관 데이터 — 도매판매 {del_sales_cnt}건 / 명세서 {del_stmt_cnt}건 / "
-                f"출고이력 {del_stockout_cnt}건 / 등급이력 {del_grade_cnt}건"
+                "지점이 있는 거래처는 '지점' 칼럼에 지점 수가 표시됩니다. 행을 클릭하면 아래에 지점 목록이 "
+                "표시됩니다 (견적서 대조용). 지점 수정/삭제는 '거래처 등록/수정' 탭에서 거래처를 선택한 뒤 "
+                "'지점/담당자 관리'에서 해주세요."
+            )
+            sort_key = st.selectbox(
+                "정렬", list(PARTNER_SORT_OPTIONS), index=0, key="partner_list_sort",
+                help="기본값은 최근구매순입니다. 구매 이력이 없는 거래처는 맨 뒤에 표시됩니다.",
+            )
+            view_df = sort_partners(partners, sort_key).rename(columns={
+                "last_purchase_date": "최근구매일",
+                "purchase_count": "구매횟수",
+                "partner_name": "거래처명",
+                "partner_type": "유형",
+                "phone": "연락처",
+                "current_grade_code": "등급(수동값)",
+                "active_grade_code": "등급(자동계산)",
+                "active_end_date": "등급만료일",
+                "status": "상태",
+                "join_date": "가입일",
+                "grade_acquired_date": "등급업일(수동값·미사용)",
+                "grade_start_date": "등급업(현재등급) 시작일",
+                "purchase_item_names": "등급업 이후 구매물품",
+                "purchase_supply_amount_sum": "등급업 이후 공급가합계",
+                "next_grade_code": "다음 등급",
+                "next_grade_remaining": "다음 등급까지 남은 금액",
+                "notes": "비고",
+                "business_no": "사업자번호",
+                "owner_name": "대표자명",
+                "contact_name": "담당자명",
+                "email": "이메일",
+                "address": "주소",
+                "program_exempt_yn": "프로그램제외",
+            })
+
+            if "등급업 이후 공급가합계" in view_df.columns:
+                view_df["등급업 이후 공급가합계"] = (
+                    pd.to_numeric(view_df["등급업 이후 공급가합계"], errors="coerce")
+                    .fillna(0)
+                    .map(lambda x: f"{x:,.0f}")
+                )
+
+            if "다음 등급까지 남은 금액" in view_df.columns:
+                view_df["다음 등급까지 남은 금액"] = (
+                    pd.to_numeric(view_df["다음 등급까지 남은 금액"], errors="coerce")
+                    .map(lambda x: "-" if pd.isna(x) else f"{x:,.0f}")
+                )
+
+            if "다음 등급" in view_df.columns:
+                view_df["다음 등급"] = view_df["다음 등급"].fillna("최고 등급")
+
+            if "프로그램제외" in view_df.columns:
+                view_df["프로그램제외"] = (
+                    pd.to_numeric(view_df["프로그램제외"], errors="coerce")
+                    .fillna(0)
+                    .map(lambda x: "Y" if int(x) == 1 else "")
+                )
+
+            if "최근구매일" in view_df.columns:
+                view_df["최근구매일"] = view_df["최근구매일"].fillna("구매이력없음")
+            if "구매횟수" in view_df.columns:
+                view_df["구매횟수"] = (
+                    pd.to_numeric(view_df["구매횟수"], errors="coerce").fillna(0).map(lambda x: f"{int(x):,}회")
+                )
+
+            view_df["지점"] = view_df["id"].map(branch_counts).fillna(0).astype(int)
+            view_df["지점"] = view_df["지점"].apply(lambda x: f"{x}개" if x > 0 else "")
+
+            preferred_order = [
+                "거래처명",
+                "지점",
+                "최근구매일",
+                "구매횟수",
+                "연락처",
+                "등급(자동계산)",
+                "등급만료일",
+                "등급(수동값)",
+                "상태",
+                "가입일",
+                "등급업(현재등급) 시작일",
+                "등급업 이후 공급가합계",
+                "대표자명",
+                "주소",
+                "다음 등급",
+                "다음 등급까지 남은 금액",
+                "등급업 이후 구매물품",
+                "등급업일(수동값·미사용)",
+                "사업자번호",
+                "비고",
+                "이메일",
+                "담당자명",
+                "유형",
+                "프로그램제외",
+            ]
+
+            existing_order = [c for c in preferred_order if c in view_df.columns]
+            remaining_cols = [c for c in view_df.columns if c not in existing_order and c != "id"]
+            display_order = existing_order + remaining_cols
+
+            event = st.dataframe(
+                view_df,
+                use_container_width=True,
+                hide_index=True,
+                column_order=display_order,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="partner_list_df",
             )
 
-            can_delete = del_sales_cnt == 0 and del_stmt_cnt == 0 and del_stockout_cnt == 0
+            selected_rows = list(event.selection.rows) if event and event.selection else []
+            if selected_rows:
+                sel_idx = selected_rows[0]
+                sel_partner_id = int(view_df.iloc[sel_idx]["id"])
+                sel_partner_name = view_df.iloc[sel_idx]["거래처명"]
+                branches = db.get_partner_branches(sel_partner_id)
+                st.markdown(f"**📍 {sel_partner_name} 지점 목록**")
+                if branches.empty:
+                    st.caption(
+                        "등록된 지점이 없습니다. 지점 등록은 '거래처 등록/수정' 탭의 "
+                        "'지점/담당자 관리'에서 해주세요."
+                    )
+                else:
+                    branch_display = branches.rename(columns={
+                        "branch_name": "지점명",
+                        "owner_name": "대표자명",
+                        "phone": "연락처",
+                        "address": "주소",
+                        "notes": "비고",
+                        "is_active": "사용",
+                    }).copy()
+                    branch_display["사용"] = branch_display["사용"].apply(lambda x: "Y" if int(x or 0) == 1 else "N")
+                    st.dataframe(
+                        branch_display[["지점명", "대표자명", "연락처", "주소", "비고", "사용"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+        else:
+            st.info("등록된 거래처가 없습니다.")
 
-            if not can_delete:
-                st.warning(
-                    "도매판매/명세서/출고 이력이 있는 거래처는 데이터 무결성 보호를 위해 삭제할 수 없습니다. "
-                    "위 '거래처 수정' 폼에서 상태를 '비활성(inactive)'으로 변경해 주세요."
-                )
-            else:
-                confirm_label = f"'{selected_row['partner_name']}' 거래처를 영구 삭제하는 것에 동의합니다"
-                if del_grade_cnt:
-                    confirm_label += f" (등급이력 {del_grade_cnt}건도 함께 삭제됩니다)"
-                confirm_delete = st.checkbox(confirm_label, key=f"confirm_delete_partner_{del_partner_id}")
-                if st.button(
-                    "거래처 영구 삭제",
-                    type="primary",
-                    disabled=not confirm_delete,
-                    key=f"delete_partner_btn_{del_partner_id}",
-                ):
-                    try:
-                        deleted_name = str(selected_row["partner_name"])
-                        delete_partner(conn, del_partner_id)
-                        st.success(f"'{deleted_name}' 거래처가 삭제되었습니다.")
-                        st.rerun()
-                    except ValueError as e:
-                        st.error(str(e))
+    with tab_edit:
+        mode = st.radio("작업", ["신규 등록", "기존 업체 수정"], horizontal=True)
 
-        with st.expander("🏬 지점/담당자 관리", expanded=False):
+        selected_partner = None
+        selected_row = None
+        if mode == "기존 업체 수정":
+            if partners.empty:
+                st.info("수정할 거래처가 없습니다.")
+                return
+
+            option_df = partners[["id", "partner_name"]].copy()
+            option_df["label"] = option_df["partner_name"].fillna("") + " (ID:" + option_df["id"].astype(str) + ")"
+            selected_label = st.selectbox("수정할 업체 선택", option_df["label"].tolist())
+            selected_partner = option_df.loc[option_df["label"] == selected_label].iloc[0]
+            selected_row = partners.loc[partners["id"] == selected_partner["id"]].iloc[0]
+
+            active_grade_display = selected_row.get("active_grade_code") or selected_row.get("current_grade_code") or "-"
+            active_end_display = selected_row.get("active_end_date") or "-"
             st.caption(
-                "같은 거래처라도 지점마다 대표자·연락처·주소가 다르면 여기에 지점별로 추가해 등록합니다. "
-                "매입 누적액/등급은 지점 단위가 아니라 이 거래처 전체 기준으로 계산됩니다."
+                f"현재 등급: **{active_grade_display}** / 만료일: {active_end_display} "
+                "(등급 변경은 '판매관리 > 거래처등급관리' 화면에서 처리해 주세요)"
             )
-            db.init_partner_branch_table()
-            branch_partner_id = int(selected_row["id"])
-            st.session_state.setdefault("partner_branch_reset_key", 0)
-            branches_df = db.get_partner_branches(branch_partner_id)
 
-            if branches_df.empty:
-                st.info("등록된 지점이 없습니다. 아래에서 추가해 주세요.")
-            else:
-                display_branches = branches_df.rename(columns={
-                    "branch_name": "지점명",
-                    "owner_name": "대표자명",
-                    "phone": "연락처",
-                    "address": "주소",
-                    "notes": "비고",
-                    "is_active": "사용",
-                }).copy()
-                display_branches["사용"] = display_branches["사용"].apply(lambda x: "Y" if int(x or 0) == 1 else "N")
-                st.dataframe(
-                    display_branches[["지점명", "대표자명", "연락처", "주소", "비고", "사용"]],
-                    use_container_width=True,
-                    hide_index=True,
+            with st.expander("⚠️ 거래처 삭제"):
+                del_partner_id = int(selected_row["id"])
+                del_cur = conn.cursor()
+                del_cur.execute("SELECT COUNT(*) FROM wholesale_sales WHERE partner_id = ?", (del_partner_id,))
+                del_sales_cnt = del_cur.fetchone()[0]
+                del_cur.execute("SELECT COUNT(*) FROM statement_history WHERE partner_id = ?", (del_partner_id,))
+                del_stmt_cnt = del_cur.fetchone()[0]
+                del_cur.execute("SELECT COUNT(*) FROM stock_out WHERE partner_id = ?", (del_partner_id,))
+                del_stockout_cnt = del_cur.fetchone()[0]
+                del_cur.execute("SELECT COUNT(*) FROM partner_grade_history WHERE partner_id = ?", (del_partner_id,))
+                del_grade_cnt = del_cur.fetchone()[0]
+
+                st.caption(
+                    f"연관 데이터 — 도매판매 {del_sales_cnt}건 / 명세서 {del_stmt_cnt}건 / "
+                    f"출고이력 {del_stockout_cnt}건 / 등급이력 {del_grade_cnt}건"
                 )
 
-                branch_options = [
-                    f"{int(r['id'])} | {r['branch_name']}" for _, r in branches_df.iterrows()
-                ]
-                selected_branch_label = st.selectbox(
-                    "수정/삭제할 지점 선택",
-                    options=[""] + branch_options,
-                    key=f"partner_branch_select_{branch_partner_id}_{st.session_state.partner_branch_reset_key}",
-                )
-                if selected_branch_label:
-                    branch_id = int(selected_branch_label.split("|")[0].strip())
-                    branch_row = branches_df.loc[branches_df["id"] == branch_id].iloc[0]
-                    with st.form(f"partner_branch_edit_form_{branch_id}_{st.session_state.partner_branch_reset_key}"):
-                        eb_name = st.text_input("지점명 *", value=str(branch_row["branch_name"] or ""))
-                        eb_owner = st.text_input("대표자명", value=str(branch_row["owner_name"] or ""))
-                        eb_phone = st.text_input("연락처", value=str(branch_row["phone"] or ""))
-                        eb_address = st.text_input("주소", value=str(branch_row["address"] or ""))
-                        eb_notes = st.text_input("비고", value=str(branch_row["notes"] or ""))
-                        eb_active = st.selectbox(
-                            "사용여부", options=[1, 0], format_func=lambda x: "사용" if x == 1 else "미사용",
-                            index=0 if int(branch_row["is_active"] or 1) == 1 else 1,
-                        )
-                        ebc1, ebc2 = st.columns(2)
-                        eb_upd = ebc1.form_submit_button("수정 저장", use_container_width=True)
-                        eb_del = ebc2.form_submit_button("삭제", use_container_width=True)
+                can_delete = del_sales_cnt == 0 and del_stmt_cnt == 0 and del_stockout_cnt == 0
 
-                        if eb_upd:
-                            if not eb_name.strip():
-                                st.error("지점명은 필수입니다.")
-                            else:
-                                db.update_partner_branch(
-                                    branch_id, eb_name.strip(), eb_owner.strip(), eb_phone.strip(),
-                                    eb_address.strip(), eb_notes.strip(), int(eb_active),
-                                )
-                                st.success("지점 정보가 수정되었습니다.")
+                if not can_delete:
+                    st.warning(
+                        "도매판매/명세서/출고 이력이 있는 거래처는 데이터 무결성 보호를 위해 삭제할 수 없습니다. "
+                        "위 '거래처 수정' 폼에서 상태를 '비활성(inactive)'으로 변경해 주세요."
+                    )
+                else:
+                    confirm_label = f"'{selected_row['partner_name']}' 거래처를 영구 삭제하는 것에 동의합니다"
+                    if del_grade_cnt:
+                        confirm_label += f" (등급이력 {del_grade_cnt}건도 함께 삭제됩니다)"
+                    confirm_delete = st.checkbox(confirm_label, key=f"confirm_delete_partner_{del_partner_id}")
+                    if st.button(
+                        "거래처 영구 삭제",
+                        type="primary",
+                        disabled=not confirm_delete,
+                        key=f"delete_partner_btn_{del_partner_id}",
+                    ):
+                        try:
+                            deleted_name = str(selected_row["partner_name"])
+                            delete_partner(conn, del_partner_id)
+                            st.success(f"'{deleted_name}' 거래처가 삭제되었습니다.")
+                            st.rerun()
+                        except ValueError as e:
+                            st.error(str(e))
+
+            with st.expander("🏬 지점/담당자 관리", expanded=False):
+                st.caption(
+                    "같은 거래처라도 지점마다 대표자·연락처·주소가 다르면 여기에 지점별로 추가해 등록합니다. "
+                    "매입 누적액/등급은 지점 단위가 아니라 이 거래처 전체 기준으로 계산됩니다."
+                )
+                db.init_partner_branch_table()
+                branch_partner_id = int(selected_row["id"])
+                st.session_state.setdefault("partner_branch_reset_key", 0)
+                branches_df = db.get_partner_branches(branch_partner_id)
+
+                if branches_df.empty:
+                    st.info("등록된 지점이 없습니다. 아래에서 추가해 주세요.")
+                else:
+                    display_branches = branches_df.rename(columns={
+                        "branch_name": "지점명",
+                        "owner_name": "대표자명",
+                        "phone": "연락처",
+                        "address": "주소",
+                        "notes": "비고",
+                        "is_active": "사용",
+                    }).copy()
+                    display_branches["사용"] = display_branches["사용"].apply(lambda x: "Y" if int(x or 0) == 1 else "N")
+                    st.dataframe(
+                        display_branches[["지점명", "대표자명", "연락처", "주소", "비고", "사용"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                    branch_options = [
+                        f"{int(r['id'])} | {r['branch_name']}" for _, r in branches_df.iterrows()
+                    ]
+                    selected_branch_label = st.selectbox(
+                        "수정/삭제할 지점 선택",
+                        options=[""] + branch_options,
+                        key=f"partner_branch_select_{branch_partner_id}_{st.session_state.partner_branch_reset_key}",
+                    )
+                    if selected_branch_label:
+                        branch_id = int(selected_branch_label.split("|")[0].strip())
+                        branch_row = branches_df.loc[branches_df["id"] == branch_id].iloc[0]
+                        with st.form(f"partner_branch_edit_form_{branch_id}_{st.session_state.partner_branch_reset_key}"):
+                            eb_name = st.text_input("지점명 *", value=str(branch_row["branch_name"] or ""))
+                            eb_owner = st.text_input("대표자명", value=str(branch_row["owner_name"] or ""))
+                            eb_phone = st.text_input("연락처", value=str(branch_row["phone"] or ""))
+                            eb_address = st.text_input("주소", value=str(branch_row["address"] or ""))
+                            eb_notes = st.text_input("비고", value=str(branch_row["notes"] or ""))
+                            eb_active = st.selectbox(
+                                "사용여부", options=[1, 0], format_func=lambda x: "사용" if x == 1 else "미사용",
+                                index=0 if int(branch_row["is_active"] or 1) == 1 else 1,
+                            )
+                            ebc1, ebc2 = st.columns(2)
+                            eb_upd = ebc1.form_submit_button("수정 저장", use_container_width=True)
+                            eb_del = ebc2.form_submit_button("삭제", use_container_width=True)
+
+                            if eb_upd:
+                                if not eb_name.strip():
+                                    st.error("지점명은 필수입니다.")
+                                else:
+                                    db.update_partner_branch(
+                                        branch_id, eb_name.strip(), eb_owner.strip(), eb_phone.strip(),
+                                        eb_address.strip(), eb_notes.strip(), int(eb_active),
+                                    )
+                                    st.success("지점 정보가 수정되었습니다.")
+                                    st.session_state.partner_branch_reset_key += 1
+                                    st.rerun()
+
+                            if eb_del:
+                                db.delete_partner_branch(branch_id)
+                                st.success("지점이 삭제되었습니다.")
                                 st.session_state.partner_branch_reset_key += 1
                                 st.rerun()
 
-                        if eb_del:
-                            db.delete_partner_branch(branch_id)
-                            st.success("지점이 삭제되었습니다.")
+                st.markdown("##### 지점 추가")
+                with st.form(f"partner_branch_add_form_{branch_partner_id}_{st.session_state.partner_branch_reset_key}", clear_on_submit=True):
+                    nb_name = st.text_input("지점명 *", placeholder="예: 마가리타1585 강남점")
+                    nb_owner = st.text_input("대표자명")
+                    nb_phone = st.text_input("연락처")
+                    nb_address = st.text_input("주소")
+                    nb_notes = st.text_input("비고")
+                    nb_submit = st.form_submit_button("지점 추가", use_container_width=True)
+
+                    if nb_submit:
+                        if not nb_name.strip():
+                            st.error("지점명은 필수입니다.")
+                        else:
+                            db.insert_partner_branch(
+                                branch_partner_id, nb_name.strip(), nb_owner.strip(),
+                                nb_phone.strip(), nb_address.strip(), nb_notes.strip(),
+                            )
+                            st.success(f"지점이 추가되었습니다: {nb_name}")
                             st.session_state.partner_branch_reset_key += 1
                             st.rerun()
 
-            st.markdown("##### 지점 추가")
-            with st.form(f"partner_branch_add_form_{branch_partner_id}_{st.session_state.partner_branch_reset_key}", clear_on_submit=True):
-                nb_name = st.text_input("지점명 *", placeholder="예: 마가리타1585 강남점")
-                nb_owner = st.text_input("대표자명")
-                nb_phone = st.text_input("연락처")
-                nb_address = st.text_input("주소")
-                nb_notes = st.text_input("비고")
-                nb_submit = st.form_submit_button("지점 추가", use_container_width=True)
+        with st.form("partner_registration_form", clear_on_submit=(mode == "신규 등록")):
+            c1, c2 = st.columns(2)
+            partner_type_list = ["wholesale", "retail_partner", "bar", "cafe", "shop", "etc"]
+            status_list = ["active", "inactive"]
 
-                if nb_submit:
-                    if not nb_name.strip():
-                        st.error("지점명은 필수입니다.")
-                    else:
-                        db.insert_partner_branch(
-                            branch_partner_id, nb_name.strip(), nb_owner.strip(),
-                            nb_phone.strip(), nb_address.strip(), nb_notes.strip(),
-                        )
-                        st.success(f"지점이 추가되었습니다: {nb_name}")
-                        st.session_state.partner_branch_reset_key += 1
-                        st.rerun()
-
-    with st.form("partner_registration_form", clear_on_submit=(mode == "신규 등록")):
-        c1, c2 = st.columns(2)
-        partner_type_list = ["wholesale", "retail_partner", "bar", "cafe", "shop", "etc"]
-        status_list = ["active", "inactive"]
-
-        with c1:
-            partner_name = st.text_input("거래처명 *", value="" if selected_row is None else str(selected_row["partner_name"] or ""))
-            default_partner_type = "wholesale" if selected_row is None else str(selected_row["partner_type"] or "wholesale")
-            partner_type = st.selectbox(
-                "거래처 유형",
-                partner_type_list,
-                index=partner_type_list.index(default_partner_type) if default_partner_type in partner_type_list else 0,
-            )
-            business_no = st.text_input("사업자번호", value="" if selected_row is None else str(selected_row.get("business_no", "") or ""))
-            owner_name = st.text_input("대표자명", value="" if selected_row is None else str(selected_row["owner_name"] or ""))
-            contact_name = st.text_input("담당자명", value="" if selected_row is None else str(selected_row["contact_name"] or ""))
-
-        with c2:
-            phone = st.text_input("연락처", value="" if selected_row is None else str(selected_row["phone"] or ""))
-            email = st.text_input("이메일", value="" if selected_row is None else str(selected_row["email"] or ""))
-            address = st.text_input("주소", value="" if selected_row is None else str(selected_row.get("address", "") or ""))
-
-            default_join_date = pd.to_datetime("today").date()
-            if selected_row is not None and pd.notna(selected_row["join_date"]):
-                default_join_date = pd.to_datetime(selected_row["join_date"]).date()
-            join_date = str(st.date_input("가입일", value=default_join_date))
-
-            if grade_codes:
-                grade_list = [""] + grade_codes
-                default_grade = "" if selected_row is None else str(selected_row["current_grade_code"] or "")
-                current_grade_code = st.selectbox(
-                    "현재 등급",
-                    grade_list,
-                    index=grade_list.index(default_grade) if default_grade in grade_list else 0,
+            with c1:
+                partner_name = st.text_input("거래처명 *", value="" if selected_row is None else str(selected_row["partner_name"] or ""))
+                default_partner_type = "wholesale" if selected_row is None else str(selected_row["partner_type"] or "wholesale")
+                partner_type = st.selectbox(
+                    "거래처 유형",
+                    partner_type_list,
+                    index=partner_type_list.index(default_partner_type) if default_partner_type in partner_type_list else 0,
                 )
-            else:
-                current_grade_code = st.text_input("현재 등급", value="" if selected_row is None else str(selected_row["current_grade_code"] or ""))
+                business_no = st.text_input("사업자번호", value="" if selected_row is None else str(selected_row.get("business_no", "") or ""))
+                owner_name = st.text_input("대표자명", value="" if selected_row is None else str(selected_row["owner_name"] or ""))
+                contact_name = st.text_input("담당자명", value="" if selected_row is None else str(selected_row["contact_name"] or ""))
 
-            default_status = "active" if selected_row is None else str(selected_row["status"] or "active")
-            status = st.selectbox(
-                "상태",
-                status_list,
-                index=status_list.index(default_status) if default_status in status_list else 0,
+            with c2:
+                phone = st.text_input("연락처", value="" if selected_row is None else str(selected_row["phone"] or ""))
+                email = st.text_input("이메일", value="" if selected_row is None else str(selected_row["email"] or ""))
+                address = st.text_input("주소", value="" if selected_row is None else str(selected_row.get("address", "") or ""))
+
+                default_join_date = pd.to_datetime("today").date()
+                if selected_row is not None and pd.notna(selected_row["join_date"]):
+                    default_join_date = pd.to_datetime(selected_row["join_date"]).date()
+                join_date = str(st.date_input("가입일", value=default_join_date))
+
+                if grade_codes:
+                    grade_list = [""] + grade_codes
+                    default_grade = "" if selected_row is None else str(selected_row["current_grade_code"] or "")
+                    current_grade_code = st.selectbox(
+                        "현재 등급",
+                        grade_list,
+                        index=grade_list.index(default_grade) if default_grade in grade_list else 0,
+                    )
+                else:
+                    current_grade_code = st.text_input("현재 등급", value="" if selected_row is None else str(selected_row["current_grade_code"] or ""))
+
+                default_status = "active" if selected_row is None else str(selected_row["status"] or "active")
+                status = st.selectbox(
+                    "상태",
+                    status_list,
+                    index=status_list.index(default_status) if default_status in status_list else 0,
+                )
+                notes = st.text_area("비고", value="" if selected_row is None else str(selected_row.get("notes", "") or ""))
+                program_exempt_yn = st.checkbox(
+                    "파트너 프로그램 제외 (등급별 자동 할인 적용 안 함)",
+                    value=False if selected_row is None else bool(int(selected_row.get("program_exempt_yn") or 0)),
+                    help="이미 별도 협의로 할인 중인 업체 등, 매출 누적액과 무관하게 등급 할인을 적용하면 안 되는 거래처에 체크하세요.",
+                )
+
+            submitted = st.form_submit_button(
+                "거래처 등록" if mode == "신규 등록" else "거래처 수정 저장",
+                use_container_width=True,
             )
-            notes = st.text_area("비고", value="" if selected_row is None else str(selected_row.get("notes", "") or ""))
-            program_exempt_yn = st.checkbox(
-                "파트너 프로그램 제외 (등급별 자동 할인 적용 안 함)",
-                value=False if selected_row is None else bool(int(selected_row.get("program_exempt_yn") or 0)),
-                help="이미 별도 협의로 할인 중인 업체 등, 매출 누적액과 무관하게 등급 할인을 적용하면 안 되는 거래처에 체크하세요.",
-            )
 
-        submitted = st.form_submit_button(
-            "거래처 등록" if mode == "신규 등록" else "거래처 수정 저장",
-            use_container_width=True,
-        )
-
-        if submitted:
-            if not partner_name.strip():
-                st.error("거래처명은 필수입니다.")
-                return
-
-            if mode == "신규 등록":
-                dup = pd.read_sql(
-                    "SELECT COUNT(*) AS cnt FROM partner_mst WHERE partner_name = ?",
-                    conn,
-                    params=(partner_name.strip(),),
-                )["cnt"].iloc[0]
-                if dup > 0:
-                    st.error("이미 같은 거래처명이 등록되어 있습니다.")
+            if submitted:
+                if not partner_name.strip():
+                    st.error("거래처명은 필수입니다.")
                     return
 
-                insert_partner(
-                    conn=conn,
-                    partner_name=partner_name.strip(),
-                    partner_type=partner_type,
-                    business_no=business_no.strip(),
-                    owner_name=owner_name.strip(),
-                    contact_name=contact_name.strip(),
-                    phone=phone.strip(),
-                    email=email.strip(),
-                    address=address.strip(),
-                    join_date=join_date,
-                    current_grade_code=current_grade_code.strip() if current_grade_code else "",
-                    notes=notes.strip(),
-                    program_exempt_yn=int(program_exempt_yn),
-                )
-                st.success(f"거래처가 등록되었습니다: {partner_name}")
-            else:
-                dup = pd.read_sql(
-                    "SELECT COUNT(*) AS cnt FROM partner_mst WHERE partner_name = ? AND id <> ?",
-                    conn,
-                    params=(partner_name.strip(), int(selected_partner["id"])),
-                )["cnt"].iloc[0]
-                if dup > 0:
-                    st.error("이미 같은 거래처명이 등록되어 있습니다.")
-                    return
+                if mode == "신규 등록":
+                    dup = pd.read_sql(
+                        "SELECT COUNT(*) AS cnt FROM partner_mst WHERE partner_name = ?",
+                        conn,
+                        params=(partner_name.strip(),),
+                    )["cnt"].iloc[0]
+                    if dup > 0:
+                        st.error("이미 같은 거래처명이 등록되어 있습니다.")
+                        return
 
-                update_partner(
-                    conn=conn,
-                    partner_id=int(selected_partner["id"]),
-                    partner_name=partner_name.strip(),
-                    partner_type=partner_type,
-                    business_no=business_no.strip(),
-                    owner_name=owner_name.strip(),
-                    contact_name=contact_name.strip(),
-                    phone=phone.strip(),
-                    email=email.strip(),
-                    address=address.strip(),
-                    join_date=join_date,
-                    current_grade_code=current_grade_code.strip() if current_grade_code else "",
-                    notes=notes.strip(),
-                    status=status,
-                    program_exempt_yn=int(program_exempt_yn),
-                )
-                st.success(f"거래처 정보가 수정되었습니다: {partner_name}")
+                    insert_partner(
+                        conn=conn,
+                        partner_name=partner_name.strip(),
+                        partner_type=partner_type,
+                        business_no=business_no.strip(),
+                        owner_name=owner_name.strip(),
+                        contact_name=contact_name.strip(),
+                        phone=phone.strip(),
+                        email=email.strip(),
+                        address=address.strip(),
+                        join_date=join_date,
+                        current_grade_code=current_grade_code.strip() if current_grade_code else "",
+                        notes=notes.strip(),
+                        program_exempt_yn=int(program_exempt_yn),
+                    )
+                    st.success(f"거래처가 등록되었습니다: {partner_name}")
+                else:
+                    dup = pd.read_sql(
+                        "SELECT COUNT(*) AS cnt FROM partner_mst WHERE partner_name = ? AND id <> ?",
+                        conn,
+                        params=(partner_name.strip(), int(selected_partner["id"])),
+                    )["cnt"].iloc[0]
+                    if dup > 0:
+                        st.error("이미 같은 거래처명이 등록되어 있습니다.")
+                        return
 
-            st.rerun()
+                    update_partner(
+                        conn=conn,
+                        partner_id=int(selected_partner["id"]),
+                        partner_name=partner_name.strip(),
+                        partner_type=partner_type,
+                        business_no=business_no.strip(),
+                        owner_name=owner_name.strip(),
+                        contact_name=contact_name.strip(),
+                        phone=phone.strip(),
+                        email=email.strip(),
+                        address=address.strip(),
+                        join_date=join_date,
+                        current_grade_code=current_grade_code.strip() if current_grade_code else "",
+                        notes=notes.strip(),
+                        status=status,
+                        program_exempt_yn=int(program_exempt_yn),
+                    )
+                    st.success(f"거래처 정보가 수정되었습니다: {partner_name}")
 
-    if not partners.empty:
-        st.divider()
-        st.markdown("#### 등록된 거래처")
-        sort_key = st.selectbox(
-            "정렬", list(PARTNER_SORT_OPTIONS), index=0, key="partner_list_sort",
-            help="기본값은 최근구매순입니다. 구매 이력이 없는 거래처는 맨 뒤에 표시됩니다.",
-        )
-        view_df = sort_partners(partners, sort_key).rename(columns={
-            "last_purchase_date": "최근구매일",
-            "purchase_count": "구매횟수",
-            "partner_name": "거래처명",
-            "partner_type": "유형",
-            "phone": "연락처",
-            "current_grade_code": "등급(수동값)",
-            "active_grade_code": "등급(자동계산)",
-            "active_end_date": "등급만료일",
-            "status": "상태",
-            "join_date": "가입일",
-            "grade_acquired_date": "등급업일(수동값·미사용)",
-            "grade_start_date": "등급업(현재등급) 시작일",
-            "purchase_item_names": "등급업 이후 구매물품",
-            "purchase_supply_amount_sum": "등급업 이후 공급가합계",
-            "next_grade_code": "다음 등급",
-            "next_grade_remaining": "다음 등급까지 남은 금액",
-            "notes": "비고",
-            "business_no": "사업자번호",
-            "owner_name": "대표자명",
-            "contact_name": "담당자명",
-            "email": "이메일",
-            "address": "주소",
-            "program_exempt_yn": "프로그램제외",
-        })
+                st.rerun()
 
-        if "등급업 이후 공급가합계" in view_df.columns:
-            view_df["등급업 이후 공급가합계"] = (
-                pd.to_numeric(view_df["등급업 이후 공급가합계"], errors="coerce")
-                .fillna(0)
-                .map(lambda x: f"{x:,.0f}")
-            )
-
-        if "다음 등급까지 남은 금액" in view_df.columns:
-            view_df["다음 등급까지 남은 금액"] = (
-                pd.to_numeric(view_df["다음 등급까지 남은 금액"], errors="coerce")
-                .map(lambda x: "-" if pd.isna(x) else f"{x:,.0f}")
-            )
-
-        if "다음 등급" in view_df.columns:
-            view_df["다음 등급"] = view_df["다음 등급"].fillna("최고 등급")
-
-        if "프로그램제외" in view_df.columns:
-            view_df["프로그램제외"] = (
-                pd.to_numeric(view_df["프로그램제외"], errors="coerce")
-                .fillna(0)
-                .map(lambda x: "Y" if int(x) == 1 else "")
-            )
-
-        if "최근구매일" in view_df.columns:
-            view_df["최근구매일"] = view_df["최근구매일"].fillna("구매이력없음")
-        if "구매횟수" in view_df.columns:
-            view_df["구매횟수"] = (
-                pd.to_numeric(view_df["구매횟수"], errors="coerce").fillna(0).map(lambda x: f"{int(x):,}회")
-            )
-
-        preferred_order = [
-            "거래처명",
-            "최근구매일",
-            "구매횟수",
-            "유형",
-            "연락처",
-            "등급(자동계산)",
-            "등급만료일",
-            "등급(수동값)",
-            "프로그램제외",
-            "상태",
-            "가입일",
-            "등급업(현재등급) 시작일",
-            "등급업 이후 공급가합계",
-            "다음 등급",
-            "다음 등급까지 남은 금액",
-            "등급업 이후 구매물품",
-            "등급업일(수동값·미사용)",
-            "사업자번호",
-            "비고",
-            "이메일",
-            "대표자명",
-            "담당자명",
-            "주소",
-        ]
-
-        existing_order = [c for c in preferred_order if c in view_df.columns]
-        remaining_cols = [c for c in view_df.columns if c not in existing_order]
-        view_df = view_df[existing_order + remaining_cols]
-
-        st.dataframe(view_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("등록된 거래처가 없습니다.")
 
 def render_wholesale_management(conn):
     st.markdown("### 도매 판매 관리")
