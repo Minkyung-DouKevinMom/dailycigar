@@ -1633,10 +1633,52 @@ def render_partner_registration(conn):
     st.markdown("### 거래처 관리")
 
     ensure_partner_grade_tables(conn)
+    db.init_partner_branch_table()
 
     partners = load_partners(conn)
     grade_codes = load_grade_codes(conn)
     grade_active_map = load_partner_active_grade_map(conn)
+
+    with st.expander("📋 지점/담당자 전체 조회 (견적서 대조용)", expanded=False):
+        st.caption(
+            "견적서의 대표자명·연락처·주소를 등록 전에 빠르게 대조해보기 위한 조회 전용 목록입니다. "
+            "수정/삭제는 아래 '기존 업체 수정'에서 거래처를 선택한 뒤 '지점/담당자 관리'에서 해주세요."
+        )
+        all_branches_df = db.get_all_partner_branches()
+        if all_branches_df.empty:
+            st.info("등록된 지점/담당자 정보가 없습니다.")
+        else:
+            lookup_keyword = st.text_input(
+                "검색 (거래처명/지점명/대표자명/연락처/주소)",
+                key="partner_branch_lookup_keyword",
+            )
+            lookup_df = all_branches_df.copy()
+            if lookup_keyword.strip():
+                kw = lookup_keyword.strip()
+                mask = (
+                    lookup_df["partner_name"].astype(str).str.contains(kw, case=False, na=False)
+                    | lookup_df["branch_name"].astype(str).str.contains(kw, case=False, na=False)
+                    | lookup_df["owner_name"].astype(str).str.contains(kw, case=False, na=False)
+                    | lookup_df["phone"].astype(str).str.contains(kw, case=False, na=False)
+                    | lookup_df["address"].astype(str).str.contains(kw, case=False, na=False)
+                )
+                lookup_df = lookup_df[mask]
+
+            lookup_display = lookup_df.rename(columns={
+                "partner_name": "거래처명",
+                "branch_name": "지점명",
+                "owner_name": "대표자명",
+                "phone": "연락처",
+                "address": "주소",
+                "notes": "비고",
+                "is_active": "사용",
+            }).copy()
+            lookup_display["사용"] = lookup_display["사용"].apply(lambda x: "Y" if int(x or 0) == 1 else "N")
+            st.dataframe(
+                lookup_display[["거래처명", "지점명", "대표자명", "연락처", "주소", "비고", "사용"]],
+                use_container_width=True,
+                hide_index=True,
+            )
 
     mode = st.radio("작업", ["신규 등록", "기존 업체 수정"], horizontal=True)
 
