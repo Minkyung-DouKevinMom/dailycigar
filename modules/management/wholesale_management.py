@@ -1689,33 +1689,17 @@ def render_partner_registration(conn):
 
     with tab_list:
         all_branches_df = db.get_all_partner_branches()
-        if not all_branches_df.empty:
-            st.markdown("#### 🏬 지점이 있는 거래처")
-            st.caption(
-                "지점이 등록된 거래처만 아래에 표시됩니다. 거래처를 펼치면 지점명/대표자명/연락처/주소를 "
-                "바로 확인할 수 있습니다 (견적서 대조용). 수정/삭제는 '거래처 등록/수정' 탭에서 거래처를 "
-                "선택한 뒤 '지점/담당자 관리'에서 해주세요."
-            )
-            for partner_name, group in all_branches_df.groupby("partner_name", sort=True):
-                with st.expander(f"{partner_name} ({len(group)}개 지점)", expanded=False):
-                    branch_display = group.rename(columns={
-                        "branch_name": "지점명",
-                        "owner_name": "대표자명",
-                        "phone": "연락처",
-                        "address": "주소",
-                        "notes": "비고",
-                        "is_active": "사용",
-                    }).copy()
-                    branch_display["사용"] = branch_display["사용"].apply(lambda x: "Y" if int(x or 0) == 1 else "N")
-                    st.dataframe(
-                        branch_display[["지점명", "대표자명", "연락처", "주소", "비고", "사용"]],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-            st.divider()
+        branch_counts = (
+            all_branches_df.groupby("partner_id").size() if not all_branches_df.empty else pd.Series(dtype=int)
+        )
 
         if not partners.empty:
             st.markdown("#### 등록된 거래처")
+            st.caption(
+                "지점이 있는 거래처는 '지점' 칼럼에 지점 수가 표시됩니다. 행을 클릭하면 아래에 지점 목록이 "
+                "표시됩니다 (견적서 대조용). 지점 수정/삭제는 '거래처 등록/수정' 탭에서 거래처를 선택한 뒤 "
+                "'지점/담당자 관리'에서 해주세요."
+            )
             sort_key = st.selectbox(
                 "정렬", list(PARTNER_SORT_OPTIONS), index=0, key="partner_list_sort",
                 help="기본값은 최근구매순입니다. 구매 이력이 없는 거래처는 맨 뒤에 표시됩니다.",
@@ -1776,8 +1760,12 @@ def render_partner_registration(conn):
                     pd.to_numeric(view_df["구매횟수"], errors="coerce").fillna(0).map(lambda x: f"{int(x):,}회")
                 )
 
+            view_df["지점"] = view_df["id"].map(branch_counts).fillna(0).astype(int)
+            view_df["지점"] = view_df["지점"].apply(lambda x: f"{x}개" if x > 0 else "")
+
             preferred_order = [
                 "거래처명",
+                "지점",
                 "최근구매일",
                 "구매횟수",
                 "연락처",
@@ -1803,10 +1791,46 @@ def render_partner_registration(conn):
             ]
 
             existing_order = [c for c in preferred_order if c in view_df.columns]
-            remaining_cols = [c for c in view_df.columns if c not in existing_order]
-            view_df = view_df[existing_order + remaining_cols]
+            remaining_cols = [c for c in view_df.columns if c not in existing_order and c != "id"]
+            display_order = existing_order + remaining_cols
 
-            st.dataframe(view_df, use_container_width=True, hide_index=True)
+            event = st.dataframe(
+                view_df,
+                use_container_width=True,
+                hide_index=True,
+                column_order=display_order,
+                on_select="rerun",
+                selection_mode="single-row",
+                key="partner_list_df",
+            )
+
+            selected_rows = list(event.selection.rows) if event and event.selection else []
+            if selected_rows:
+                sel_idx = selected_rows[0]
+                sel_partner_id = int(view_df.iloc[sel_idx]["id"])
+                sel_partner_name = view_df.iloc[sel_idx]["거래처명"]
+                branches = db.get_partner_branches(sel_partner_id)
+                st.markdown(f"**📍 {sel_partner_name} 지점 목록**")
+                if branches.empty:
+                    st.caption(
+                        "등록된 지점이 없습니다. 지점 등록은 '거래처 등록/수정' 탭의 "
+                        "'지점/담당자 관리'에서 해주세요."
+                    )
+                else:
+                    branch_display = branches.rename(columns={
+                        "branch_name": "지점명",
+                        "owner_name": "대표자명",
+                        "phone": "연락처",
+                        "address": "주소",
+                        "notes": "비고",
+                        "is_active": "사용",
+                    }).copy()
+                    branch_display["사용"] = branch_display["사용"].apply(lambda x: "Y" if int(x or 0) == 1 else "N")
+                    st.dataframe(
+                        branch_display[["지점명", "대표자명", "연락처", "주소", "비고", "사용"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
         else:
             st.info("등록된 거래처가 없습니다.")
 
