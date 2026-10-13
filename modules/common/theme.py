@@ -16,7 +16,7 @@ import streamlit as st
 # (사이드바 표시 라벨, 페이지 경로, 구분선 뒤에 올지 여부)
 NAV_ITEMS = [
     ("HOME", "DAILY_CIGAR.py"),
-    ("대시보드⭐", "pages/1_대시보드.py"),
+    ("대시보드", "pages/1_대시보드.py"),
     ("기준정보", "pages/2_기준정보.py"),
     None,  # divider
     ("수입관리", "pages/3_수입관리.py"),
@@ -26,8 +26,8 @@ NAV_ITEMS = [
     ("분석", "pages/6_분석.py"),
     None,
     ("문서출력", "pages/7_문서출력.py"),
-    ("매장운영⭐", "pages/8_매장운영.py"),
-    ("재고관리📦", "pages/9_재고관리.py"),
+    ("매장운영", "pages/8_매장운영.py"),
+    ("재고관리", "pages/9_재고관리.py"),
 ]
 
 
