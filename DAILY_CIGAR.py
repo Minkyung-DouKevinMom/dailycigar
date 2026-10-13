@@ -14,8 +14,10 @@ from modules.dashboard.monthly_target import render_target_summary_line
 from modules.dashboard.dashboard_finance_summary import get_month_summary
 from modules.dashboard.stock_alert import render_stock_depletion
 from modules.dashboard.kpi_summary import summarize_kpis, split_period, format_delta_pct, format_delta_count
+from modules.common.theme import inject_global_theme, render_sidebar
 
 st.set_page_config(page_title="Daily Cigar DB", layout="wide")
+inject_global_theme()
 
 
 # =========================
@@ -265,21 +267,7 @@ def calc_long_unsold_stock(
 # =========================
 st.title("Daily Cigar 운영 관리 시스템")
 
-with st.sidebar:
-    st.markdown("## DAILY CIGAR")
-    st.page_link("DAILY_CIGAR.py", label="HOME")
-    st.page_link("pages/1_대시보드.py", label="대시보드⭐")
-    st.page_link("pages/2_기준정보.py", label="기준정보")
-    st.divider()
-    st.page_link("pages/3_수입관리.py", label="수입관리")
-    st.page_link("pages/4_소매관리.py", label="소매관리")
-    st.page_link("pages/4_도매관리.py", label="도매관리")
-    st.page_link("pages/5_재무관리.py", label="재무관리")
-    st.page_link("pages/6_분석.py", label="분석")
-    st.divider()
-    st.page_link("pages/7_문서출력.py", label="문서출력")
-    st.page_link("pages/8_매장운영.py", label="매장운영⭐")
-    st.page_link("pages/9_재고관리.py", label="재고관리📦")
+render_sidebar(active="HOME")
 
 conn = get_conn()
 
