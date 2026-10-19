@@ -61,6 +61,7 @@ def normalize_product_code(value) -> str:
 # 엑셀 '상품명'에 그대로 적혀오지만 내부적으로 다르게 인식해야 하는 값들
 PRODUCT_NAME_ALIASES = {
     "@사용료": "사용료",
+    "DJU 빈티지 하프코로나": "DJU(HC)",
 }
 
 
