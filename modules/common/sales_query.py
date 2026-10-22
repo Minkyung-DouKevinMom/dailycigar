@@ -21,7 +21,7 @@ from typing import Optional
 
 import pandas as pd
 
-from db import apply_non_cigar_margin_logic
+from db import STORE_DEFAULT, apply_non_cigar_margin_logic
 from modules.common.dbutil import get_table_columns, table_exists, view_exists
 
 RETAIL_VIEW = "v_retail_sales_enriched"
@@ -46,6 +46,7 @@ RETAIL_COLUMNS = [
     "total_korea_cost_krw",
     "retail_gross_profit_krw",
     "customer_name",
+    "store_code",              # 매장 (매장 구분 도입 전 데이터는 STORE_DEFAULT)
 ]
 
 WHOLESALE_COLUMNS = [
@@ -89,9 +90,15 @@ def _empty(cols):
     return pd.DataFrame(columns=cols)
 
 
-def load_retail_sales(conn, date_from: Optional[str] = None, date_to: Optional[str] = None) -> pd.DataFrame:
+def load_retail_sales(
+    conn,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    store_code: Optional[str] = None,
+) -> pd.DataFrame:
     """
     소매 판매 라인 단위 데이터 (기간 필터 포함, 시가 외 원가/이익 보정 적용 완료).
+    store_code 를 주면 그 매장만, 생략하면 전 매장 합계.
     컬럼: RETAIL_COLUMNS
     """
     source = retail_source(conn)
@@ -110,6 +117,7 @@ def load_retail_sales(conn, date_from: Optional[str] = None, date_to: Optional[s
     size_expr = c("mst_size_name", "''") if is_view else "''"
     cost_expr = c("total_korea_cost_krw", "0") if is_view else "0"
     gp_expr = c("retail_gross_profit_krw", "0") if is_view else "0"
+    store_expr = c("store_code", f"'{STORE_DEFAULT}'")
 
     sql = f"""
         SELECT
@@ -130,11 +138,15 @@ def load_retail_sales(conn, date_from: Optional[str] = None, date_to: Optional[s
             {c("vat_amount", "0")} AS vat_amount,
             {cost_expr} AS total_korea_cost_krw,
             {gp_expr} AS retail_gross_profit_krw,
-            '' AS customer_name
+            '' AS customer_name,
+            {store_expr} AS store_code
         FROM {source}
         WHERE 1=1
     """
     where, params = _date_filter(date_from, date_to)
+    if store_code:
+        where += f" AND {store_expr} = ?"
+        params.append(store_code)
     sql += where + " ORDER BY sale_date DESC"
 
     df = pd.read_sql_query(sql, conn, params=params)
@@ -145,7 +157,8 @@ def load_retail_sales(conn, date_from: Optional[str] = None, date_to: Optional[s
                 "total_korea_cost_krw", "retail_gross_profit_krw"]:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     for col in ["product_code", "product_code_raw", "product_name", "size_name", "category",
-                "order_no", "order_channel", "payment_status", "sale_datetime", "customer_name"]:
+                "order_no", "order_channel", "payment_status", "sale_datetime", "customer_name",
+                "store_code"]:
         df[col] = df[col].fillna("").astype(str).str.strip()
 
     # 시가 외 상품 원가/이익 재계산 (정본). net_sales_amount 가 부가세 제외 매출이어야 함 — 위에서 보장.

@@ -156,7 +156,24 @@ def fetch_product_codes(conn: sqlite3.Connection) -> Set[str]:
     return product_codes
 
 
+def row_store_code(row: pd.Series) -> str:
+    return safe_str(row.get("store_code")) or db.STORE_DEFAULT
+
+
+def select_store(label: str, key: str, help_text: Optional[str] = None) -> str:
+    """운영 매장이 2곳 이상일 때만 선택 박스를 보여주고, 1곳이면 그 매장을 그대로 사용."""
+    stores = db.get_active_stores()
+    if stores.empty:
+        return db.STORE_DEFAULT
+    codes = stores["store_code"].tolist()
+    if len(codes) == 1:
+        return codes[0]
+    names = dict(zip(stores["store_code"], stores["store_name"]))
+    return st.selectbox(label, codes, format_func=lambda c: names.get(c, c), key=key, help=help_text)
+
+
 def is_duplicate_row(conn: sqlite3.Connection, row: pd.Series) -> bool:
+    # 매장마다 POS 주문번호(001, 002…)가 따로 매겨지므로 매장도 함께 비교한다.
     sql = """
         SELECT 1
           FROM retail_sales
@@ -165,6 +182,7 @@ def is_duplicate_row(conn: sqlite3.Connection, row: pd.Series) -> bool:
            AND COALESCE(sale_datetime, '') = ?
            AND COALESCE(qty, 0) = ?
            AND COALESCE(net_sales_amount, 0) = ?
+           AND store_code = ?
          LIMIT 1
     """
     sale_datetime = (
@@ -182,20 +200,25 @@ def is_duplicate_row(conn: sqlite3.Connection, row: pd.Series) -> bool:
             sale_datetime,
             safe_float(row["qty"]),
             safe_float(row["net_sales_amount"]),
+            row_store_code(row),
         ),
     )
     return cur.fetchone() is not None
 
 
-def delete_existing_period_data(conn: sqlite3.Connection, start_date: str, end_date: str) -> int:
+def delete_existing_period_data(
+    conn: sqlite3.Connection, start_date: str, end_date: str, store_code: str = db.STORE_DEFAULT
+) -> int:
+    """해당 매장의 기간 데이터만 삭제 (다른 매장 데이터는 유지)."""
     cur = conn.cursor()
     cur.execute(
         """
         SELECT COUNT(*)
           FROM retail_sales
          WHERE sale_date BETWEEN ? AND ?
+           AND store_code = ?
         """,
-        (start_date, end_date),
+        (start_date, end_date, store_code),
     )
     count_before = cur.fetchone()[0]
 
@@ -203,8 +226,9 @@ def delete_existing_period_data(conn: sqlite3.Connection, start_date: str, end_d
         """
         DELETE FROM retail_sales
          WHERE sale_date BETWEEN ? AND ?
+           AND store_code = ?
         """,
-        (start_date, end_date),
+        (start_date, end_date, store_code),
     )
 
     # 같은 기간의 기프트패키지 자동차감 이력도 함께 삭제 (재업로드 시 재생성되므로 중복 차감 방지)
@@ -214,8 +238,9 @@ def delete_existing_period_data(conn: sqlite3.Connection, start_date: str, end_d
             DELETE FROM stock_out
              WHERE source_type = 'retail_auto'
                AND out_date BETWEEN ? AND ?
+               AND COALESCE(store_code, ?) = ?
             """,
-            (start_date, end_date),
+            (start_date, end_date, db.STORE_DEFAULT, store_code),
         )
 
     return int(count_before)
@@ -263,7 +288,13 @@ def load_gift_package_names(conn: sqlite3.Connection) -> Dict[str, str]:
     }
 
 
-def is_gift_auto_deducted(conn: sqlite3.Connection, order_no: str, out_date: str, component_product_code: str) -> bool:
+def is_gift_auto_deducted(
+    conn: sqlite3.Connection,
+    order_no: str,
+    out_date: str,
+    component_product_code: str,
+    store_code: str = db.STORE_DEFAULT,
+) -> bool:
     """
     같은 판매일자 + 주문번호로 해당 구성품이 이미 자동 차감되었는지 확인 (재업로드 시 중복 방지).
 
@@ -271,7 +302,7 @@ def is_gift_auto_deducted(conn: sqlite3.Connection, order_no: str, out_date: str
     order_no만으로 비교하면 서로 다른 날짜에 우연히 같은 주문번호를 쓴 주문의 차감
     이력과 혼동되어, 오늘 신규 판매분이 "이미 차감됨"으로 잘못 판정되고 실제로는
     재고가 차감되지 않는 문제가 있었다. out_date를 함께 비교해 정확히 같은 날짜의
-    같은 주문만 매칭하도록 수정.
+    같은 주문만 매칭하도록 수정. 매장마다 주문번호가 따로 매겨지므로 매장도 함께 비교한다.
     """
     cur = conn.cursor()
     cur.execute(
@@ -281,9 +312,10 @@ def is_gift_auto_deducted(conn: sqlite3.Connection, order_no: str, out_date: str
            AND source_order_no = ?
            AND out_date = ?
            AND product_code = ?
+           AND COALESCE(store_code, ?) = ?
          LIMIT 1
         """,
-        (order_no, out_date, component_product_code),
+        (order_no, out_date, component_product_code, db.STORE_DEFAULT, store_code),
     )
     return cur.fetchone() is not None
 
@@ -296,6 +328,7 @@ def deduct_gift_package_stock(
     sold_qty: float,
     out_date: str,
     gift_product_name: str = "",
+    store_code: str = db.STORE_DEFAULT,
 ) -> int:
     """
     기프트패키지 판매분에 대해 구성 시가 재고를 stock_out(출고유형=선물세트)에 자동 등록.
@@ -310,7 +343,7 @@ def deduct_gift_package_stock(
     deducted = 0
     for comp in components:
         comp_code = comp["component_product_code"]
-        if is_gift_auto_deducted(conn, order_no, out_date, comp_code):
+        if is_gift_auto_deducted(conn, order_no, out_date, comp_code, store_code):
             continue
 
         qty_to_deduct = int(comp["qty_per_set"]) * int(round(sold_qty))
@@ -318,16 +351,16 @@ def deduct_gift_package_stock(
             continue
 
         note = (
-            f"기프트패키지 자동차감 | 주문번호:{order_no} | "
+            f"기프트패키지 자동차감 | 매장:{store_code} | 주문번호:{order_no} | "
             f"세트상품코드:{gift_product_code}"
         )
         cur.execute(
             """
             INSERT INTO stock_out
-                (out_date, product_code, qty, out_type, partner_id, note, source_order_no, source_type)
-            VALUES (?, ?, ?, 'gift_set', NULL, ?, ?, 'retail_auto')
+                (out_date, product_code, qty, out_type, partner_id, note, source_order_no, source_type, store_code)
+            VALUES (?, ?, ?, 'gift_set', NULL, ?, ?, 'retail_auto', ?)
             """,
-            (out_date, comp_code, qty_to_deduct, note, order_no),
+            (out_date, comp_code, qty_to_deduct, note, order_no, store_code),
         )
         deducted += 1
 
@@ -502,6 +535,7 @@ def build_insert_payload(
         "source_file_name": source_file_name,
         "source_row_no": int(row["source_row_no"]) if pd.notna(row["source_row_no"]) else None,
         "delivery_yn": "Y" if str(delivery_yn).upper() == "Y" else "N",
+        "store_code": row_store_code(row),
     }
 
     return {k: v for k, v in payload.items() if k in db_columns}
@@ -578,6 +612,7 @@ def render_manual_input(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
         )
 
     with st.form("retail_manual_input_form", clear_on_submit=False):
+        manual_store_code = select_store("매장", key="manual_store")
         c1, c2, c3 = st.columns(3)
         sale_date = c1.date_input("주문기준일자", value=now_ts.date())
         sale_datetime = c2.datetime_input("주문시작시각", value=now_ts.to_pydatetime())
@@ -634,6 +669,7 @@ def render_manual_input(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
     )
 
     df = clean_item_df(raw_df)
+    df["store_code"] = manual_store_code
     row = df.iloc[0]
 
     error_messages = []
@@ -735,6 +771,7 @@ def render_edit_delete(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
     select_cols = []
     for candidate, alias in [
         ("id", "id"),
+        ("store_code", "store_code"),
         ("sale_date", "sale_date"),
         ("sale_datetime", "sale_datetime"),
         ("order_no", "order_no"),
@@ -788,7 +825,7 @@ def render_edit_delete(conn: sqlite3.Connection, retail_sales_cols: Set[str]):
 
     # ── 행 선택 ────────────────────────────────────────────────────────────────
     display_cols = [c for c in [
-        "id", "sale_date", "sale_datetime", "order_no", "product_code_raw", "product_code",
+        "id", "store_code", "sale_date", "sale_datetime", "order_no", "product_code_raw", "product_code",
         "qty", "unit_price", "net_sales_amount", "payment_status", "order_channel", "delivery_yn"
     ] if c in df.columns]
 
@@ -1047,9 +1084,15 @@ def render():
         # 기프트패키지 자동 재고 차감에 필요한 테이블/컬럼 확인 (기존 데이터에는 영향 없음)
         db.init_gift_package_component_table()
         db.init_stock_out_table()
+        db.init_store_tables()
+        retail_sales_cols = get_table_columns(conn, "retail_sales")
         gift_map = load_gift_package_map(conn)
         gift_names = load_gift_package_names(conn)
 
+        store_code = select_store(
+            "매장", key="retail_upload_store",
+            help_text="업로드할 POS 파일이 어느 매장 것인지 선택하세요. 매장마다 POS 파일을 따로 올립니다.",
+        )
         uploaded_file = st.file_uploader("엑셀 파일 업로드", type=["xlsx"])
 
         only_completed = st.checkbox(
@@ -1077,6 +1120,7 @@ def render():
                 return
 
             df = clean_item_df(df_item_raw)
+            df["store_code"] = store_code
 
             if only_completed:
                 # '완료' 상태인 주문번호 집합을 먼저 추출
@@ -1129,7 +1173,7 @@ def render():
 
             sale_from = df["sale_date"].min()
             sale_to = df["sale_date"].max()
-            st.caption(f"업로드 대상 기간: {sale_from} ~ {sale_to}")
+            st.caption(f"업로드 대상 매장: {store_code} / 기간: {sale_from} ~ {sale_to}")
 
             with st.expander("미리보기", expanded=True):
                 preview_cols = [
@@ -1189,8 +1233,9 @@ def render():
                             conn,
                             str(sale_from),
                             str(sale_to),
+                            store_code,
                         )
-                        st.info(f"기존 기간 데이터 삭제: {deleted_count:,}건")
+                        st.info(f"기존 기간 데이터 삭제({store_code}): {deleted_count:,}건")
 
                     upload_id = insert_upload_history(
                         conn=conn,
@@ -1253,6 +1298,7 @@ def render():
                                     sold_qty=row["qty"],
                                     out_date=str(row["sale_date"]),
                                     gift_product_name=gift_names.get(row["product_code"], ""),
+                                    store_code=store_code,
                                 )
 
                     update_upload_history(

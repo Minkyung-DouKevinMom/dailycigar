@@ -2917,3 +2917,75 @@ def get_gift_set_component_attribution(conn, date_from: str = None, date_to: str
         )
     )
     return result
+
+# ──────────────────────────────────────────────
+# 매장(망포점/영통점 등) 구분
+# ──────────────────────────────────────────────
+# 매장 구분 도입 전에 쌓인 소매 판매/기프트 자동차감 이력은 모두 망포점 데이터.
+STORE_DEFAULT = "망포"
+
+
+def init_store_tables():
+    """
+    매장 마스터(store_mst) 생성, retail_sales / stock_out 에 store_code 추가,
+    v_retail_sales_enriched 뷰에 store_code(및 누락돼 있던 delivery_yn) 노출. 여러 번 실행해도 안전.
+    재고는 매장 구분 없이 합산하므로 stock_out.store_code 는 소매 자동차감(retail_auto) 행의
+    중복 판정/기간 재업로드 범위를 매장별로 나누는 용도로만 쓴다.
+    """
+    conn = get_conn()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS store_mst (
+                store_code TEXT PRIMARY KEY,
+                store_name TEXT NOT NULL,
+                is_active  INTEGER NOT NULL DEFAULT 1,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.executemany(
+            "INSERT OR IGNORE INTO store_mst (store_code, store_name, is_active, sort_order) VALUES (?, ?, 1, ?)",
+            [(STORE_DEFAULT, "망포점", 1), ("영통", "영통점", 2)],
+        )
+
+        rs_cols = {r["name"] for r in conn.execute("PRAGMA table_info(retail_sales)").fetchall()}
+        if rs_cols and "store_code" not in rs_cols:
+            conn.execute(f"ALTER TABLE retail_sales ADD COLUMN store_code TEXT NOT NULL DEFAULT '{STORE_DEFAULT}'")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_retail_sales_store_date ON retail_sales(store_code, sale_date)")
+
+        so_cols = {r["name"] for r in conn.execute("PRAGMA table_info(stock_out)").fetchall()}
+        if so_cols and "store_code" not in so_cols:
+            conn.execute("ALTER TABLE stock_out ADD COLUMN store_code TEXT")
+            conn.execute(
+                "UPDATE stock_out SET store_code = ? WHERE source_type = 'retail_auto'",
+                (STORE_DEFAULT,),
+            )
+
+        view = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'v_retail_sales_enriched'"
+        ).fetchone()
+        if view and "rs.store_code" not in view[0] and "rs.created_at," in view[0]:
+            extra = "rs.created_at,\n    rs.store_code,"
+            if "rs.delivery_yn" not in view[0]:
+                extra += "\n    rs.delivery_yn,"
+            new_sql = view[0].replace("rs.created_at,", extra, 1)
+            conn.execute("DROP VIEW v_retail_sales_enriched")
+            conn.execute(new_sql)
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_active_stores() -> pd.DataFrame:
+    """운영 중인 매장 목록 (sort_order 순). store_code, store_name."""
+    return run_query(
+        "SELECT store_code, store_name FROM store_mst WHERE is_active = 1 ORDER BY sort_order, store_code"
+    )
+
+
+def get_all_stores() -> pd.DataFrame:
+    """종료된 매장 포함 전체 매장 목록 (조회 필터용)."""
+    return run_query(
+        "SELECT store_code, store_name, is_active FROM store_mst ORDER BY sort_order, store_code"
+    )
