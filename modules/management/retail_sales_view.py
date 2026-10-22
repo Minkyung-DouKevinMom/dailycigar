@@ -6,6 +6,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+import db
 from db import apply_non_cigar_margin_logic
 
 from modules.common.dbutil import get_conn, table_exists, view_exists, get_table_columns
@@ -72,6 +73,11 @@ def build_query(use_view: bool, filters: dict):
     if filters.get("date_to"):
         where.append("sale_date <= ?")
         params.append(filters["date_to"])
+
+    if filters.get("stores"):
+        placeholders = ",".join(["?"] * len(filters["stores"]))
+        where.append(f"store_code IN ({placeholders})")
+        params.extend(filters["stores"])
 
     if filters.get("channels"):
         placeholders = ",".join(["?"] * len(filters["channels"]))
@@ -183,6 +189,7 @@ KRW_COLUMNS = [
 HEADER_MAP = {
     "sale_date": "판매일자",
     "sale_datetime": "판매일시",
+    "store_code": "매장",
     "order_channel": "주문채널",
     "payment_status": "결제상태",
     "order_no": "주문번호",
@@ -231,8 +238,20 @@ def render():
             st.error("retail_sales 또는 v_retail_sales_enriched 가 없습니다.")
             return
 
+        db.init_store_tables()
         channels, statuses, categories, codes = load_filter_values(conn)
         st.caption("시가는 기존 로직, 시가 외 항목은 판매금액 - (매입가 × 수량) 기준으로 마진을 계산합니다.")
+
+        # 매장이 2곳 이상 등록돼 있을 때만 매장 필터 표시 (비우면 전 매장 합계)
+        stores = db.get_all_stores()
+        selected_stores = []
+        if len(stores) > 1:
+            store_names = dict(zip(stores["store_code"], stores["store_name"]))
+            selected_stores = st.multiselect(
+                "매장", stores["store_code"].tolist(),
+                format_func=lambda c: store_names.get(c, c),
+                placeholder="전체 매장",
+            )
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -264,6 +283,7 @@ def render():
         filters = {
             "date_from": str(date_from) if date_from else None,
             "date_to": str(date_to) if date_to else None,
+            "stores": selected_stores,
             "channels": selected_channels,
             "statuses": selected_statuses,
             "categories": selected_categories,
@@ -363,6 +383,7 @@ def render():
                 c for c in [
                     "sale_date",
                     "sale_datetime",
+                    "store_code",
                     "order_channel",
                     "payment_status",
                     "delivery_yn",
