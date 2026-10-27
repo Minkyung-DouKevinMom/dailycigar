@@ -626,48 +626,38 @@ def compute_tiered_order_pricing(
         else order_date
     )
 
-    if pd.to_datetime(order_date) < pd.to_datetime(join_date):
-        cumulative_before = 0.0  # 주문일이 가입일보다 이전인 경우 방어
-    else:
-        # 등급업 리셋 이후 누적 진행상황을 계산하고, 기존 구간 배분 로직이 그대로
-        # 동작하도록 "현재 등급 문턱 + 리셋 이후 누적액"을 절대 기준 누적값으로 사용
-        progress = compute_grade_reset_cumulative(conn, partner_id, order_date, join_date, thresholds)
-        cumulative_before = progress["grade_threshold"] + progress["cumulative_since_start"]
-
-    order_normal_supply_amount = float(qty) * float(base_supply_price)
-
     tier_rows = thresholds.sort_values("min_purchase_amount").reset_index(drop=True)
-    boundaries = tier_rows["min_purchase_amount"].tolist() + [float("inf")]
+    thresholds_list = tier_rows["min_purchase_amount"].tolist()
     rates = tier_rows["discount_rate"].tolist()
     codes = tier_rows["grade_code"].tolist()
 
+    if pd.to_datetime(order_date) < pd.to_datetime(join_date):
+        tier_idx, cumulative_before = 0, 0.0  # 주문일이 가입일보다 이전인 경우 방어
+    else:
+        progress = compute_grade_reset_cumulative(conn, partner_id, order_date, join_date, thresholds)
+        tier_idx = codes.index(progress["grade_code"]) if progress["grade_code"] in codes else 0
+        cumulative_before = progress["cumulative_since_start"]
+
+    order_normal_supply_amount = float(qty) * float(base_supply_price)
+
+    # 현재 등급 달성 이후 누적액(cumulative_before)을 다음 등급 문턱과 비교한다.
+    # (예: Silver 달성 후에는 Silver 문턱 600만원을 더하지 않고, 리셋 이후 누적액이 1,200만원을 넘어야 Gold)
+    # 거래처등급관리 화면의 '다음 등급까지 남은 금액'과 같은 기준.
     remaining = order_normal_supply_amount
     cursor_amount = cumulative_before
     segments = []
-
-    for i in range(len(rates)):
-        seg_lower = boundaries[i]
-        seg_upper = boundaries[i + 1]
-        if cursor_amount >= seg_upper:
-            continue
-        seg_capacity = seg_upper - max(cursor_amount, seg_lower)
-        if seg_capacity <= 0:
-            continue
-        seg_amount = min(remaining, seg_capacity)
-        if seg_amount <= 0:
-            continue
-        segments.append({"grade_code": codes[i], "discount_rate": rates[i], "amount": seg_amount})
-        remaining -= seg_amount
-        cursor_amount += seg_amount
-        if remaining <= 0:
-            break
-
-    if remaining > 0:
-        if segments:
-            segments[-1]["amount"] += remaining
+    while remaining > 0:
+        if tier_idx + 1 < len(codes):
+            capacity = max(thresholds_list[tier_idx + 1] - cursor_amount, 0.0)
         else:
-            segments.append({"grade_code": codes[-1], "discount_rate": rates[-1], "amount": remaining})
-        remaining = 0
+            capacity = float("inf")
+        seg_amount = min(remaining, capacity)
+        if seg_amount > 0:
+            segments.append({"grade_code": codes[tier_idx], "discount_rate": rates[tier_idx], "amount": seg_amount})
+            remaining -= seg_amount
+        if remaining > 0:
+            tier_idx += 1
+            cursor_amount = 0.0
 
     total_discount = sum(seg["amount"] * seg["discount_rate"] for seg in segments)
     blended_supply_amount = order_normal_supply_amount - total_discount
@@ -2268,7 +2258,7 @@ def render_wholesale_management(conn):
             if multi_tier:
                 cum_before = pricing_result["cumulative_before"]
                 cum_after = pricing_result["cumulative_after"]
-                st.caption(f"이 거래처의 누적 공급가액(할인 판단 기준): ₩{cum_before:,.0f} → 이번 주문 후 ₩{cum_after:,.0f}")
+                st.caption(f"현재 등급 달성 이후 누적 공급가액(할인 판단 기준): ₩{cum_before:,.0f} → 이번 주문 후 ₩{cum_after:,.0f}")
                 for seg in segs:
                     if seg["amount"] <= 0:
                         continue
