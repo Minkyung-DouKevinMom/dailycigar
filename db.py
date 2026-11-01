@@ -2463,8 +2463,21 @@ def get_sample_summary_by_partner():
 # product_price_mst
 # ───────────────────────────────────────────
 
+def ensure_product_price_takeout_column():
+    """가격 마스터에 포장가(takeout_price_krw) 컬럼이 없으면 추가. 시가 전용, 미설정은 NULL."""
+    conn = get_conn()
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(product_price_mst)").fetchall()}
+        if cols and "takeout_price_krw" not in cols:
+            conn.execute("ALTER TABLE product_price_mst ADD COLUMN takeout_price_krw REAL")
+            conn.commit()
+    finally:
+        conn.close()
+
+
 def get_all_product_price_mst() -> pd.DataFrame:
     """가격 마스터 전체 조회"""
+    ensure_product_price_takeout_column()
     conn = get_conn()
     try:
         return pd.read_sql_query(
@@ -2472,6 +2485,7 @@ def get_all_product_price_mst() -> pd.DataFrame:
             SELECT id, product_name, size_name, product_code,
                    supply_price_krw, retail_price_krw,
                    store_retail_price_krw, proposal_retail_price_krw,
+                   takeout_price_krw,
                    korea_cost_krw, is_active, ref_batch_id, notes,
                    created_at, updated_at
             FROM product_price_mst
@@ -2529,7 +2543,8 @@ def upsert_product_price_mst(
     batch_id: int | None = None,
     notes: str | None = None,
 ):
-    """수입제품 저장 시 가격 마스터 UPSERT (product_name+size_name 기준)"""
+    """수입제품 저장 시 가격 마스터 UPSERT (product_name+size_name 기준)
+    포장가(takeout_price_krw)는 매장에서 직접 관리하는 값이라 여기서 덮어쓰지 않는다."""
     conn = get_conn()
     try:
         conn.execute(
@@ -2572,8 +2587,10 @@ def update_product_price_mst(
     proposal_retail_price_krw: float,
     is_active: int,
     notes: str | None,
+    takeout_price_krw: float | None = None,
 ):
-    """기준정보 화면에서 직접 수정"""
+    """기준정보 화면에서 직접 수정. takeout_price_krw(포장가)는 None 이면 미설정(NULL)."""
+    ensure_product_price_takeout_column()
     conn = get_conn()
     try:
         conn.execute(
@@ -2583,6 +2600,7 @@ def update_product_price_mst(
                 retail_price_krw          = ?,
                 store_retail_price_krw    = ?,
                 proposal_retail_price_krw = ?,
+                takeout_price_krw         = ?,
                 is_active                 = ?,
                 notes                     = ?,
                 updated_at                = DATETIME('now','localtime')
@@ -2591,6 +2609,7 @@ def update_product_price_mst(
             (
                 supply_price_krw, retail_price_krw,
                 store_retail_price_krw, proposal_retail_price_krw,
+                takeout_price_krw,
                 is_active, notes, price_id,
             ),
         )
