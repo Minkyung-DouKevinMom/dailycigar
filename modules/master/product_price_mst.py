@@ -1,3 +1,5 @@
+from io import BytesIO
+
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -9,6 +11,36 @@ from db import (
 
 
 from modules.common.fmt import fmt_krw as _fmt  # 공통 포맷 함수 사용
+
+COLUMN_LABELS = {
+    "id": "ID",
+    "product_name": "상품명",
+    "size_name": "사이즈",
+    "product_code": "상품코드",
+    "supply_price_krw": "공급가",
+    "retail_price_krw": "소비자가",
+    "store_retail_price_krw": "매장운영가",
+    "proposal_retail_price_krw": "소비자제안가",
+    "takeout_price_krw": "포장가",
+    "korea_cost_krw": "한국원가",
+    "is_active": "활성",
+    "ref_batch_id": "기준배치",
+    "notes": "비고",
+    "updated_at": "최종수정",
+}
+PRICE_LABELS = ["공급가", "소비자가", "매장운영가", "소비자제안가", "포장가", "한국원가"]
+LIST_COLUMNS = ["ID", "상품코드", "상품명", "사이즈", *PRICE_LABELS, "활성", "기준배치", "최종수정"]
+
+
+def build_price_excel(df: pd.DataFrame) -> bytes:
+    """가격 마스터(필터 적용된 df)를 숫자 그대로 엑셀로 변환. 활성은 Y/N, 비고 포함."""
+    out = df.rename(columns=COLUMN_LABELS)
+    out["활성"] = out["활성"].apply(lambda x: "Y" if x == 1 else "N")
+    cols = [c for c in LIST_COLUMNS[:-1] + ["비고", "최종수정"] if c in out.columns]
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        out[cols].to_excel(writer, index=False, sheet_name="가격마스터")
+    return buf.getvalue()
 
 
 def _render_margin_chart(
@@ -150,36 +182,28 @@ def render():
         st.info("등록된 가격 마스터가 없습니다. 수입관리에서 제품을 저장하면 자동으로 등록됩니다.")
         return
 
-    show_df = df.rename(columns={
-        "id": "ID",
-        "product_name": "상품명",
-        "size_name": "사이즈",
-        "product_code": "상품코드",
-        "supply_price_krw": "공급가",
-        "retail_price_krw": "소비자가",
-        "store_retail_price_krw": "매장운영가",
-        "proposal_retail_price_krw": "소비자제안가",
-        "takeout_price_krw": "포장가",
-        "korea_cost_krw": "한국원가",
-        "is_active": "활성",
-        "ref_batch_id": "기준배치",
-        "updated_at": "최종수정",
-    }).copy()
+    show_df = df.rename(columns=COLUMN_LABELS).copy()
 
-    for col in ["공급가", "소비자가", "매장운영가", "소비자제안가", "포장가", "한국원가"]:
+    for col in PRICE_LABELS:
         if col in show_df.columns:
             show_df[col] = show_df[col].apply(
                 lambda x: f"₩{x:,.0f}" if pd.notna(x) else ""
             )
     show_df["활성"] = show_df["활성"].apply(lambda x: "✅" if x == 1 else "❌")
 
-    disp_cols = ["ID", "상품코드", "상품명", "사이즈",
-                 "공급가", "소비자가", "매장운영가", "소비자제안가", "포장가",
-                 "한국원가", "활성", "기준배치", "최종수정"]
-    show_df = show_df[[c for c in disp_cols if c in show_df.columns]]
+    show_df = show_df[[c for c in LIST_COLUMNS if c in show_df.columns]]
 
     st.dataframe(show_df, use_container_width=True, hide_index=True, height=340)
-    st.caption(f"{len(show_df):,}건 조회")
+    cap_col, dl_col = st.columns([3, 1])
+    cap_col.caption(f"{len(show_df):,}건 조회")
+    dl_col.download_button(
+        "📥 엑셀 다운로드",
+        data=build_price_excel(df),
+        file_name=f"가격마스터_{pd.Timestamp.today():%Y%m%d}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key="ppm_download",
+    )
 
     st.divider()
 
