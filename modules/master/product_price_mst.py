@@ -159,13 +159,14 @@ def render():
         "retail_price_krw": "소비자가",
         "store_retail_price_krw": "매장운영가",
         "proposal_retail_price_krw": "소비자제안가",
+        "takeout_price_krw": "포장가",
         "korea_cost_krw": "한국원가",
         "is_active": "활성",
         "ref_batch_id": "기준배치",
         "updated_at": "최종수정",
     }).copy()
 
-    for col in ["공급가", "소비자가", "매장운영가", "소비자제안가", "한국원가"]:
+    for col in ["공급가", "소비자가", "매장운영가", "소비자제안가", "포장가", "한국원가"]:
         if col in show_df.columns:
             show_df[col] = show_df[col].apply(
                 lambda x: f"₩{x:,.0f}" if pd.notna(x) else ""
@@ -173,7 +174,7 @@ def render():
     show_df["활성"] = show_df["활성"].apply(lambda x: "✅" if x == 1 else "❌")
 
     disp_cols = ["ID", "상품코드", "상품명", "사이즈",
-                 "공급가", "소비자가", "매장운영가", "소비자제안가",
+                 "공급가", "소비자가", "매장운영가", "소비자제안가", "포장가",
                  "한국원가", "활성", "기준배치", "최종수정"]
     show_df = show_df[[c for c in disp_cols if c in show_df.columns]]
 
@@ -244,6 +245,14 @@ def render():
             step=100, format="%d"
         )
 
+        takeout_raw = raw_row.get("takeout_price_krw")
+        new_takeout = st.number_input(
+            "포장가 (0 = 미설정)", min_value=0,
+            value=0 if pd.isna(takeout_raw) else int(round(float(takeout_raw))),
+            step=100, format="%d",
+            help="포장 손님용 가격 (시가 전용). 0 으로 두면 미설정으로 저장됩니다.",
+        )
+
         e5, e6 = st.columns([1, 3])
         new_active = e5.selectbox(
             "활성 여부", ["활성", "비활성"],
@@ -251,7 +260,8 @@ def render():
             key=f"ppm_active_sel_{selected_id}"
         )
         new_notes = e6.text_input(
-            "비고", value=str(raw_row.get("notes") or ""), key=f"ppm_notes_{selected_id}"
+            "비고", value="" if pd.isna(raw_row.get("notes")) else str(raw_row.get("notes") or ""),
+            key=f"ppm_notes_{selected_id}"
         )
 
         st.caption(
@@ -273,6 +283,7 @@ def render():
                 proposal_retail_price_krw=float(new_proposal),
                 is_active=1 if new_active == "활성" else 0,
                 notes=new_notes.strip() or None,
+                takeout_price_krw=float(new_takeout) if new_takeout > 0 else None,
             )
             st.success("저장되었습니다.")
             st.rerun()
