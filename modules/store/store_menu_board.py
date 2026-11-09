@@ -56,6 +56,13 @@ def build_size_table_df(group_df: pd.DataFrame) -> pd.DataFrame:
     else:
         temp_df["proposal_retail_price_krw"] = 0
 
+    if "takeout_price_krw" in temp_df.columns:
+        temp_df["takeout_price_krw"] = pd.to_numeric(
+            temp_df["takeout_price_krw"], errors="coerce"
+        ).fillna(0)
+    else:
+        temp_df["takeout_price_krw"] = 0
+
     if "profile_id" not in temp_df.columns:
         temp_df["profile_id"] = 999999
 
@@ -66,6 +73,7 @@ def build_size_table_df(group_df: pd.DataFrame) -> pd.DataFrame:
         "사이즈": temp_df["size_name"].apply(lambda x: safe_text(x)),
         "가격": temp_df["store_retail_price_krw"].tolist(),
         "제안가": temp_df["proposal_retail_price_krw"].tolist(),
+        "포장가": temp_df["takeout_price_krw"].tolist(),
         "강도": temp_df["strength"].apply(normalize_strength),
         "길이": temp_df["length_mm"].apply(
             lambda x: f"{int(float(x))}mm" if pd.notna(x) and str(x).strip() != "" else "-"
@@ -82,9 +90,9 @@ def render_price_html_table(size_df: pd.DataFrame, card_no: int):
     """가격 셀에 제안가 대비 색상 강조 + hover 툴팁을 적용한 HTML 테이블 (components.html로 렌더링)"""
 
     header_cells = "".join(
-        f'<th style="padding:8px 14px;text-align:left;border-bottom:2px solid #e0e0e0;'
+        f'<th style="padding:8px 6px;text-align:left;border-bottom:2px solid #e0e0e0;'
         f'font-size:12px;color:#888;font-weight:600;white-space:nowrap;">{col}</th>'
-        for col in ["사이즈", "가격", "강도", "길이", "링게이지"]
+        for col in ["사이즈", "가격", "포장가", "강도", "길이", "링게이지"]
     )
 
     rows_html = ""
@@ -108,7 +116,7 @@ def render_price_html_table(size_df: pd.DataFrame, card_no: int):
                 tooltip = f"소비자 제안가: {proposal_str}"
 
             price_cell = (
-                f'<td style="padding:6px 14px;">'
+                f'<td style="padding:6px 6px;">'
                 f'<span class="price-badge" style="background:{bg};color:{color};'
                 f'border:1.5px solid {border};" data-tip="{tooltip}">'
                 f'₩{store_price:,.0f}'
@@ -118,7 +126,7 @@ def render_price_html_table(size_df: pd.DataFrame, card_no: int):
         else:
             if proposal_price > 0 and store_price > 0:
                 price_cell = (
-                    f'<td style="padding:6px 14px;">'
+                    f'<td style="padding:6px 6px;">'
                     f'<span class="price-badge" style="background:#e8f5e9;color:#2e7d32;'
                     f'border:1.5px solid #a5d6a7;">'
                     f'₩{store_price:,.0f}'
@@ -126,15 +134,25 @@ def render_price_html_table(size_df: pd.DataFrame, card_no: int):
                 )
             else:
                 price_str = f"₩{store_price:,.0f}" if store_price > 0 else "-"
-                price_cell = f'<td style="padding:6px 14px;font-size:13px;color:#333;">{price_str}</td>'
+                price_cell = f'<td style="padding:6px 6px;font-size:13px;color:#333;">{price_str}</td>'
 
         def plain_td(val):
-            return f'<td style="padding:6px 14px;font-size:13px;color:#444;">{val}</td>'
+            return f'<td style="padding:6px 6px;font-size:13px;color:#444;">{val}</td>'
+
+        takeout_price = float(row["포장가"])
+        if takeout_price > 0:
+            takeout_cell = (
+                f'<td style="padding:6px 6px;font-size:13px;font-weight:700;color:#6a1b9a;">'
+                f'₩{takeout_price:,.0f}</td>'
+            )
+        else:
+            takeout_cell = '<td style="padding:6px 6px;font-size:13px;color:#bbb;">-</td>'
 
         rows_html += (
             f'<tr class="data-row">'
             f'{plain_td(row["사이즈"])}'
             f'{price_cell}'
+            f'{takeout_cell}'
             f'{plain_td(row["강도"])}'
             f'{plain_td(row["길이"])}'
             f'{plain_td(row["링게이지"])}'
@@ -151,7 +169,7 @@ def render_price_html_table(size_df: pd.DataFrame, card_no: int):
 <style>
   body {{ margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }}
   table {{ border-collapse: collapse; width: 100%; }}
-  th {{ padding:8px 14px; text-align:left; border-bottom:2px solid #e0e0e0;
+  th {{ padding:8px 6px; text-align:left; border-bottom:2px solid #e0e0e0;
         font-size:12px; color:#888; font-weight:600; white-space:nowrap;
         background:#f8f8f8; }}
   .data-row {{ border-bottom:1px solid #f0f0f0; }}
@@ -159,7 +177,7 @@ def render_price_html_table(size_df: pd.DataFrame, card_no: int):
   .price-badge {{
     display: inline-block;
     border-radius: 6px;
-    padding: 3px 10px;
+    padding: 3px 7px;
     font-weight: 700;
     font-size: 13px;
     white-space: nowrap;
@@ -197,10 +215,12 @@ def render_price_html_table(size_df: pd.DataFrame, card_no: int):
 </style>
 </head>
 <body>
+<div style="overflow-x:auto;">
 <table>
   <thead><tr>{header_cells}</tr></thead>
   <tbody>{rows_html}</tbody>
 </table>
+</div>
 </body>
 </html>"""
 
@@ -300,6 +320,13 @@ def render():
     else:
         df["proposal_retail_price_krw"] = 0
 
+    if "takeout_price_krw" in df.columns:
+        df["takeout_price_krw"] = pd.to_numeric(
+            df["takeout_price_krw"], errors="coerce"
+        ).fillna(0)
+    else:
+        df["takeout_price_krw"] = 0
+
     if hide_zero_price:
         df = df[df["store_retail_price_krw"] > 0].copy()
 
@@ -338,7 +365,7 @@ def render():
     with st.expander("목록형으로 보기", expanded=False):
         list_cols = [
             "product_name", "size_name", "strength", "length_mm", "ring_gauge",
-            "store_retail_price_krw", "proposal_retail_price_krw",
+            "store_retail_price_krw", "takeout_price_krw", "proposal_retail_price_krw",
             "flavor", "wrapper_origin", "binder_origin", "filler_origin",
             "profile_id", "source_row_no",
         ]
@@ -350,6 +377,7 @@ def render():
             "length_mm":                "길이(mm)",
             "ring_gauge":               "링게이지",
             "store_retail_price_krw":   "매장운영가",
+            "takeout_price_krw":        "포장가",
             "proposal_retail_price_krw":"소비자제안가",
             "flavor":                   "특징",
             "wrapper_origin":           "래퍼 원산지",
@@ -365,6 +393,7 @@ def render():
             hide_index=True,
             column_config={
                 "매장운영가":   st.column_config.NumberColumn(format="₩ %,d"),
+                "포장가":       st.column_config.NumberColumn(format="₩ %,d"),
                 "소비자제안가": st.column_config.NumberColumn(format="₩ %,d"),
             }
         )
