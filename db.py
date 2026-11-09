@@ -1869,6 +1869,7 @@ def get_estimate_non_cigar_items():
     return run_query(sql)
 
 def get_store_menu_view(batch_id=None, keyword=""):
+    ensure_product_price_takeout_column()  # 포장가 컬럼이 없는 DB 대비
     sql = """
     SELECT
         ib.version_name,
@@ -1880,6 +1881,7 @@ def get_store_menu_view(batch_id=None, keyword=""):
         pm.ring_gauge,
         COALESCE(ii.store_retail_price_krw, 0) AS store_retail_price_krw,
         COALESCE(ii.proposal_retail_price_krw, ii.retail_price_krw, 0) AS proposal_retail_price_krw,
+        COALESCE(pp.takeout_price_krw, 0) AS takeout_price_krw,
         COALESCE(bp.flavor, '') AS flavor,
         COALESCE(bp.strength, '') AS strength,
         COALESCE(bp.guide, '') AS guide,
@@ -1896,6 +1898,8 @@ def get_store_menu_view(batch_id=None, keyword=""):
         ON TRIM(ii.product_name) = TRIM(bp.product_name)
     LEFT JOIN product_mst pm
         ON ii.product_code = pm.product_code
+    LEFT JOIN product_price_mst pp
+        ON ii.product_code = pp.product_code
     -- ★ 핵심: 동일 product_name+size_name 중 import_date 최신 배치만
     INNER JOIN (
         SELECT
