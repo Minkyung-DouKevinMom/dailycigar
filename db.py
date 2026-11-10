@@ -133,31 +133,26 @@ def apply_non_cigar_margin_logic(df: pd.DataFrame, conn) -> pd.DataFrame:
 
     non_cigar_mask = code_upper.isin(purchase_price_map_u.keys())
 
-    out.loc[non_cigar_mask, "_purchase_price"] = (
-        code_upper[non_cigar_mask].map(purchase_price_map_u).fillna(0)
-    )
+    # ⚠️ 단가는 반드시 숫자(float)로 만든 뒤 곱한다.
+    #    시가만 조회한 경우처럼 시가 외 행이 하나도 없으면, 빈 문자열 Series 의 .map() 결과가
+    #    최신 pandas(3.1+)에서 문자열 dtype 으로 남아 '문자열 × 수량' TypeError 가 났다.
+    purchase_price = pd.to_numeric(code_upper.map(purchase_price_map_u), errors="coerce").fillna(0.0)
     out.loc[non_cigar_mask, "total_korea_cost_krw"] = (
-        out.loc[non_cigar_mask, "_purchase_price"] * out.loc[non_cigar_mask, "qty"]
+        purchase_price[non_cigar_mask] * out.loc[non_cigar_mask, "qty"]
     )
 
     # 기프트패키지는 구성품 원가 합계로 덮어씀 (purchase_price보다 우선)
     gift_mask = code_upper.isin(gift_cost_map_u.keys())
     if gift_mask.any():
-        out.loc[gift_mask, "_gift_unit_cost"] = (
-            code_upper[gift_mask].map(gift_cost_map_u).fillna(0)
-        )
+        gift_unit_cost = pd.to_numeric(code_upper.map(gift_cost_map_u), errors="coerce").fillna(0.0)
         out.loc[gift_mask, "total_korea_cost_krw"] = (
-            out.loc[gift_mask, "_gift_unit_cost"] * out.loc[gift_mask, "qty"]
+            gift_unit_cost[gift_mask] * out.loc[gift_mask, "qty"]
         )
-        out = out.drop(columns=["_gift_unit_cost"])
 
     combined_mask = non_cigar_mask | gift_mask
     out.loc[combined_mask, "retail_gross_profit_krw"] = (
         out.loc[combined_mask, "net_sales_amount"] - out.loc[combined_mask, "total_korea_cost_krw"]
     )
-
-    if "_purchase_price" in out.columns:
-        out = out.drop(columns=["_purchase_price"])
 
     return out
 
