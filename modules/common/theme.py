@@ -31,9 +31,28 @@ NAV_ITEMS = [
 ]
 
 
-def render_sidebar(active: str | None = None) -> None:
-    """공통 사이드바 네비게이션. active 는 NAV_ITEMS 의 라벨과 (이모지 제외하고) 일치하면 강조 표시된다."""
+# 위스키(개인사업자)는 데일리시가와 장부(DB)가 분리돼 있어 메뉴도 따로 둔다.
+WHISKY_PAGE = "pages/10_위스키.py"
+WHISKY_NAV_ITEMS = [
+    ("위스키 관리", WHISKY_PAGE),
+]
+
+
+def render_sidebar(active: str | None = None, business: str = "cigar") -> None:
+    """공통 사이드바 네비게이션. active 는 메뉴 라벨과 (이모지 제외하고) 일치하면 강조 표시된다.
+
+    business="whisky" 이면 위스키(개인사업자) 메뉴를, 그 외에는 데일리시가 메뉴를 보여준다.
+    """
     with st.sidebar:
+        if business == "whisky":
+            st.markdown('<div class="dc-sidebar-logo">🥃 WHISKY</div>', unsafe_allow_html=True)
+            for label, path in WHISKY_NAV_ITEMS:
+                is_active = active is not None and label.startswith(active)
+                st.page_link(path, label=label, icon="🔸" if is_active else None)
+            st.divider()
+            st.page_link("DAILY_CIGAR.py", label="데일리시가로 이동", icon="🍂")
+            return
+
         st.markdown('<div class="dc-sidebar-logo">🍂 DAILY CIGAR</div>', unsafe_allow_html=True)
         for item in NAV_ITEMS:
             if item is None:
@@ -42,6 +61,8 @@ def render_sidebar(active: str | None = None) -> None:
             label, path = item
             is_active = active is not None and label.startswith(active)
             st.page_link(path, label=label, icon="🔸" if is_active else None)
+        st.divider()
+        st.page_link(WHISKY_PAGE, label="위스키로 이동", icon="🥃")
 
 
 def inject_global_theme() -> None:
