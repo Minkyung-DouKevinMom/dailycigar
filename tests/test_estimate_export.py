@@ -59,3 +59,43 @@ def test_hide_empty_rows(sample, template_type):
 
     ws2, _, _ = _build(sample, template_type)
     assert not any(ws2.row_dimensions[r].hidden for r in range(start, end + 1))
+
+
+def _amount_cell(sample, template_type="A4", **kw):
+    ws, L, _ = _build(sample, template_type, **kw)
+    return ws[L["amount_text_cell"]]
+
+
+@pytest.mark.parametrize("template_type", ["A4", "A3"])
+def test_amount_text_red_without_discount(sample, template_type):
+    cigar_df = sample[0]
+    total = int((cigar_df["qty"] * cigar_df["supply_price_krw"]).sum())
+    cell = _amount_cell(sample, template_type)
+    assert f"{total:,} 원 (V.A.T. 제외)" in cell.value
+    assert "할인" not in cell.value
+    assert cell.font.color.rgb == de.ESTIMATE_AMOUNT_FONT_COLOR
+
+
+@pytest.mark.parametrize("template_type", ["A4", "A3"])
+def test_amount_text_shows_grade_discounted_amount(sample, template_type):
+    cigar_df, non_cigar_df, partner_info = sample
+    info = {**partner_info, "grade_code": "SILVER", "estimate_discount_rate": 0.05}
+    total = int((cigar_df["qty"] * cigar_df["supply_price_krw"]).sum())
+    discounted = int(total * 0.95 + 0.5)
+
+    cell = _amount_cell((cigar_df, non_cigar_df, info), template_type, show_grade_discount=True)
+    assert f"{discounted:,} 원 (V.A.T. 제외)" in cell.value
+    assert cell.font.color.rgb == de.ESTIMATE_AMOUNT_FONT_COLOR
+
+    # 등급 표기를 끄면 할인 전 금액
+    cell_off = _amount_cell((cigar_df, non_cigar_df, info), template_type)
+    assert f"{total:,} 원 (V.A.T. 제외)" in cell_off.value
+
+    # 시가 외 시트는 할인 대상이 아님
+    buf = de.build_estimate_workbook(cigar_df, non_cigar_df, info, template_type=template_type,
+                                     show_grade_discount=True)
+    L = de.ESTIMATE_LAYOUTS[template_type]
+    nc_df = non_cigar_df
+    nc_total = int((nc_df["qty"] * nc_df["supply_price_krw"]).sum())
+    nc_cell = load_workbook(buf)[L["sheet_non_cigar"]][L["amount_text_cell"]]
+    assert f"{nc_total:,} 원 (V.A.T. 제외)" in nc_cell.value
