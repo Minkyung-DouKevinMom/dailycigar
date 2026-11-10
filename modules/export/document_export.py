@@ -467,7 +467,8 @@ def _apply_group_outer_border(ws, group_ranges, layout: dict):
                 cell.border = Border(left=left, right=right, top=top, bottom=bottom)
 
 
-def _write_estimate_rows(ws, df: pd.DataFrame, layout: dict, use_proposal_retail_price=False):
+def _write_estimate_rows(ws, df: pd.DataFrame, layout: dict, use_proposal_retail_price=False, include_vat=True):
+    """include_vat=False 이면 부가세 칸을 비우고 합계 = 수량 × 공급단가(부가세 제외)."""
     start_row = layout["data_start_row"]
     end_row = layout["data_end_row"]
     col_display = layout["col_display"]
@@ -535,8 +536,12 @@ def _write_estimate_rows(ws, df: pd.DataFrame, layout: dict, use_proposal_retail
         ws[f"{col_qty}{row_idx}"] = qty
         ws[f"{col_retail}{row_idx}"] = retail_price
         ws[f"{col_supply}{row_idx}"] = supply_price
-        ws[f"{col_vat}{row_idx}"] = f"=ROUND({col_qty}{row_idx}*{col_supply}{row_idx}*0.1,0)"
-        ws[f"{col_total}{row_idx}"] = f"={col_qty}{row_idx}*{col_supply}{row_idx}+{col_vat}{row_idx}"
+        if include_vat:
+            ws[f"{col_vat}{row_idx}"] = f"=ROUND({col_qty}{row_idx}*{col_supply}{row_idx}*0.1,0)"
+            ws[f"{col_total}{row_idx}"] = f"={col_qty}{row_idx}*{col_supply}{row_idx}+{col_vat}{row_idx}"
+        else:
+            ws[f"{col_vat}{row_idx}"] = None
+            ws[f"{col_total}{row_idx}"] = f"={col_qty}{row_idx}*{col_supply}{row_idx}"
 
         for col in [col_retail, col_supply, col_vat, col_total]:
             ws[f"{col}{row_idx}"].number_format = '₩#,##0'
@@ -569,7 +574,16 @@ def _write_estimate_rows(ws, df: pd.DataFrame, layout: dict, use_proposal_retail
         _apply_group_outer_border(ws, valid_group_ranges, layout)
 
 
-def _set_estimate_total_formulas(ws, layout: dict):
+def _hide_empty_estimate_rows(ws, layout: dict, used_rows: int):
+    """품목이 채워지지 않은 템플릿 빈 줄을 숨긴다 (합계 수식 범위는 그대로)."""
+    start_row = layout["data_start_row"]
+    end_row = layout["data_end_row"]
+    first_empty = start_row + min(max(int(used_rows), 0), end_row - start_row + 1)
+    for r in range(first_empty, end_row + 1):
+        ws.row_dimensions[r].hidden = True
+
+
+def _set_estimate_total_formulas(ws, layout: dict, include_vat: bool = True):
     start_row = layout["data_start_row"]
     end_row = layout["data_end_row"]
     total_row = layout["total_row"]
@@ -582,7 +596,9 @@ def _set_estimate_total_formulas(ws, layout: dict):
         f"=SUMPRODUCT({col_qty}{start_row}:{col_qty}{end_row},"
         f"{col_supply}{start_row}:{col_supply}{end_row})"
     )
-    ws[f"{col_vat}{total_row}"] = f"=SUM({col_vat}{start_row}:{col_vat}{end_row})"
+    ws[f"{col_vat}{total_row}"] = (
+        f"=SUM({col_vat}{start_row}:{col_vat}{end_row})" if include_vat else None
+    )
     ws[f"{col_total}{total_row}"] = f"=SUM({col_total}{start_row}:{col_total}{end_row})"
 
     for col in (col_supply, col_vat, col_total):
@@ -736,7 +752,11 @@ def build_estimate_workbook(
     use_proposal_retail_price: bool = False,
     show_grade_discount: bool = False,
     template_type: str = "A4",
+    include_vat: bool = True,
+    hide_empty_rows: bool = False,
 ) -> io.BytesIO:
+    """include_vat=False: 부가세 칸 비우고 합계를 공급가액(부가세 제외)으로.
+    hide_empty_rows=True: 품목 아래 남는 템플릿 빈 줄 숨김."""
     if template_type not in ESTIMATE_LAYOUTS:
         raise ValueError(f"지원하지 않는 견적서 템플릿 종류: {template_type}")
 
@@ -772,8 +792,11 @@ def build_estimate_workbook(
             df,
             layout,
             use_proposal_retail_price=use_proposal_retail_price,
+            include_vat=include_vat,
         )
-        _set_estimate_total_formulas(ws, layout)
+        _set_estimate_total_formulas(ws, layout, include_vat=include_vat)
+        if hide_empty_rows:
+            _hide_empty_estimate_rows(ws, layout, 0 if df is None else len(df))
         _update_estimate_amount_text(ws, df, layout)
 
     # 등급 할인은 시가(cigar)에만 적용되므로, 합계 하단 안내문구도 시가 시트에만 표기
@@ -940,6 +963,12 @@ def render_estimate_export():
         "견적서에 등급/할인율 표기",
         value=False,
         help="체크 시 엑셀 H8 셀에 Grade: 등급(할인율: 5%) 형식으로 표시합니다."
+    )
+
+    hide_empty_rows = st.checkbox(
+        "품목 아래 빈 줄 숨기기",
+        value=True,
+        help="체크 시 품목이 채워지지 않은 템플릿 빈 줄을 숨깁니다. (엑셀에서 '숨기기 취소'로 다시 표시 가능)",
     )
 
     only_in_stock = st.checkbox(
@@ -1122,13 +1151,13 @@ def render_estimate_export():
         safe_partner_name = safe_partner_name.replace(ch, "")
     safe_partner_name = " ".join(safe_partner_name.split()).strip()
 
-    def _file_name_for(template_type: str) -> str:
-        suffix = "_A3" if template_type == "A3" else ""
+    def _file_name_for(template_type: str, include_vat: bool) -> str:
+        suffix = ("_A3" if template_type == "A3" else "") + ("" if include_vat else "_부가세제외")
         if safe_partner_name:
             return f"견적서_{safe_partner_name}_{today4}{suffix}.xlsx"
         return f"견적서_{today4}{suffix}.xlsx"
 
-    def _build_bytes_for(template_type: str) -> io.BytesIO:
+    def _build_bytes_for(template_type: str, include_vat: bool) -> io.BytesIO:
         return build_estimate_workbook(
             download_cigar_df,
             download_non_cigar_df,
@@ -1136,43 +1165,35 @@ def render_estimate_export():
             use_proposal_retail_price=use_proposal_retail_price,
             show_grade_discount=show_grade_discount,
             template_type=template_type,
+            include_vat=include_vat,
+            hide_empty_rows=hide_empty_rows,
         )
-
-    col_a4, col_a3 = st.columns(2)
 
     mime_xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
-    with col_a4:
-        try:
-            a4_bytes = _build_bytes_for("A4")
-            st.download_button(
-                "견적서 다운로드 (A4)",
-                data=a4_bytes,
-                file_name=_file_name_for("A4"),
-                mime=mime_xlsx,
-                use_container_width=True,
-                key="estimate_download_a4",
-            )
-        except FileNotFoundError as e:
-            st.error(f"A4 템플릿 오류: {e}")
-        except Exception as e:
-            st.error(f"A4 견적서 생성 중 오류: {e}")
+    # 부가세 포함 / 제외 두 가지 × A4 / A3
+    for include_vat, vat_label in [(True, "부가세 포함"), (False, "부가세 제외")]:
+        st.caption(
+            vat_label
+            + ("" if include_vat else " — 부가세 칸을 비우고 합계를 공급가액(부가세 제외)으로 표시")
+        )
+        cols = st.columns(2)
+        for col, template_type in zip(cols, ["A4", "A3"]):
+            with col:
+                try:
+                    st.download_button(
+                        f"견적서 다운로드 ({template_type}, {vat_label})",
+                        data=_build_bytes_for(template_type, include_vat),
+                        file_name=_file_name_for(template_type, include_vat),
+                        mime=mime_xlsx,
+                        use_container_width=True,
+                        key=f"estimate_download_{template_type.lower()}_{'vat' if include_vat else 'novat'}",
+                    )
+                except FileNotFoundError as e:
+                    st.error(f"{template_type} 템플릿 오류: {e}")
+                except Exception as e:
+                    st.error(f"{template_type} 견적서 생성 중 오류: {e}")
 
-    with col_a3:
-        try:
-            a3_bytes = _build_bytes_for("A3")
-            st.download_button(
-                "견적서 다운로드 (A3)",
-                data=a3_bytes,
-                file_name=_file_name_for("A3"),
-                mime=mime_xlsx,
-                use_container_width=True,
-                key="estimate_download_a3",
-            )
-        except FileNotFoundError as e:
-            st.error(f"A3 템플릿 오류: {e}")
-        except Exception as e:
-            st.error(f"A3 견적서 생성 중 오류: {e}")
 
 def render():
     st.title("문서출력")
