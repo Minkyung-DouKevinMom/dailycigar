@@ -32,3 +32,13 @@
 - 앱의 기존 함수(`wm.insert_wholesale_sale`, `ru.clean_item_df` 등)를 재사용하고 로직을 재구현하지 않는다.
 - `db.py` 의 `DB_PATH` 는 상대경로 `cigar.db` 이므로 스크립트는 저장소 루트에서 실행한다.
 - 커밋/푸시 시 토큰이 출력에 노출되지 않도록 한다.
+
+## 위스키(개인사업자)는 장부를 분리한다
+
+- 위스키는 데일리시가(법인)와 사업자가 다르다. 위스키 데이터는 `cigar.db` 에 넣지 않고 **`whisky.db`** 에만 저장한다
+  (환경변수 `WHISKY_DB_PATH` 로 경로 변경 가능 — 스크립트/테스트는 사본을 가리키게 해서 먼저 확인).
+- 위스키 데이터 접근은 `modules/whisky/whisky_db.py`(정본)의 함수만 사용한다. 화면(`modules/whisky/whisky_view.py`,
+  `pages/10_위스키.py`)이나 스크립트에 SQL 을 새로 쓰지 않는다.
+- 재고는 용량(ml) 기준: 매입 = 병 수 × 병 용량, 병 판매 = 병 용량, 잔 판매 = 잔 용량(기본 30ml) 차감.
+  실사는 `whisky_db.apply_stocktake` 로 차이만큼 조정한다. 이 기준을 바꾸면 `tests/test_whisky_stock.py` 도 갱신.
+- 시가 쪽 정본(`sales_query`, `db.apply_non_cigar_margin_logic`)과 대시보드/재무 화면에 위스키 매출을 섞지 않는다.
