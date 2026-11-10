@@ -614,7 +614,17 @@ def _set_estimate_total_formulas(ws, layout: dict, include_vat: bool = True):
         )
 
 
-def _update_estimate_amount_text(ws, df: pd.DataFrame, layout: dict):
+ESTIMATE_AMOUNT_FONT_COLOR = "FFC00000"  # 상단 견적금액 줄 빨간색 (등급 할인 안내문구와 같은 색)
+
+
+def _update_estimate_amount_text(
+    ws,
+    df: pd.DataFrame,
+    layout: dict,
+    discount_rate: float = 0.0,
+):
+    """상단 '금 액 (견적금액)' 줄. 빨간색으로 표시.
+    discount_rate > 0 이면(실버 이상 등급 할인 표기 시) 할인 적용 금액을 견적금액으로 쓴다."""
     total_supply = 0
     if not df.empty:
         qty = pd.to_numeric(df["qty"], errors="coerce").fillna(0)
@@ -622,8 +632,23 @@ def _update_estimate_amount_text(ws, df: pd.DataFrame, layout: dict):
         supply = pd.to_numeric(df["supply_price_krw"], errors="coerce").fillna(0)
         total_supply = int((qty * supply).sum())
 
-    ws[layout["amount_text_cell"]] = (
-        f" 금 액 (견적금액) : {total_supply:,.0f} 원 (V.A.T. 제외)"
+    discount_rate = float(discount_rate or 0)
+    if discount_rate > 0:
+        # 합계 아래 '할인 적용 금액'(= Total × (1-할인율)) 과 같은 값 (원 단위 반올림)
+        # (등급·할인율은 같은 줄 오른쪽 'Grade: …(할인율: 5%)' 칸에 표시되므로 금액만 바꾼다.
+        #  문구를 길게 쓰면 그 칸에 가려져 잘린다.)
+        amount = int(total_supply * (1 - discount_rate) + 0.5)
+    else:
+        amount = total_supply
+    text = f" 금 액 (견적금액) : {amount:,.0f} 원 (V.A.T. 제외)"
+
+    cell = ws[layout["amount_text_cell"]]
+    cell.value = text
+    cell.font = Font(
+        name=cell.font.name or "맑은 고딕",
+        size=cell.font.size or 10,
+        bold=True,
+        color=ESTIMATE_AMOUNT_FONT_COLOR,
     )
 
 
@@ -797,7 +822,13 @@ def build_estimate_workbook(
         _set_estimate_total_formulas(ws, layout, include_vat=include_vat)
         if hide_empty_rows:
             _hide_empty_estimate_rows(ws, layout, 0 if df is None else len(df))
-        _update_estimate_amount_text(ws, df, layout)
+        # 등급 할인은 시가(cigar) 시트에만 적용 → 상단 견적금액도 시가 시트만 할인 금액으로
+        rate = (
+            float(partner_info.get("estimate_discount_rate", 0) or 0)
+            if show_grade_discount and ws is ws_cigar
+            else 0.0
+        )
+        _update_estimate_amount_text(ws, df, layout, discount_rate=rate)
 
     # 등급 할인은 시가(cigar)에만 적용되므로, 합계 하단 안내문구도 시가 시트에만 표기
     _write_estimate_grade_discount_note(ws_cigar, layout, partner_info, show_grade_discount)
