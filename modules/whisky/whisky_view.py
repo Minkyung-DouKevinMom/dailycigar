@@ -210,14 +210,14 @@ def render_purchase_tab() -> None:
         return
     options = _product_options(products)
 
-    st.caption("병당 매입가는 부가세를 뺀 금액으로 입력합니다 (원가·마진 계산 기준).")
+    st.caption(wdb.purchase_cost_basis_text())
     st.markdown("#### 매입 등록")
     with st.form("whisky_purchase_new", clear_on_submit=True):
         c1, c2, c3, c4 = st.columns([1, 2, 1, 1])
         purchase_date = c1.date_input("매입일", value=date.today())
         product_name = c2.selectbox("상품", list(options.keys()))
         bottle_qty = c3.number_input("병 수", min_value=1, step=1, value=1)
-        unit_cost = c4.number_input("병당 매입가(부가세 제외)", min_value=0.0, step=1000.0, value=0.0)
+        unit_cost = c4.number_input("병당 매입가", min_value=0.0, step=1000.0, value=0.0)
         c5, c6 = st.columns(2)
         supplier = c5.text_input("거래처")
         notes = c6.text_input("비고")

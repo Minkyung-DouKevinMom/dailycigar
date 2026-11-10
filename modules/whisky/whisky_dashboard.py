@@ -124,7 +124,7 @@ def render_sales_trend(df: pd.DataFrame, today, key: str, units=UNITS, height: i
     unit_word = {"월": "개월", "주": "주", "일": "일"}[unit]
     st.caption(
         f"기간: {wide['period'].min():%Y-%m-%d} ~ {wide['period'].max():%Y-%m-%d} ({len(wide):,}{unit_word}) | "
-        f"매출은 부가세 제외 | 흐린 막대: 진행 중인 {unit}"
+        f"매출은 {'부가세 제외' if wdb.SALES_VAT_RATE else '결제금액 기준'} | 흐린 막대: 진행 중인 {unit}"
     )
 
 
@@ -382,7 +382,7 @@ def render_dashboard() -> None:
     _metric(k2, "매출원가", fmt_krw(total["cost"]), "차감 용량 × ml당 평균 매입가")
     _metric(k3, "매출총이익", fmt_krw(total["margin"]), f"마진율 {total['margin_rate']:.1f}%")
     _metric(k4, "손실·서비스 원가", fmt_krw(total["loss"]), "기타 출고·실사 조정 (마진에는 미포함)")
-    st.caption("매출은 판매금액(결제금액)에서 부가세를 뺀 금액입니다.")
+    st.caption(wdb.sales_basis_text())
 
     tab_month, tab_product, tab_loss = st.tabs(["월별 추이", "상품별", "손실·조정"])
 

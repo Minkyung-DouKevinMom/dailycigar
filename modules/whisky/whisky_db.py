@@ -10,7 +10,8 @@ DB 경로 우선순위:
   2) 기본값 "whisky.db" (앱 실행 위치 기준 상대경로 — cigar.db 와 같은 방식)
 
 매출/이익 기준(파일 아래쪽 '매출 / 이익 (정본)' 참고):
-- 매출 = 판매금액(결제금액) ÷ 1.1, 원가 = 차감 ml × ml당 평균 매입가, 마진 = 매출 − 원가.
+- 위스키 사업자는 간이과세자: 매출 = 판매금액(결제금액) 그대로, 원가 = 차감 ml × ml당 평균 매입가
+  (매입가는 부가세 포함 실제 지급액), 마진 = 매출 − 원가.
 
 재고 기준:
 - 재고는 용량(ml)으로 관리한다. 매입 = 병 수 × 병 용량, 병 판매 = 병 수 × 병 용량,
@@ -437,13 +438,31 @@ def apply_stocktake(
 # =========================================================
 # 매출 / 이익 (정본) — 위스키 HOME·대시보드는 반드시 이 함수들만 사용한다
 # =========================================================
-# 기준(데일리시가와 같은 방식):
-#   - 판매금액(amount)은 결제금액(부가세 포함). 매출 = 판매금액 ÷ 1.1 (부가세 제외 공급가액)
-#   - 병당 매입가(unit_cost)는 부가세 제외 금액으로 입력한다.
+# 기준 — 위스키 사업자는 간이과세자 (데일리시가(법인, 일반과세자)와 다르다):
+#   - 간이과세자는 매출에서 부가세 10% 를 떼어 내지 않고, 매입 부가세도 돌려받지 못한다.
+#     그래서 매출 = 판매금액(결제금액) 그대로, 병당 매입가(unit_cost) = 부가세 포함 실제 지급액.
+#   - 실제로 내는 부가세(매출 × 업종별 부가가치율 × 10% − 매입액 × 0.5%, 소액이면 면제)는
+#     신고 때 따로 계산하는 세금이라 이 화면의 매출·마진에는 반영하지 않는다.
+#   - 일반과세자로 바뀌면 SALES_VAT_RATE 를 0.1 로 바꾸고(매출 = 결제금액 ÷ 1.1),
+#     매입가를 부가세 제외 금액으로 입력하도록 안내 문구와 tests/test_whisky_sales.py 를 함께 고친다.
 #   - 원가 = 차감 용량(ml) × 상품의 ml당 평균 매입가(전체 매입 가중평균)
 #   - 마진 = 매출 − 원가 (병·잔 판매 행만). 기타 출고·실사 조정은 매출이 없으므로
 #     마진에 넣지 않고 '손실·서비스 원가'(loss_amount)로 따로 집계한다.
-VAT_RATE = 0.1
+SALES_VAT_RATE = 0.0  # 간이과세자: 0.0 / 일반과세자: 0.1
+
+
+def sales_basis_text() -> str:
+    """화면에 보여줄 매출 기준 문구."""
+    if SALES_VAT_RATE:
+        return "매출은 판매금액(결제금액)에서 부가세를 뺀 금액입니다."
+    return "매출은 판매금액(결제금액) 그대로입니다 (간이과세자 기준, 부가세를 따로 빼지 않음)."
+
+
+def purchase_cost_basis_text() -> str:
+    """화면에 보여줄 매입가 입력 기준 문구."""
+    if SALES_VAT_RATE:
+        return "병당 매입가는 부가세를 뺀 금액으로 입력합니다 (원가·마진 계산 기준)."
+    return "병당 매입가는 부가세를 포함해 실제로 낸 금액으로 입력합니다 (간이과세자 기준, 원가·마진 계산에 사용)."
 SALE_TYPES = (OUT_GLASS_SALE, OUT_BOTTLE_SALE)
 SALE_TYPE_LABELS = ("잔 판매", "병 판매")
 
@@ -472,7 +491,7 @@ def load_sales(date_from: Optional[str] = None, date_to: Optional[str] = None) -
     판매·출고 행에 매출/원가/마진을 붙인 정본 데이터.
 
     - sales_type: '잔 판매' / '병 판매' (기타 출고·실사 조정은 빈 문자열)
-    - sales_amount: 부가세 제외 매출 (판매 행만)
+    - sales_amount: 매출 (판매 행만) — 간이과세자라 판매금액 그대로
     - cost_amount / margin_amount: 판매 행의 원가 / 마진
     - loss_amount: 기타 출고·실사 조정 행의 원가 (실물이 더 많았던 조정은 음수)
     """
@@ -507,7 +526,7 @@ def load_sales(date_from: Optional[str] = None, date_to: Optional[str] = None) -
     unit = pd.to_numeric(df["product_id"].map(cost_per_ml), errors="coerce").fillna(0.0).astype(float)
     row_cost = df["total_ml"] * unit
 
-    df["sales_amount"] = (df["amount"] / (1 + VAT_RATE)).where(is_sale, 0.0)
+    df["sales_amount"] = (df["amount"] / (1 + SALES_VAT_RATE)).where(is_sale, 0.0)
     df["cost_amount"] = row_cost.where(is_sale, 0.0)
     df["margin_amount"] = df["sales_amount"] - df["cost_amount"]
     df["loss_amount"] = row_cost.where(~is_sale, 0.0)

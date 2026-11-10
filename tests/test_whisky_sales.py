@@ -1,7 +1,7 @@
 """
 위스키 매출/이익 정본(load_sales / summarize_*) 테스트.
 
-기준: 매출 = 판매금액 ÷ 1.1, 원가 = 차감 ml × ml당 평균 매입가, 마진 = 매출 − 원가.
+기준(간이과세자): 매출 = 판매금액(결제금액) 그대로, 원가 = 차감 ml × ml당 평균 매입가, 마진 = 매출 − 원가.
 기타 출고·실사 조정은 매출·마진에 넣지 않고 손실 원가로 따로 집계.
 HOME·대시보드가 쓰는 요약(전체/상품별/월별)은 같은 정본에서 나오므로 합계가 서로 같아야 한다.
 """
@@ -41,12 +41,13 @@ def test_empty_db_returns_empty_frames(tmp_path, monkeypatch):
 def test_sales_cost_margin_basis(sample):
     df = wdb.load_sales()
     row = df[(df["product_name"] == "A 위스키") & (df["sales_type"] == "잔 판매")].iloc[0]
-    assert row["sales_amount"] == pytest.approx(100000)      # 110,000 ÷ 1.1
+    assert wdb.SALES_VAT_RATE == 0  # 간이과세자: 부가세를 따로 빼지 않는다
+    assert row["sales_amount"] == pytest.approx(110000)      # 결제금액 그대로
     assert row["cost_amount"] == pytest.approx(300 * 100)    # 300ml × 100원
-    assert row["margin_amount"] == pytest.approx(70000)
+    assert row["margin_amount"] == pytest.approx(80000)
 
     s = wdb.summarize_sales(df)
-    assert s["sales"] == pytest.approx(100000 + 140000 + 30000)
+    assert s["sales"] == pytest.approx(110000 + 154000 + 33000)
     assert s["cost"] == pytest.approx(30000 + 70000 + 60 * 200)
     assert s["margin"] == pytest.approx(s["sales"] - s["cost"])
     assert s["margin_rate"] == pytest.approx(s["margin"] / s["sales"] * 100)
@@ -61,7 +62,7 @@ def test_date_filter(sample):
     nov = wdb.summarize_sales(wdb.load_sales("2026-11-01", "2026-11-30"))
     dec = wdb.summarize_sales(wdb.load_sales("2026-12-01", "2026-12-31"))
     total = wdb.summarize_sales(wdb.load_sales())
-    assert nov["sales"] == pytest.approx(100000)
+    assert nov["sales"] == pytest.approx(110000)
     for key in ("sales", "cost", "margin", "loss"):
         assert nov[key] + dec[key] == pytest.approx(total[key])
 
