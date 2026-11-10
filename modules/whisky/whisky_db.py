@@ -9,6 +9,10 @@ DB 경로 우선순위:
   1) 환경변수 WHISKY_DB_PATH
   2) 기본값 "whisky.db" (앱 실행 위치 기준 상대경로 — cigar.db 와 같은 방식)
 
+매출/이익 기준(파일 아래쪽 '매출 / 이익 (정본)' 참고):
+- 위스키 사업자는 간이과세자: 매출 = 판매금액(결제금액) 그대로, 원가 = 차감 ml × ml당 평균 매입가
+  (매입가는 부가세 포함 실제 지급액), 마진 = 매출 − 원가.
+
 재고 기준:
 - 재고는 용량(ml)으로 관리한다. 매입 = 병 수 × 병 용량, 병 판매 = 병 수 × 병 용량,
   잔 판매 = 잔 수 × 잔 용량(기본 30ml).
@@ -429,3 +433,193 @@ def apply_stocktake(
          f"{auto_note} / {notes.strip()}" if _clean(notes) else auto_note],
     )
     return diff
+
+
+# =========================================================
+# 매출 / 이익 (정본) — 위스키 HOME·대시보드는 반드시 이 함수들만 사용한다
+# =========================================================
+# 기준 — 위스키 사업자는 간이과세자 (데일리시가(법인, 일반과세자)와 다르다):
+#   - 간이과세자는 매출에서 부가세 10% 를 떼어 내지 않고, 매입 부가세도 돌려받지 못한다.
+#     그래서 매출 = 판매금액(결제금액) 그대로, 병당 매입가(unit_cost) = 부가세 포함 실제 지급액.
+#   - 실제로 내는 부가세(매출 × 업종별 부가가치율 × 10% − 매입액 × 0.5%, 소액이면 면제)는
+#     신고 때 따로 계산하는 세금이라 이 화면의 매출·마진에는 반영하지 않는다.
+#   - 일반과세자로 바뀌면 SALES_VAT_RATE 를 0.1 로 바꾸고(매출 = 결제금액 ÷ 1.1),
+#     매입가를 부가세 제외 금액으로 입력하도록 안내 문구와 tests/test_whisky_sales.py 를 함께 고친다.
+#   - 원가 = 차감 용량(ml) × 상품의 ml당 평균 매입가(전체 매입 가중평균)
+#   - 마진 = 매출 − 원가 (병·잔 판매 행만). 기타 출고·실사 조정은 매출이 없으므로
+#     마진에 넣지 않고 '손실·서비스 원가'(loss_amount)로 따로 집계한다.
+SALES_VAT_RATE = 0.0  # 간이과세자: 0.0 / 일반과세자: 0.1
+
+
+def sales_basis_text() -> str:
+    """화면에 보여줄 매출 기준 문구."""
+    if SALES_VAT_RATE:
+        return "매출은 판매금액(결제금액)에서 부가세를 뺀 금액입니다."
+    return "매출은 판매금액(결제금액) 그대로입니다 (간이과세자 기준, 부가세를 따로 빼지 않음)."
+
+
+def purchase_cost_basis_text() -> str:
+    """화면에 보여줄 매입가 입력 기준 문구."""
+    if SALES_VAT_RATE:
+        return "병당 매입가는 부가세를 뺀 금액으로 입력합니다 (원가·마진 계산 기준)."
+    return "병당 매입가는 부가세를 포함해 실제로 낸 금액으로 입력합니다 (간이과세자 기준, 원가·마진 계산에 사용)."
+SALE_TYPES = (OUT_GLASS_SALE, OUT_BOTTLE_SALE)
+SALE_TYPE_LABELS = ("잔 판매", "병 판매")
+
+SALES_COLUMNS = [
+    "id", "out_date", "dt", "product_id", "product_name", "brand_name", "out_type", "out_type_label",
+    "sales_type", "qty", "total_ml", "amount", "sales_amount", "cost_amount", "margin_amount", "loss_amount",
+]
+
+
+def get_cost_per_ml() -> dict:
+    """상품별 ml당 평균 매입가 (전체 매입 가중평균). 매입이 없으면 0."""
+    df = _query(
+        """
+        SELECT product_id, SUM(total_ml) AS ml, SUM(bottle_qty * unit_cost) AS cost
+        FROM whisky_purchase GROUP BY product_id
+        """
+    )
+    return {
+        int(r["product_id"]): (float(r["cost"]) / float(r["ml"]) if float(r["ml"] or 0) > 0 else 0.0)
+        for _, r in df.iterrows()
+    }
+
+
+def load_sales(date_from: Optional[str] = None, date_to: Optional[str] = None) -> pd.DataFrame:
+    """
+    판매·출고 행에 매출/원가/마진을 붙인 정본 데이터.
+
+    - sales_type: '잔 판매' / '병 판매' (기타 출고·실사 조정은 빈 문자열)
+    - sales_amount: 매출 (판매 행만) — 간이과세자라 판매금액 그대로
+    - cost_amount / margin_amount: 판매 행의 원가 / 마진
+    - loss_amount: 기타 출고·실사 조정 행의 원가 (실물이 더 많았던 조정은 음수)
+    """
+    sql = """
+        SELECT o.id, o.out_date, o.product_id, p.product_name, p.brand_name, o.out_type,
+               o.qty, o.total_ml, o.amount
+        FROM whisky_stock_out o
+        JOIN whisky_product p ON p.id = o.product_id
+        WHERE 1 = 1
+    """
+    params = []
+    if date_from:
+        sql += " AND o.out_date >= ?"
+        params.append(str(date_from))
+    if date_to:
+        sql += " AND o.out_date <= ?"
+        params.append(str(date_to))
+    df = _query(sql + " ORDER BY o.out_date, o.id", params)
+    if df.empty:
+        return pd.DataFrame(columns=SALES_COLUMNS)
+
+    for col in ("qty", "total_ml", "amount"):
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype(float)
+    df["brand_name"] = df["brand_name"].fillna("").astype(str)
+    df["dt"] = pd.to_datetime(df["out_date"], errors="coerce")
+    df["out_type_label"] = df["out_type"].map(OUT_TYPE_LABELS).fillna(df["out_type"])
+
+    is_sale = df["out_type"].isin(SALE_TYPES)
+    df["sales_type"] = df["out_type_label"].where(is_sale, "")
+
+    cost_per_ml = get_cost_per_ml()
+    unit = pd.to_numeric(df["product_id"].map(cost_per_ml), errors="coerce").fillna(0.0).astype(float)
+    row_cost = df["total_ml"] * unit
+
+    df["sales_amount"] = (df["amount"] / (1 + SALES_VAT_RATE)).where(is_sale, 0.0)
+    df["cost_amount"] = row_cost.where(is_sale, 0.0)
+    df["margin_amount"] = df["sales_amount"] - df["cost_amount"]
+    df["loss_amount"] = row_cost.where(~is_sale, 0.0)
+    return df[SALES_COLUMNS].reset_index(drop=True)
+
+
+def summarize_sales(df: pd.DataFrame) -> dict:
+    """load_sales 결과 요약. 매출/원가/마진/마진율, 잔·병별 매출·마진·수량, 손실 원가."""
+    def _sum(mask, col):
+        return float(df.loc[mask, col].sum()) if not df.empty else 0.0
+
+    everything = pd.Series(True, index=df.index)
+    glass = df["sales_type"] == SALE_TYPE_LABELS[0] if not df.empty else everything
+    bottle = df["sales_type"] == SALE_TYPE_LABELS[1] if not df.empty else everything
+    sales = _sum(everything, "sales_amount")
+    margin = _sum(everything, "margin_amount")
+    return {
+        "sales": sales,
+        "cost": _sum(everything, "cost_amount"),
+        "margin": margin,
+        "margin_rate": (margin / sales * 100) if sales else 0.0,
+        "glass_sales": _sum(glass, "sales_amount"),
+        "bottle_sales": _sum(bottle, "sales_amount"),
+        "glass_margin": _sum(glass, "margin_amount"),
+        "bottle_margin": _sum(bottle, "margin_amount"),
+        "glass_qty": _sum(glass, "qty"),
+        "bottle_qty": _sum(bottle, "qty"),
+        "sale_count": int((df["sales_type"] != "").sum()) if not df.empty else 0,
+        "loss": _sum(everything, "loss_amount"),
+    }
+
+
+def summarize_by_product(df: pd.DataFrame) -> pd.DataFrame:
+    """상품별 요약: 잔/병 수량, 매출, 원가, 마진, 마진율, 손실 원가. 매출 큰 순."""
+    cols = ["product_name", "glass_qty", "bottle_qty", "sales", "cost", "margin", "margin_rate", "loss"]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    d = df.assign(
+        glass_qty=df["qty"].where(df["sales_type"] == SALE_TYPE_LABELS[0], 0.0),
+        bottle_qty=df["qty"].where(df["sales_type"] == SALE_TYPE_LABELS[1], 0.0),
+    )
+    g = d.groupby("product_name", as_index=False).agg(
+        glass_qty=("glass_qty", "sum"), bottle_qty=("bottle_qty", "sum"),
+        sales=("sales_amount", "sum"), cost=("cost_amount", "sum"),
+        margin=("margin_amount", "sum"), loss=("loss_amount", "sum"),
+    )
+    g["margin_rate"] = [(m / s * 100) if s else 0.0 for m, s in zip(g["margin"], g["sales"])]
+    return g.sort_values(["sales", "product_name"], ascending=[False, True])[cols].reset_index(drop=True)
+
+
+def summarize_by_month(df: pd.DataFrame) -> pd.DataFrame:
+    """월별 요약: month(YYYY-MM), 잔 매출, 병 매출, 매출, 원가, 마진, 마진율, 손실 원가."""
+    cols = ["month", "glass_sales", "bottle_sales", "sales", "cost", "margin", "margin_rate", "loss"]
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    d = df.assign(
+        month=df["dt"].dt.strftime("%Y-%m"),
+        glass_sales=df["sales_amount"].where(df["sales_type"] == SALE_TYPE_LABELS[0], 0.0),
+        bottle_sales=df["sales_amount"].where(df["sales_type"] == SALE_TYPE_LABELS[1], 0.0),
+    )
+    g = d.groupby("month", as_index=False).agg(
+        glass_sales=("glass_sales", "sum"), bottle_sales=("bottle_sales", "sum"),
+        sales=("sales_amount", "sum"), cost=("cost_amount", "sum"),
+        margin=("margin_amount", "sum"), loss=("loss_amount", "sum"),
+    )
+    g["margin_rate"] = [(m / s * 100) if s else 0.0 for m, s in zip(g["margin"], g["sales"])]
+    return g.sort_values("month")[cols].reset_index(drop=True)
+
+
+def get_stock_outlook(today, lookback_days: int = 30) -> pd.DataFrame:
+    """
+    판매 중 상품의 재고 전망. 컬럼:
+      product_name, stock_ml, stock_text, sold_ml(최근 lookback_days 일 병·잔 판매 용량),
+      daily_ml(일평균), days_left(소진 예상 일수 — 판매가 없으면 NaN),
+      last_sale_date(마지막 판매일 — 없으면 NaT), days_since_sale(경과일수 — 판매 이력 없으면 NaN)
+    """
+    today = pd.Timestamp(today).normalize()
+    stock = get_stock(active_only=True)
+    cols = ["product_name", "stock_ml", "stock_text", "sold_ml", "daily_ml", "days_left",
+            "last_sale_date", "days_since_sale"]
+    if stock.empty:
+        return pd.DataFrame(columns=cols)
+
+    sales = load_sales(date_to=today.strftime("%Y-%m-%d"))
+    sales = sales[sales["sales_type"] != ""]
+    start = today - pd.Timedelta(days=lookback_days - 1)
+    recent = sales[sales["dt"] >= start].groupby("product_id")["total_ml"].sum()
+    last = sales.groupby("product_id")["dt"].max()
+
+    out = stock[["product_id", "product_name", "stock_ml", "stock_text"]].copy()
+    out["sold_ml"] = pd.to_numeric(out["product_id"].map(recent), errors="coerce").fillna(0.0).astype(float)
+    out["daily_ml"] = out["sold_ml"] / lookback_days
+    out["days_left"] = (out["stock_ml"].clip(lower=0) / out["daily_ml"]).where(out["daily_ml"] > 0)
+    out["last_sale_date"] = pd.to_datetime(out["product_id"].map(last), errors="coerce")
+    out["days_since_sale"] = (today - out["last_sale_date"]).dt.days
+    return out[cols].reset_index(drop=True)
