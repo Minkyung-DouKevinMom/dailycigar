@@ -156,3 +156,28 @@ def test_month_range_boundaries():
     assert month_range(2026, 2) == ("2026-02-01", "2026-02-28")
     assert month_range(2028, 2) == ("2028-02-01", "2028-02-29")
     assert month_range(2026, 12) == ("2026-12-01", "2026-12-31")
+
+
+def test_non_cigar_margin_logic_works_on_cigar_only_and_subsets(conn):
+    """
+    시가만(또는 시가 외만) 골라 조회해도 보정이 오류 없이 동작하고, 전체에 적용한 결과와 같아야 한다.
+
+    과거 버그: 소매관리에서 시가 상품코드만 선택해 조회하면 시가 외 행이 0건이라
+    단가 컬럼이 문자열 dtype 으로 만들어져 '문자열 × 수량' TypeError 가 났다 (pandas 3.1+).
+    """
+    import db
+
+    raw = sq.load_retail_sales(conn)
+    full = db.apply_non_cigar_margin_logic(raw, conn)
+    cols = ["total_korea_cost_krw", "retail_gross_profit_krw"]
+
+    # 보정 대상(시가 외·기프트패키지) 여부로 나눈다 — 대상이 0건인 쪽이 과거 오류가 나던 경우
+    targets = {str(k).strip().upper() for k in db.get_non_cigar_purchase_price_map(conn)}
+    targets |= {str(k).strip().upper() for k in db.get_gift_package_cost_map(conn)}
+    is_target = raw["product_code"].astype(str).str.strip().str.upper().isin(targets)
+    assert is_target.any() and (~is_target).any()
+    for mask in (~is_target, is_target):
+        part = db.apply_non_cigar_margin_logic(raw[mask], conn)
+        pd.testing.assert_frame_equal(
+            part[cols].astype(float), full.loc[mask, cols].astype(float), check_exact=False, atol=0.01
+        )
