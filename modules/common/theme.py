@@ -34,7 +34,13 @@ NAV_ITEMS = [
 # 위스키(개인사업자)는 데일리시가와 장부(DB)가 분리돼 있어 메뉴도 따로 둔다.
 WHISKY_PAGE = "pages/10_위스키.py"
 WHISKY_NAV_ITEMS = [
-    ("위스키 관리", WHISKY_PAGE),
+    ("HOME", WHISKY_PAGE),
+    ("대시보드", "pages/11_위스키_대시보드.py"),
+    ("기준정보", "pages/12_위스키_기준정보.py"),
+    None,  # divider
+    ("매입관리", "pages/13_위스키_매입관리.py"),
+    ("판매관리", "pages/14_위스키_판매관리.py"),
+    ("재고관리", "pages/15_위스키_재고관리.py"),
 ]
 
 
@@ -46,7 +52,11 @@ def render_sidebar(active: str | None = None, business: str = "cigar") -> None:
     with st.sidebar:
         if business == "whisky":
             st.markdown('<div class="dc-sidebar-logo">🥃 WHISKY</div>', unsafe_allow_html=True)
-            for label, path in WHISKY_NAV_ITEMS:
+            for item in WHISKY_NAV_ITEMS:
+                if item is None:
+                    st.divider()
+                    continue
+                label, path = item
                 is_active = active is not None and label.startswith(active)
                 st.page_link(path, label=label, icon="🔸" if is_active else None)
             st.divider()

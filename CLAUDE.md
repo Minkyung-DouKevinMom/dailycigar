@@ -38,7 +38,10 @@
 - 위스키는 데일리시가(법인)와 사업자가 다르다. 위스키 데이터는 `cigar.db` 에 넣지 않고 **`whisky.db`** 에만 저장한다
   (환경변수 `WHISKY_DB_PATH` 로 경로 변경 가능 — 스크립트/테스트는 사본을 가리키게 해서 먼저 확인).
 - 위스키 데이터 접근은 `modules/whisky/whisky_db.py`(정본)의 함수만 사용한다. 화면(`modules/whisky/whisky_view.py`,
-  `pages/10_위스키.py`)이나 스크립트에 SQL 을 새로 쓰지 않는다.
+  `modules/whisky/whisky_dashboard.py`, `pages/10~15_위스키*.py`)이나 스크립트에 SQL 을 새로 쓰지 않는다.
+- 위스키 매출/이익도 정본만 사용: `whisky_db.load_sales` / `summarize_sales` / `summarize_by_product` / `summarize_by_month`.
+  기준: 매출 = 판매금액(결제금액) ÷ 1.1, 원가 = 차감 ml × ml당 평균 매입가(매입가는 부가세 제외), 마진 = 매출 − 원가.
+  기타 출고·실사 조정은 마진에 넣지 않고 손실 원가로 따로 집계. 기준을 바꾸면 `tests/test_whisky_sales.py` 도 갱신.
 - 재고는 용량(ml) 기준: 매입 = 병 수 × 병 용량, 병 판매 = 병 용량, 잔 판매 = 잔 용량(기본 30ml) 차감.
   실사는 `whisky_db.apply_stocktake` 로 차이만큼 조정한다. 이 기준을 바꾸면 `tests/test_whisky_stock.py` 도 갱신.
 - 시가 쪽 정본(`sales_query`, `db.apply_non_cigar_margin_logic`)과 대시보드/재무 화면에 위스키 매출을 섞지 않는다.

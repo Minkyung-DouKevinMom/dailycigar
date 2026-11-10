@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import os
 from datetime import date
 
 import pandas as pd
@@ -52,7 +51,7 @@ def render_stock_tab() -> None:
     stock = wdb.get_stock(active_only=not include_inactive)
 
     if stock.empty:
-        st.info("등록된 위스키가 없습니다. '상품' 탭에서 먼저 상품을 등록해 주세요.")
+        st.info("등록된 위스키가 없습니다. '기준정보' 메뉴에서 먼저 상품을 등록해 주세요.")
         return
 
     c1, c2, c3 = st.columns(3)
@@ -98,20 +97,6 @@ def render_stock_tab() -> None:
         "재고는 용량(ml)으로 계산합니다. '미개봉 N병 + 개봉 Xml'은 총 잔량을 병 용량으로 나눈 값이며, "
         "개봉한 병은 한 번에 한 병이라고 봅니다."
     )
-
-    with st.expander("위스키 DB 다운로드"):
-        path = wdb.get_db_path()
-        if os.path.exists(path):
-            with open(path, "rb") as f:
-                st.download_button(
-                    "현재 위스키 DB 다운로드",
-                    data=f.read(),
-                    file_name="whisky.db",
-                    mime="application/octet-stream",
-                    use_container_width=True,
-                    key="whisky_db_download",
-                )
-            st.caption("데일리시가(cigar.db)와 분리된 위스키 전용 파일(whisky.db)입니다.")
 
 
 # =========================================================
@@ -221,17 +206,18 @@ def render_product_tab() -> None:
 def render_purchase_tab() -> None:
     products = wdb.get_products(active_only=True)
     if products.empty:
-        st.info("먼저 '상품' 탭에서 위스키를 등록해 주세요.")
+        st.info("먼저 '기준정보' 메뉴에서 위스키를 등록해 주세요.")
         return
     options = _product_options(products)
 
+    st.caption("병당 매입가는 부가세를 뺀 금액으로 입력합니다 (원가·마진 계산 기준).")
     st.markdown("#### 매입 등록")
     with st.form("whisky_purchase_new", clear_on_submit=True):
         c1, c2, c3, c4 = st.columns([1, 2, 1, 1])
         purchase_date = c1.date_input("매입일", value=date.today())
         product_name = c2.selectbox("상품", list(options.keys()))
         bottle_qty = c3.number_input("병 수", min_value=1, step=1, value=1)
-        unit_cost = c4.number_input("병당 매입가", min_value=0.0, step=1000.0, value=0.0)
+        unit_cost = c4.number_input("병당 매입가(부가세 제외)", min_value=0.0, step=1000.0, value=0.0)
         c5, c6 = st.columns(2)
         supplier = c5.text_input("거래처")
         notes = c6.text_input("비고")
@@ -285,7 +271,7 @@ def render_purchase_tab() -> None:
 def render_stock_out_tab() -> None:
     products = wdb.get_products(active_only=True)
     if products.empty:
-        st.info("먼저 '상품' 탭에서 위스키를 등록해 주세요.")
+        st.info("먼저 '기준정보' 메뉴에서 위스키를 등록해 주세요.")
         return
     options = _product_options(products)
     type_labels = {
@@ -383,7 +369,7 @@ def render_stock_out_tab() -> None:
 def render_stocktake_tab() -> None:
     stock = wdb.get_stock(active_only=True)
     if stock.empty:
-        st.info("먼저 '상품' 탭에서 위스키를 등록해 주세요.")
+        st.info("먼저 '기준정보' 메뉴에서 위스키를 등록해 주세요.")
         return
 
     st.caption(
@@ -432,19 +418,36 @@ def render_stocktake_tab() -> None:
             st.error(str(e))
 
 
-def render() -> None:
-    st.caption("위스키는 개인사업자 매출이라 데일리시가(법인) 장부와 분리해 whisky.db 에 따로 저장합니다.")
+def render_master_page() -> None:
+    """기준정보: 상품."""
     _show_flash()
-    tab_stock, tab_product, tab_purchase, tab_out, tab_take = st.tabs(
-        ["재고 현황", "상품", "매입", "판매·출고", "재고 실사"]
-    )
-    with tab_stock:
-        render_stock_tab()
-    with tab_product:
-        render_product_tab()
-    with tab_purchase:
-        render_purchase_tab()
+    render_product_tab()
+
+
+def render_purchase_page() -> None:
+    """매입관리."""
+    _show_flash()
+    render_purchase_tab()
+
+
+def render_sales_page() -> None:
+    """판매관리: 판매·출고 등록/내역 + POS 업로드(준비 중)."""
+    _show_flash()
+    tab_out, tab_pos = st.tabs(["판매·출고", "POS 업로드"])
     with tab_out:
         render_stock_out_tab()
+    with tab_pos:
+        st.info(
+            "위스키 POS 파일 업로드는 준비 중입니다. 첫 POS 파일의 형식을 확인한 뒤 "
+            "데일리시가 소매업로드와 같은 방식으로 추가합니다."
+        )
+
+
+def render_stock_page() -> None:
+    """재고관리: 재고 현황 + 재고 실사."""
+    _show_flash()
+    tab_stock, tab_take = st.tabs(["재고 현황", "재고 실사"])
+    with tab_stock:
+        render_stock_tab()
     with tab_take:
         render_stocktake_tab()
