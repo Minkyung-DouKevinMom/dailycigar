@@ -86,6 +86,7 @@ def render_stock_tab() -> None:
         use_container_width=True,
         hide_index=True,
         column_config={
+            "재고": st.column_config.TextColumn(width="medium"),
             "남은 잔 수": st.column_config.NumberColumn(format="%d잔", help="총 잔량 ÷ 잔 용량"),
             "총 잔량(ml)": st.column_config.NumberColumn(format="%,d"),
             "병 용량(ml)": st.column_config.NumberColumn(format="%,d"),
