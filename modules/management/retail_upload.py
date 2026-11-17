@@ -62,8 +62,6 @@ def normalize_product_code(value) -> str:
 PRODUCT_NAME_ALIASES = {
     "@사용료": "사용료",
     "DJU 빈티지 하프코로나": "DJU(HC)",
-    # POS 메뉴명이 잠시 잘못 등록돼 있던 기간(2026-11-17)의 판매분 — 실제 세트는 '코로나 4종(12스틱)'
-    "코로나 3종(12스틱)": "코로나 4종(12스틱)",
 }
 
 
